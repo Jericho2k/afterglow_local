@@ -16,13 +16,12 @@ export async function POST(request: Request) {
   if (!parsed.success) return Response.json({ error: "Invalid message" }, { status: 400 });
   const { conversationId, content, action } = parsed.data;
 
-  const conversationResult = await query(
-    `SELECT c.*, row_to_json(ch.*) character FROM conversations c JOIN characters ch ON ch.id=c.character_id WHERE c.id=$1`,
-    [conversationId],
-  );
+  const conversationResult = await query("SELECT * FROM conversations WHERE id=$1", [conversationId]);
   if (!conversationResult.rowCount) return Response.json({ error: "Conversation not found" }, { status: 404 });
   const row = conversationResult.rows[0];
-  const character = characterFromRow(row.character);
+  const characterResult = await query("SELECT * FROM characters WHERE id=$1", [row.character_id]);
+  if (!characterResult.rowCount) return Response.json({ error: "Character not found" }, { status: 404 });
+  const character = characterFromRow(characterResult.rows[0]);
   const settings = await getSettings();
   let removedAssistant: { id: string; content: string; created_at: Date } | null = null;
   const restoreRemovedAssistant = async () => {

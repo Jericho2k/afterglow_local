@@ -40,4 +40,13 @@ describe("PostgreSQL persistence", () => {
     });
     expect(Number((await query("SELECT COUNT(*) count FROM conversations WHERE id=$1",[conversationId])).rows[0].count)).toBe(1);
   });
+
+  it("loads conversation and character rows for chat context", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name,backstory) VALUES ($1,'Mara','A careful archivist.')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Archive')",[conversationId,characterId]);
+    const conversation = await query<Record<string, unknown>>("SELECT * FROM conversations WHERE id=$1",[conversationId]);
+    const loadedCharacter = await query<Record<string, unknown>>("SELECT * FROM characters WHERE id=$1",[conversation.rows[0].character_id]);
+    expect(loadedCharacter.rows[0].name).toBe("Mara");
+  });
 });
