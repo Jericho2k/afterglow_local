@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+coverage/
+.env
+.env.local
+.env.*.local
+!.env.example
+*.log
+.DS_Store
+.vercel
+AGENTS.md
+sources/
+.codex/
+.agents/

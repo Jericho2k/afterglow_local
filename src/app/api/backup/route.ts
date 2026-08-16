@@ -1,0 +1,85 @@
+import { randomUUID } from "node:crypto";
+import { requireAuth } from "@/lib/auth";
+import { characterFromRow, conversationFromRow, getSettings, memoryFromRow, messageFromRow, query, transaction } from "@/lib/db";
+import { backupSchema } from "@/lib/schemas";
+
+export async function GET() {
+  const denied = await requireAuth(); if (denied) return denied;
+  const [charactersResult, conversationsResult, messagesResult, memoriesResult, settings] = await Promise.all([
+    query("SELECT * FROM characters ORDER BY created_at ASC"),
+    query("SELECT * FROM conversations ORDER BY created_at ASC"),
+    query("SELECT * FROM messages ORDER BY created_at ASC,id ASC"),
+    query("SELECT * FROM memories ORDER BY created_at ASC"),
+    getSettings(),
+  ]);
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings,
+    characters: charactersResult.rows.map((row) => { const character = characterFromRow(row); return { id: character.id, data: character }; }),
+    conversations: conversationsResult.rows.map(conversationFromRow),
+    messages: messagesResult.rows.map(messageFromRow),
+    memories: memoriesResult.rows.map(memoryFromRow),
+  };
+  return new Response(JSON.stringify(payload, null, 2), {
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Disposition": `attachment; filename="afterglow-backup-${new Date().toISOString().slice(0,10)}.json"`,
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+export async function POST(request: Request) {
+  const denied = await requireAuth(); if (denied) return denied;
+  const parsed = backupSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return Response.json({ error: "Invalid or unsupported Afterglow backup", details: parsed.error.flatten() }, { status: 400 });
+  const backup = parsed.data;
+  const counts = await transaction(async (client) => {
+    const characterIds = new Map<string,string>();
+    const conversationIds = new Map<string,string>();
+    for (const item of backup.characters) {
+      const id = randomUUID(); characterIds.set(item.id,id); const c = item.data;
+      await client.query(
+        `INSERT INTO characters (id,name,tagline,avatar_url,accent,backstory,personality,scenario,greeting,example_dialogue,response_directive,boundaries,nsfw_enabled)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [id,c.name,c.tagline,c.avatarUrl,c.accent,c.backstory,c.personality,c.scenario,c.greeting,c.exampleDialogue,c.responseDirective,c.boundaries,c.nsfwEnabled],
+      );
+    }
+    for (const item of backup.conversations) {
+      const characterId = characterIds.get(item.characterId); if (!characterId) continue;
+      const id = randomUUID(); conversationIds.set(item.id,id);
+      await client.query("INSERT INTO conversations (id,character_id,title,summary) VALUES ($1,$2,$3,$4)", [id,characterId,item.title,item.summary]);
+    }
+    let messageCount = 0;
+    for (const item of backup.messages) {
+      const conversationId = conversationIds.get(item.conversationId); if (!conversationId) continue;
+      await client.query(
+        "INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,$3,$4,COALESCE($5::timestamptz,now()))",
+        [randomUUID(),conversationId,item.role,item.content,item.createdAt ?? null],
+      );
+      messageCount += 1;
+    }
+    await client.query(`UPDATE conversations c SET message_count=(SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) WHERE c.id = ANY($1::uuid[])`, [[...conversationIds.values()]]);
+    let memoryCount = 0;
+    for (const item of backup.memories) {
+      const characterId = characterIds.get(item.characterId); if (!characterId) continue;
+      const conversationId = item.conversationId ? conversationIds.get(item.conversationId) ?? null : null;
+      await client.query(
+        "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords,pinned) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [randomUUID(),characterId,conversationId,item.content,item.importance,item.keywords,item.pinned],
+      );
+      memoryCount += 1;
+    }
+    if (backup.settings) {
+      const s = backup.settings;
+      await client.query(
+        `UPDATE app_settings SET owner_name=$1,owner_profile=$2,model=$3,temperature=$4,max_tokens=$5,
+         context_messages=$6,consolidation_interval=$7,memory_limit=$8,updated_at=now() WHERE id='owner'`,
+        [s.ownerName,s.ownerProfile,s.model,s.temperature,s.maxTokens,s.contextMessages,s.consolidationInterval,s.memoryLimit],
+      );
+    }
+    return { characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount };
+  });
+  return Response.json({ ok: true, imported: counts }, { status: 201 });
+}

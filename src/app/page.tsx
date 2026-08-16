@@ -1,0 +1,260 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AppSettings, Character, Conversation, Memory, Message, UsageSummary } from "@/lib/types";
+
+const blankCharacter = {
+  name: "", tagline: "", avatarUrl: "", accent: "#e879a9", backstory: "", personality: "", scenario: "",
+  greeting: "", exampleDialogue: "", responseDirective: "", boundaries: "", nsfwEnabled: false,
+};
+
+const defaultSettings: AppSettings = {
+  ownerName: "You", ownerProfile: "", model: "deepseek-v4-flash", temperature: 0.95, maxTokens: 1800,
+  contextMessages: 30, consolidationInterval: 10, memoryLimit: 8,
+};
+
+async function api<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data as T;
+}
+
+function initials(name: string) { return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
+function time(value: string) { return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value)); }
+
+export default function Home() {
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [ageAccepted, setAgeAccepted] = useState<boolean | null>(null);
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversation, setConversation] = useState<Conversation | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [memories, setMemories] = useState<Memory[]>([]);
+  const [composer, setComposer] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [studioOpen, setStudioOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [editing, setEditing] = useState<Character | null>(null);
+  const [error, setError] = useState("");
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const selected = useMemo(() => characters.find((item) => item.id === selectedId) ?? null, [characters, selectedId]);
+
+  const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
+    const query = new URLSearchParams({ characterId });
+    if (conversationId) query.set("conversationId", conversationId);
+    const data = await api<{ conversations: Conversation[]; conversation: Conversation; messages: Message[] }>(`/api/conversations?${query}`);
+    setConversations(data.conversations); setConversation(data.conversation); setMessages(data.messages);
+    return data;
+  }, []);
+
+  const loadCharacters = useCallback(async () => {
+    try {
+      const data = await api<{ characters: Character[] }>("/api/characters");
+      setCharacters(data.characters);
+      setSelectedId((current) => current && data.characters.some((item) => item.id === current) ? current : data.characters[0]?.id ?? null);
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not load characters"); }
+  }, []);
+
+  useEffect(() => {
+    setAgeAccepted(localStorage.getItem("afterglow_age_verified") === "yes");
+    api<{ authenticated: boolean }>("/api/session").then((data) => setAuthenticated(data.authenticated)).catch(() => setAuthenticated(false));
+  }, []);
+  useEffect(() => { if (authenticated) { void loadCharacters(); api<{ settings: AppSettings }>("/api/settings").then((data) => setSettings(data.settings)).catch(() => undefined); } }, [authenticated, loadCharacters]);
+  useEffect(() => {
+    if (!selectedId || !authenticated) { setConversation(null); setConversations([]); setMessages([]); setMemories([]); return; }
+    setError("");
+    Promise.all([
+      loadChat(selectedId),
+      api<{ memories: Memory[] }>(`/api/memories?characterId=${selectedId}`),
+    ]).then(([, memoryData]) => setMemories(memoryData.memories))
+      .catch((e) => setError(e instanceof Error ? e.message : "Could not open conversation"));
+  }, [selectedId, authenticated, loadChat]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" }); }, [messages, streaming]);
+
+  async function send(action: "send" | "regenerate" = "send") {
+    if (!conversation || streaming || (action === "send" && !composer.trim())) return;
+    setError(""); setStreaming(true);
+    const content = action === "send" ? composer.trim() : "";
+    if (action === "send") {
+      setComposer("");
+      setMessages((items) => [...items, { id: crypto.randomUUID(), conversationId: conversation.id, role: "user", content, createdAt: new Date().toISOString() }]);
+    } else {
+      setMessages((items) => items.at(-1)?.role === "assistant" ? items.slice(0, -1) : items);
+    }
+    const placeholderId = crypto.randomUUID();
+    setMessages((items) => [...items, { id: placeholderId, conversationId: conversation.id, role: "assistant", content: "", createdAt: new Date().toISOString() }]);
+    try {
+      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conversation.id, content, action }) });
+      if (!response.ok || !response.body) { const data = await response.json().catch(() => ({})); throw new Error(data.error || "Chat request failed"); }
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read(); if (done) break;
+        buffer += decoder.decode(value, { stream: true }); const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue; const event = JSON.parse(line);
+          if (event.type === "delta") setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, content: m.content + event.content } : m));
+          if (event.type === "done") {
+            setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, id: event.id } : m));
+            if (action === "send" && conversation.title.startsWith("Chat with ")) {
+              const title = content.replace(/\s+/g," ").slice(0,120);
+              setConversation((current) => current ? { ...current,title } : current);
+              setConversations((items) => items.map((item) => item.id === conversation.id ? { ...item,title } : item));
+            }
+          }
+          if (event.type === "error") throw new Error(event.error);
+        }
+      }
+    } catch (e) {
+      setMessages((items) => items.filter((m) => m.id !== placeholderId));
+      if (action === "regenerate" && conversation) await loadChat(conversation.characterId,conversation.id).catch(() => undefined);
+      setError(e instanceof Error ? e.message : "The reply was interrupted");
+    } finally { setStreaming(false); }
+  }
+
+  async function newConversation() {
+    if (!selected || streaming) return;
+    try {
+      const data = await api<{ conversation: Conversation; messages: Message[] }>("/api/conversations", { method: "POST", body: JSON.stringify({ characterId: selected.id }) });
+      setConversation(data.conversation); setMessages(data.messages); setConversations((items) => [data.conversation, ...items]); setHistoryOpen(false);
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not start a new chat"); }
+  }
+
+  async function editMessage(message: Message) {
+    if (streaming) return;
+    const content = window.prompt("Edit message", message.content)?.trim();
+    if (!content || content === message.content) return;
+    try {
+      await api(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ content, truncateAfter: message.role === "user" }) });
+      if (message.role === "user") {
+        setMessages((items) => items.slice(0, items.findIndex((item) => item.id === message.id) + 1).map((item) => item.id === message.id ? { ...item, content } : item));
+        await send("regenerate");
+      } else setMessages((items) => items.map((item) => item.id === message.id ? { ...item, content } : item));
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not edit message"); }
+  }
+
+  async function deleteFromMessage(message: Message) {
+    if (!conversation || streaming || !window.confirm("Delete this message and everything after it?")) return;
+    try { await api(`/api/messages/${message.id}`, { method: "DELETE" }); await loadChat(conversation.characterId, conversation.id); }
+    catch (e) { setError(e instanceof Error ? e.message : "Could not delete message"); }
+  }
+
+  if (ageAccepted === null || authenticated === null) return <div className="splash"><Logo /><div className="pulse" /></div>;
+  if (!ageAccepted) return <AgeGate onAccept={() => { localStorage.setItem("afterglow_age_verified", "yes"); setAgeAccepted(true); }} />;
+  if (!authenticated) return <Login onSuccess={() => setAuthenticated(true)} />;
+
+  return (
+    <main className="app-shell">
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}>×</button></div>
+        <button className="new-character" onClick={() => { setEditing(null); setStudioOpen(true); }}><span>＋</span> Create a character</button>
+        <div className="section-label"><span>Your characters</span><span>{characters.length}</span></div>
+        <div className="character-list">
+          {characters.map((character) => (
+            <button key={character.id} className={`character-row ${selectedId === character.id ? "active" : ""}`} onClick={() => { setSelectedId(character.id); setSidebarOpen(false); }}>
+              <Avatar character={character} /><span className="character-copy"><strong>{character.name}</strong><small>{character.tagline || "A story waiting to unfold"}</small></span>
+              <span className="status-dot" style={{ background: character.accent }} />
+            </button>
+          ))}
+        </div>
+        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>Private by design</strong><small>Your database, your API key</small></div></div><div className="sidebar-links"><button className="text-button" onClick={() => setSettingsOpen(true)}>Settings & data</button><button className="text-button" onClick={async () => { await api("/api/auth", { method: "DELETE" }); setAuthenticated(false); }}>Lock app</button></div></div>
+      </aside>
+
+      {selected ? (
+        <section className="chat-panel">
+          <header className="chat-header">
+            <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open characters">☰</button><Avatar character={selected} large /><div><div className="eyebrow">{conversation?.title || "Private conversation"}</div><h1>{selected.name}</h1><p>{selected.tagline}</p></div></div>
+            <div className="header-actions">
+              <button className="icon-button labeled" onClick={() => setHistoryOpen(true)}><span>◫</span><span>Chats</span>{conversations.length > 1 && <b>{conversations.length}</b>}</button>
+              <button className="icon-button labeled" onClick={() => setMemoryOpen(true)}><span>⌁</span><span>Memories</span>{memories.length > 0 && <b>{memories.length}</b>}</button>
+              <button className="icon-button labeled" onClick={() => { setEditing(selected); setStudioOpen(true); }}><span>⚙</span><span>Character</span></button>
+            </div>
+          </header>
+          <div className="messages">
+            <div className="date-divider"><span>THE STORY SO FAR</span></div>
+            {messages.map((message, index) => (
+              <article key={message.id} className={`message ${message.role}`}>
+                {message.role === "assistant" && <Avatar character={selected} />}
+                <div className="message-stack">
+                  <div className="message-meta"><strong>{message.role === "assistant" ? selected.name : "You"}</strong><time>{time(message.createdAt)}</time></div>
+                  <div className={`bubble ${!message.content && streaming ? "typing" : ""}`}>{message.content || <><i /><i /><i /></>}</div>
+                  {message.content && !streaming && <div className="message-actions"><button onClick={() => void editMessage(message)}>✎ Edit</button><button onClick={() => void deleteFromMessage(message)}>⌫ Delete from here</button>{message.role === "assistant" && index === messages.length - 1 && <button onClick={() => void send("regenerate")}>↻ Regenerate</button>}</div>}
+                </div>
+              </article>
+            ))}
+            <div ref={bottomRef} />
+          </div>
+          {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
+          <div className="composer-wrap">
+            <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span>•</span><span>{settings.model} · long-term memory</span></div>
+            <div className="composer">
+              <textarea value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${selected.name}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} disabled={streaming} />
+              <button className="send-button" aria-label="Send message" disabled={streaming || !composer.trim()} onClick={() => void send()}>↑</button>
+            </div>
+            <small className="composer-hint">Enter to send · Shift + Enter for a new line</small>
+          </div>
+        </section>
+      ) : (
+        <section className="empty-state"><div className="orb">✦</div><span className="eyebrow">Your private story studio</span><h1>Create someone<br />worth remembering.</h1><p>Shape their history, voice, desires, and boundaries. Afterglow keeps the moments that matter.</p><button className="primary" onClick={() => setStudioOpen(true)}>Create your first character</button></section>
+      )}
+
+      {studioOpen && <CharacterStudio character={editing} onClose={() => setStudioOpen(false)} onSaved={async (character) => { setStudioOpen(false); await loadCharacters(); setSelectedId(character.id); }} onDeleted={async () => { setStudioOpen(false); setSelectedId(null); await loadCharacters(); }} />}
+      {memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[] }>(`/api/memories?characterId=${selected.id}`); setMemories(data.memories); }} />}
+      {historyOpen && selected && <ConversationDrawer character={selected} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setHistoryOpen(false)} onNew={() => void newConversation()} onSelect={async (id) => { await loadChat(selected.id,id); setHistoryOpen(false); }} onChange={() => void loadChat(selected.id)} />}
+      {settingsOpen && <SettingsDrawer settings={settings} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings(value); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings }>("/api/settings"); setSettings(data.settings); }} />}
+    </main>
+  );
+}
+
+function Logo() { return <div className="logo"><span className="logo-mark">A</span><span>Afterglow</span></div>; }
+
+function Avatar({ character, large = false }: { character: Character; large?: boolean }) {
+  return <div className={`avatar ${large ? "large" : ""}`} style={{ "--accent": character.accent } as React.CSSProperties}>{character.avatarUrl ? <img src={character.avatarUrl} alt="" /> : <span>{initials(character.name)}</span>}</div>;
+}
+
+function Login({ onSuccess }: { onSuccess: () => void }) {
+  const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
+  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">◇</div><span className="eyebrow">Private space</span><h1>Welcome back.</h1><p>Enter the password configured for your Afterglow instance.</p><form onSubmit={async (e) => { e.preventDefault(); setBusy(true); setError(""); try { await api("/api/auth", { method: "POST", body: JSON.stringify({ password }) }); onSuccess(); } catch (err) { setError(err instanceof Error ? err.message : "Login failed"); } finally { setBusy(false); } }}><input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} placeholder="App password" /><button className="primary" disabled={busy || !password}>{busy ? "Unlocking…" : "Unlock Afterglow"}</button>{error && <small className="form-error">{error}</small>}</form></div></main>;
+}
+
+function AgeGate({ onAccept }: { onAccept: () => void }) {
+  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">18+</div><span className="eyebrow">Adults only</span><h1>Before you enter.</h1><p>This private instance can host mature fictional roleplay. You must be at least 18 and of legal age where you live.</p><button className="primary" onClick={onAccept}>I am an adult — continue</button><small>Afterglow prohibits sexual content involving minors, non-consensual exploitation, or real people.</small></div></main>;
+}
+
+function CharacterStudio({ character, onClose, onSaved, onDeleted }: { character: Character | null; onClose: () => void; onSaved: (character: Character) => void; onDeleted: () => void }) {
+  const [form, setForm] = useState({ ...blankCharacter, ...(character ?? {}) }); const [idea, setIdea] = useState(""); const [tone, setTone] = useState("dramatic"); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  const field = (key: keyof typeof blankCharacter, value: string | boolean) => setForm((current) => ({ ...current, [key]: value }));
+  async function generate() { setBusy(true); setError(""); try { const data = await api<{ character: typeof blankCharacter }>("/api/characters/generate", { method: "POST", body: JSON.stringify({ idea, tone, nsfwEnabled: form.nsfwEnabled }) }); setForm((current) => ({ ...current, ...data.character })); } catch (e) { setError(e instanceof Error ? e.message : "Generation failed"); } finally { setBusy(false); } }
+  async function save() { setBusy(true); setError(""); try { const data = await api<{ character: Character }>(character ? `/api/characters/${character.id}` : "/api/characters", { method: character ? "PATCH" : "POST", body: JSON.stringify(form) }); onSaved(data.character); } catch (e) { setError(e instanceof Error ? e.message : "Save failed"); } finally { setBusy(false); } }
+  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><section className="studio modal"><header><div><span className="eyebrow">Character studio</span><h2>{character ? `Refine ${character.name}` : "Bring someone to life"}</h2></div><button className="icon-button" onClick={onClose}>×</button></header>
+    {!character && <div className="generator"><div><label>Start with an idea</label><textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="A sharp-witted art thief in her thirties who meets me at a rain-soaked Paris café…" rows={3} /></div><div className="generator-row"><select value={tone} onChange={(e) => setTone(e.target.value)}><option value="dramatic">Dramatic</option><option value="romantic">Romantic</option><option value="playful">Playful</option><option value="adventurous">Adventurous</option><option value="comforting">Comforting</option><option value="custom">Custom</option></select><button className="magic-button" disabled={busy || idea.trim().length < 8} onClick={() => void generate()}>✦ {busy ? "Dreaming…" : "Generate profile"}</button></div></div>}
+    <div className="form-grid"><label>Name<input value={form.name} onChange={(e) => field("name", e.target.value)} placeholder="Character name" /></label><label>Accent<input type="color" value={form.accent} onChange={(e) => field("accent", e.target.value)} /></label><label className="wide">Tagline<input value={form.tagline} onChange={(e) => field("tagline", e.target.value)} placeholder="A one-line hook" /></label><label className="wide">Avatar image URL <span>(optional)</span><input value={form.avatarUrl} onChange={(e) => field("avatarUrl", e.target.value)} placeholder="https://…" /></label><label className="wide">Backstory<textarea value={form.backstory} onChange={(e) => field("backstory", e.target.value)} rows={5} placeholder="History, relationships, formative events…" /></label><label className="wide">Personality & mannerisms<textarea value={form.personality} onChange={(e) => field("personality", e.target.value)} rows={4} /></label><label className="wide">Opening scenario<textarea value={form.scenario} onChange={(e) => field("scenario", e.target.value)} rows={3} /></label><label className="wide">First message<textarea value={form.greeting} onChange={(e) => field("greeting", e.target.value)} rows={4} /></label><label className="wide">Example dialogue<textarea value={form.exampleDialogue} onChange={(e) => field("exampleDialogue", e.target.value)} rows={3} /></label><label className="wide">Response directive<textarea value={form.responseDirective} onChange={(e) => field("responseDirective", e.target.value)} rows={3} placeholder="Voice, length, initiative, point of view…" /></label><label className="wide">Boundaries<textarea value={form.boundaries} onChange={(e) => field("boundaries", e.target.value)} rows={3} placeholder="Consent rules, topics to avoid, hard limits…" /></label><label className="toggle-row wide"><span><strong>Adult mode</strong><small>Allows consensual explicit roleplay between fictional adults.</small></span><input type="checkbox" checked={form.nsfwEnabled} onChange={(e) => field("nsfwEnabled", e.target.checked)} /></label></div>
+    {error && <div className="form-error">{error}</div>}<footer>{character && <button className="danger-button" onClick={async () => { if (!window.confirm(`Delete ${character.name} and every conversation and memory attached to them?`)) return; setBusy(true); try { await api(`/api/characters/${character.id}`, { method: "DELETE" }); onDeleted(); } catch (e) { setError(e instanceof Error ? e.message : "Delete failed"); setBusy(false); } }}>Delete character</button>}<span className="footer-spacer" /><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy || !form.name.trim()} onClick={() => void save()}>{busy ? "Saving…" : character ? "Save changes" : "Create character"}</button></footer>
+  </section></div>;
+}
+
+function MemoryDrawer({ character, conversation, memories, onClose, onChange }: { character: Character; conversation: Conversation | null; memories: Memory[]; onClose: () => void; onChange: () => void }) {
+  const [content, setContent] = useState(""); const [keywords, setKeywords] = useState(""); const [busy, setBusy] = useState(false);
+  async function updateMemory(memory: Memory, changes: Partial<Pick<Memory,"content"|"importance"|"keywords"|"pinned">>) {
+    await api(`/api/memories?id=${memory.id}`,{method:"PATCH",body:JSON.stringify({content:memory.content,importance:memory.importance,keywords:memory.keywords,pinned:memory.pinned,...changes})});
+    onChange();
+  }
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer"><header><div><span className="eyebrow">Continuity</span><h2>{character.name}&apos;s memories</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="memory-explainer"><span>⌁</span><p>Relevant memories are recalled automatically. Pinned journal entries are always present.</p>{conversation && <button disabled={busy || conversation.messageCount < 2} onClick={async () => { setBusy(true); try { await api("/api/memories/consolidate",{method:"POST",body:JSON.stringify({conversationId:conversation.id})}); onChange(); } finally { setBusy(false); } }}>{busy?"Remembering…":"Refresh now"}</button>}</div>{conversation?.summary && <section className="summary-card"><span className="eyebrow">Rolling story-so-far</span><p>{conversation.summary}</p></section>}<div className="memory-list">{memories.map((memory) => <article key={memory.id} className="memory-card"><div><span className={`memory-pin ${memory.pinned ? "pinned" : ""}`}>{memory.pinned ? "◆ Pinned" : `Importance ${memory.importance}/5`}</span><span className="memory-controls"><button onClick={() => void updateMemory(memory,{pinned:!memory.pinned})}>{memory.pinned?"Unpin":"Pin"}</button><button onClick={() => { const value=window.prompt("Edit memory",memory.content)?.trim(); if(value&&value!==memory.content) void updateMemory(memory,{content:value}); }}>Edit</button><button onClick={async () => { if(!window.confirm("Delete this memory?")) return; await api(`/api/memories?id=${memory.id}`, { method: "DELETE" }); onChange(); }}>Delete</button></span></div><p>{memory.content}</p>{memory.keywords.length > 0 && <small>{memory.keywords.map((key) => `#${key}`).join("  ")}</small>}</article>)}</div><form className="memory-form" onSubmit={async (e) => { e.preventDefault(); setBusy(true); try { await api("/api/memories", { method: "POST", body: JSON.stringify({ characterId: character.id, conversationId: conversation?.id ?? null, content, keywords: keywords.split(",").map((x) => x.trim()).filter(Boolean), importance: 5, pinned: true }) }); setContent(""); setKeywords(""); onChange(); } finally { setBusy(false); } }}><span className="eyebrow">Add pinned journal</span><textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="A fact, promise, preference, or piece of lore…" rows={3} /><input value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="Recall keywords, comma separated" /><button className="primary" disabled={busy || !content.trim()}>Add to memory</button></form></aside></div>;
+}
+
+function ConversationDrawer({ character, conversations, activeId, onClose, onNew, onSelect, onChange }: { character: Character; conversations: Conversation[]; activeId: string | null; onClose: () => void; onNew: () => void; onSelect: (id: string) => void; onChange: () => void }) {
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer conversation-drawer"><header><div><span className="eyebrow">Chat history</span><h2>Stories with {character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="drawer-action"><button className="primary" onClick={onNew}>＋ New chat break</button><p>Starts a fresh scene while keeping long-term memories and journals.</p></div><div className="conversation-list">{conversations.map((item) => <article key={item.id} className={`conversation-card ${item.id === activeId ? "active" : ""}`}><button className="conversation-main" onClick={() => onSelect(item.id)}><strong>{item.title}</strong><span>{item.messageCount} messages · {new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(item.updatedAt))}</span></button><div><button title="Rename" onClick={async () => { const title = window.prompt("Conversation title",item.title)?.trim(); if (!title || title === item.title) return; await api(`/api/conversations/${item.id}`,{method:"PATCH",body:JSON.stringify({title})}); onChange(); }}>✎</button><button title="Delete" onClick={async () => { if (!window.confirm(`Delete “${item.title}”? Long-term character memories will remain.`)) return; await api(`/api/conversations/${item.id}`,{method:"DELETE"}); onChange(); }}>⌫</button></div></article>)}</div></aside></div>;
+}
+
+function SettingsDrawer({ settings, onClose, onSaved, onImported }: { settings: AppSettings; onClose: () => void; onSaved: (settings: AppSettings) => void; onImported: () => void }) {
+  const [form,setForm] = useState(settings); const [usage,setUsage] = useState<UsageSummary | null>(null); const [busy,setBusy] = useState(false); const [error,setError] = useState(""); const [notice,setNotice] = useState("");
+  useEffect(() => { api<{usage:UsageSummary}>("/api/usage").then((data) => setUsage(data.usage)).catch(() => undefined); }, []);
+  const number = (value: number) => new Intl.NumberFormat(undefined,{notation:"compact",maximumFractionDigits:1}).format(value);
+  async function save() { setBusy(true); setError(""); try { const data = await api<{settings:AppSettings}>("/api/settings",{method:"PATCH",body:JSON.stringify(form)}); onSaved(data.settings); } catch (e) { setError(e instanceof Error ? e.message : "Could not save settings"); setBusy(false); } }
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer settings-drawer"><header><div><span className="eyebrow">Instance settings</span><h2>Make it yours</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="settings-body"><section><span className="eyebrow">Your identity</span><label>Your name<input value={form.ownerName} onChange={(e) => setForm({...form,ownerName:e.target.value})} /></label><label>Profile the characters should know<textarea rows={4} value={form.ownerProfile} onChange={(e) => setForm({...form,ownerProfile:e.target.value})} placeholder="Preferences, appearance, pronouns, relationship context…" /></label></section><section><span className="eyebrow">Model & response</span><label>DeepSeek model<input list="models" value={form.model} onChange={(e) => setForm({...form,model:e.target.value})} /><datalist id="models"><option value="deepseek-v4-flash" /><option value="deepseek-v4-pro" /></datalist></label><div className="settings-pair"><label>Creativity <input type="number" min="0" max="2" step="0.05" value={form.temperature} onChange={(e) => setForm({...form,temperature:Number(e.target.value)})} /></label><label>Max reply tokens <input type="number" min="256" max="8000" step="128" value={form.maxTokens} onChange={(e) => setForm({...form,maxTokens:Number(e.target.value)})} /></label></div></section><section><span className="eyebrow">Memory tuning</span><div className="settings-pair"><label>Recent messages <input type="number" min="8" max="100" value={form.contextMessages} onChange={(e) => setForm({...form,contextMessages:Number(e.target.value)})} /></label><label>Memories recalled <input type="number" min="1" max="20" value={form.memoryLimit} onChange={(e) => setForm({...form,memoryLimit:Number(e.target.value)})} /></label></div><label>Consolidate every N messages <input type="number" min="6" max="50" value={form.consolidationInterval} onChange={(e) => setForm({...form,consolidationInterval:Number(e.target.value)})} /></label></section>{usage && <section><span className="eyebrow">Usage ledger</span><div className="usage-grid"><div><strong>{number(usage.requests)}</strong><small>replies</small></div><div><strong>{number(usage.promptTokens)}</strong><small>input tokens</small></div><div><strong>{number(usage.completionTokens)}</strong><small>output tokens</small></div><div><strong>{number(usage.cacheHitTokens)}</strong><small>cached tokens</small></div></div><p className="setting-note">Token counts are recorded locally. Prices are intentionally not hard-coded because provider rates change.</p></section>}<section><span className="eyebrow">Backup & portability</span><div className="data-actions"><a className="secondary" href="/api/backup" download>↓ Export JSON backup</a><label className="secondary file-button">↑ Import backup<input type="file" accept="application/json,.json" onChange={async (e) => { const file=e.target.files?.[0]; if(!file) return; if(!window.confirm("Import this backup as additional characters and chats?")) return; setBusy(true); setError(""); try { const result=await api<{imported:Record<string,number>}>("/api/backup",{method:"POST",body:await file.text()}); setNotice(`Imported ${result.imported.characters} characters and ${result.imported.messages} messages.`); await onImported(); } catch(err) { setError(err instanceof Error?err.message:"Import failed"); } finally { setBusy(false); e.target.value=""; } }} /></label></div><p className="setting-note">Backups include profiles, chats, memories, and these settings—never passwords or API keys.</p></section>{notice && <div className="success-note">{notice}</div>}{error && <div className="form-error">{error}</div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={() => void save()}>{busy?"Working…":"Save settings"}</button></footer></aside></div>;
+}
