@@ -16,6 +16,12 @@ describe("character validation", () => {
   it("requires a meaningful generation concept", () => {
     expect(generateCharacterSchema.safeParse({ idea: "elf" }).success).toBe(false);
   });
+
+  it("accepts a large unstructured character dump", () => {
+    const parsed = generateCharacterSchema.parse({ idea: "Name: Mara\n" + "Detailed lore. ".repeat(1000), mode: "dump" });
+    expect(parsed.mode).toBe("dump");
+    expect(parsed.idea.length).toBeGreaterThan(10000);
+  });
 });
 
 describe("instance settings and backups", () => {

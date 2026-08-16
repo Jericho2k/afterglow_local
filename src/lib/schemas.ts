@@ -21,7 +21,8 @@ export const characterSchema = z.object({
 });
 
 export const generateCharacterSchema = z.object({
-  idea: text(2000).min(8),
+  idea: text(50000).min(8),
+  mode: z.enum(["idea", "dump"]).default("idea"),
   tone: z.enum(["romantic", "dramatic", "playful", "adventurous", "comforting", "custom"]).default("dramatic"),
   nsfwEnabled: z.boolean().default(false),
 });

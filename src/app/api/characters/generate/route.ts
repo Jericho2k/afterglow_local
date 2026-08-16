@@ -14,10 +14,10 @@ export async function POST(request: Request) {
     const settings = await getSettings();
     const raw = await completion([
       { role: "system", content: "You are an expert character designer. Return valid JSON only." },
-      { role: "user", content: characterGenerationPrompt(input.data.idea, input.data.tone, input.data.nsfwEnabled) },
-    ], { json: true, maxTokens: 2200, temperature: 0.9, model: settings.model });
+      { role: "user", content: characterGenerationPrompt(input.data.idea, input.data.tone, input.data.nsfwEnabled, input.data.mode) },
+    ], { json: true, maxTokens: input.data.mode === "dump" ? 4000 : 2400, temperature: input.data.mode === "dump" ? 0.35 : 0.9, model: settings.model });
     const generated = parseJson<Record<string, unknown>>(raw);
-    const character = characterSchema.parse({ ...generated, avatarUrl: "", nsfwEnabled: input.data.nsfwEnabled });
+    const character = characterSchema.parse({ ...generated, nsfwEnabled: input.data.nsfwEnabled });
     return Response.json({ character });
   } catch (error) {
     console.error("Character generation failed", error);
