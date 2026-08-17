@@ -23,3 +23,4 @@ body{background:radial-gradient(circle at 70% 0%,rgba(123,50,80,.16),transparent
 @media(max-width:500px){.sidebar.open .new-character{justify-content:flex-start}.sidebar.open .sidebar-links{display:flex}.conversation-preview{max-width:42vw}}
 .message-actions button.continue-action{border:1px solid rgba(232,121,169,.22);background:rgba(232,121,169,.07);border-radius:7px;padding:4px 8px;color:var(--rose2)}.message-actions button.continue-action:hover{background:rgba(232,121,169,.14)}
 @media(max-width:760px){input,textarea,select{font-size:16px!important}}
+.settings-body select{width:100%;background:#120f13;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:10px 11px}

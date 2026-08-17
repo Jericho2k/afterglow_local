@@ -42,15 +42,16 @@ export async function completion(
 
 export async function streamCompletion(
   messages: ChatMessage[],
-  options: { signal?: AbortSignal; model?: string; maxTokens?: number; temperature?: number } = {},
+  options: { signal?: AbortSignal; model?: string; maxTokens?: number; temperature?: number; thinking?: boolean } = {},
 ) {
+  const thinking = Boolean(options.thinking);
   const response = await request({
     model: options.model || model(), messages,
-    thinking: { type: "disabled" },
+    thinking: { type: thinking ? "enabled" : "disabled" },
     stream: true,
     stream_options: { include_usage: true },
     max_tokens: options.maxTokens ?? 1800,
-    temperature: options.temperature ?? 0.95,
+    ...(thinking ? {} : { temperature: options.temperature ?? 0.95 }),
   }, options.signal);
   if (!response.body) throw new Error("DeepSeek returned no stream");
   return response.body;

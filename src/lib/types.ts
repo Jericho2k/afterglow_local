@@ -51,6 +51,7 @@ export type AppSettings = {
   ownerName: string;
   ownerProfile: string;
   model: string;
+  roleplayPreset: "immersive" | "raw" | "cinematic" | "deliberate";
   temperature: number;
   maxTokens: number;
   contextMessages: number;

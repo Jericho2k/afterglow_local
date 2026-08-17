@@ -63,6 +63,7 @@ export const settingsSchema = z.object({
   ownerName: text(80).min(1).default("You"),
   ownerProfile: text(5000).default(""),
   model: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek-v4-flash"),
+  roleplayPreset: z.enum(["immersive", "raw", "cinematic", "deliberate"]).default("immersive"),
   temperature: z.number().min(0).max(2).default(0.95),
   maxTokens: z.number().int().min(256).max(8000).default(1800),
   contextMessages: z.number().int().min(8).max(100).default(30),

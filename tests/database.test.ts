@@ -16,6 +16,7 @@ describe("PostgreSQL persistence", () => {
     expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","usage_events","app_settings"]));
     const settings = await getSettings();
     expect(settings.model).toMatch(/^deepseek-/);
+    expect(settings.roleplayPreset).toBe("immersive");
     expect(settings.memoryLimit).toBe(8);
   });
 

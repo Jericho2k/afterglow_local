@@ -26,13 +26,15 @@ describe("character validation", () => {
 
 describe("instance settings and backups", () => {
   it("accepts current DeepSeek model controls within bounded ranges", () => {
-    const settings = settingsSchema.parse({ ownerName: "Alex", model: "deepseek-v4-pro", temperature: 1.1, maxTokens: 2400 });
+    const settings = settingsSchema.parse({ ownerName: "Alex", model: "deepseek-v4-pro", roleplayPreset:"raw", temperature: 1.1, maxTokens: 2400 });
     expect(settings.model).toBe("deepseek-v4-pro");
+    expect(settings.roleplayPreset).toBe("raw");
     expect(settings.contextMessages).toBe(30);
   });
 
   it("rejects unsafe model identifiers and oversized context controls", () => {
     expect(settingsSchema.safeParse({ ownerName: "Alex", model: "https://evil.test/model" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ ownerName: "Alex", roleplayPreset:"anything-goes" }).success).toBe(false);
     expect(settingsSchema.safeParse({ ownerName: "Alex", contextMessages: 1000 }).success).toBe(false);
   });
 

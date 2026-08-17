@@ -29,4 +29,16 @@ describe("DeepSeek client", () => {
     const stream = await streamCompletion([{ role: "user", content: "Hi" }], { model: "deepseek-v4-flash" });
     expect(stream).toBeInstanceOf(ReadableStream);
   });
+
+  it("enables thinking for deliberate roleplay without unsupported sampling controls", async () => {
+    process.env.DEEPSEEK_API_KEY = "test-secret";
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.thinking).toEqual({ type:"enabled" });
+      expect(body.temperature).toBeUndefined();
+      return new Response("data: [DONE]\n\n", { headers: { "Content-Type":"text/event-stream" } });
+    });
+    vi.stubGlobal("fetch",fetchMock);
+    await streamCompletion([{ role:"user",content:"Plan carefully" }], { model:"deepseek-v4-pro", thinking:true, temperature:0.4 });
+  });
 });

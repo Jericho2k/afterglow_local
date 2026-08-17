@@ -82,6 +82,7 @@ async function schema() {
       owner_name text NOT NULL DEFAULT 'You',
       owner_profile text NOT NULL DEFAULT '',
       model text NOT NULL DEFAULT 'deepseek-v4-flash',
+      roleplay_preset text NOT NULL DEFAULT 'immersive',
       temperature double precision NOT NULL DEFAULT 0.95,
       max_tokens integer NOT NULL DEFAULT 1800,
       context_messages integer NOT NULL DEFAULT 30,
@@ -92,6 +93,7 @@ async function schema() {
   `);
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS roleplay_preset text NOT NULL DEFAULT 'immersive'");
   await pool().query(
     "INSERT INTO app_settings (id, owner_name, owner_profile, model) VALUES ('owner',$1,$2,$3) ON CONFLICT (id) DO NOTHING",
     [process.env.OWNER_NAME || "You", process.env.OWNER_PROFILE || "", process.env.DEEPSEEK_MODEL || "deepseek-v4-flash"],
@@ -168,8 +170,12 @@ export function memoryFromRow(row: Record<string, unknown>): Memory {
 }
 
 export function settingsFromRow(row: Record<string, unknown>): AppSettings {
+  const storedPreset = String(row.roleplay_preset || "immersive");
+  const roleplayPreset: AppSettings["roleplayPreset"] = ["immersive","raw","cinematic","deliberate"].includes(storedPreset)
+    ? storedPreset as AppSettings["roleplayPreset"] : "immersive";
   return {
     ownerName: String(row.owner_name), ownerProfile: String(row.owner_profile), model: String(row.model),
+    roleplayPreset,
     temperature: Number(row.temperature), maxTokens: Number(row.max_tokens), contextMessages: Number(row.context_messages),
     consolidationInterval: Number(row.consolidation_interval), memoryLimit: Number(row.memory_limit),
   };

@@ -13,9 +13,9 @@ export async function PATCH(request: Request) {
   if (!parsed.success) return Response.json({ error: "Invalid settings", details: parsed.error.flatten() }, { status: 400 });
   const s = parsed.data;
   await query(
-    `UPDATE app_settings SET owner_name=$1,owner_profile=$2,model=$3,temperature=$4,max_tokens=$5,
-     context_messages=$6,consolidation_interval=$7,memory_limit=$8,updated_at=now() WHERE id='owner'`,
-    [s.ownerName,s.ownerProfile,s.model,s.temperature,s.maxTokens,s.contextMessages,s.consolidationInterval,s.memoryLimit],
+    `UPDATE app_settings SET owner_name=$1,owner_profile=$2,model=$3,roleplay_preset=$4,temperature=$5,max_tokens=$6,
+     context_messages=$7,consolidation_interval=$8,memory_limit=$9,updated_at=now() WHERE id='owner'`,
+    [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.consolidationInterval,s.memoryLimit],
   );
   return Response.json({ settings: await getSettings() });
 }

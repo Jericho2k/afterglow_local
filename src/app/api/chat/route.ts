@@ -55,7 +55,7 @@ export async function POST(request: Request) {
     upstream = await streamCompletion([
       { role: "system", content: system },
       ...modelHistory,
-    ], { signal: request.signal, model: settings.model, maxTokens: settings.maxTokens, temperature: settings.temperature });
+    ], { signal: request.signal, model: settings.model, maxTokens: settings.maxTokens, temperature: settings.temperature, thinking: settings.roleplayPreset === "deliberate" });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Model request failed" }, { status: 502 });
   }

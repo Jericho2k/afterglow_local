@@ -13,8 +13,18 @@ describe("roleplay prompt", () => {
   it("includes continuity and adult-only safety boundaries", () => {
     const prompt = roleplayPrompt(character, "They made a promise.", []);
     expect(prompt).toContain("They made a promise.");
-    expect(prompt).toContain("fictional adults aged 18 or older");
+    expect(prompt).toContain("fictional adult aged 21 or older");
     expect(prompt).toContain("Never write the user's dialogue");
+    expect(prompt).toContain("independent motives");
+    expect(prompt).toContain("Do not merely restate");
+  });
+
+  it("supports a direct but autonomous adult roleplay preset", () => {
+    const prompt = roleplayPrompt(character, "", [], { ownerName:"Alex", ownerProfile:"", roleplayPreset:"raw" });
+    expect(prompt).toContain("RAW ADULT");
+    expect(prompt).toContain("do not sanitize");
+    expect(prompt).toContain("they are not wish-fulfillment puppets");
+    expect(prompt).toContain("initiate, hesitate, negotiate, refuse, stop, or leave");
   });
 
   it("continues the scene without inventing a user turn", () => {
