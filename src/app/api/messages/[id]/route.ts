@@ -16,16 +16,24 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       const variant = currentMessage.variants[parsed.data.variantIndex];
       if (currentMessage.role !== "assistant" || variant === undefined) return null;
       const updated = await client.query("UPDATE messages SET content=$1,selected_variant=$2 WHERE id=$3 RETURNING *", [variant,parsed.data.variantIndex,id]);
+      if (!updated.rowCount) return null;
       await client.query("UPDATE conversations SET updated_at=now() WHERE id=$1", [row.conversation_id]);
       return messageFromRow(updated.rows[0]);
     }
     if (typeof parsed.data.content !== "string") return null;
     if (parsed.data.truncateAfter) {
-      await client.query("DELETE FROM messages WHERE conversation_id=$1 AND created_at > $2", [row.conversation_id,row.created_at]);
+      await client.query(
+        `DELETE FROM messages WHERE conversation_id=$1 AND (
+          created_at > (SELECT created_at FROM messages WHERE id=$2)
+          OR (created_at = (SELECT created_at FROM messages WHERE id=$2) AND id::text > $2)
+        )`,
+        [row.conversation_id,id],
+      );
     }
     const variants = currentMessage.role === "assistant" ? [...currentMessage.variants] : [];
     if (currentMessage.role === "assistant") variants[currentMessage.selectedVariant] = parsed.data.content;
     const updated = await client.query("UPDATE messages SET content=$1,variants=$2::jsonb WHERE id=$3 RETURNING *", [parsed.data.content,JSON.stringify(variants),id]);
+    if (!updated.rowCount) return null;
     await client.query(
       "UPDATE conversations SET message_count=(SELECT COUNT(*) FROM messages WHERE conversation_id=$1),updated_at=now() WHERE id=$1",
       [row.conversation_id],
@@ -43,7 +51,13 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
     const current = await client.query("SELECT * FROM messages WHERE id=$1 FOR UPDATE", [id]);
     if (!current.rowCount) return null;
     const row = current.rows[0];
-    await client.query("DELETE FROM messages WHERE conversation_id=$1 AND created_at >= $2", [row.conversation_id,row.created_at]);
+    await client.query(
+      `DELETE FROM messages WHERE conversation_id=$1 AND (
+        created_at > (SELECT created_at FROM messages WHERE id=$2)
+        OR (created_at = (SELECT created_at FROM messages WHERE id=$2) AND id::text >= $2)
+      )`,
+      [row.conversation_id,id],
+    );
     await client.query(
       "UPDATE conversations SET message_count=(SELECT COUNT(*) FROM messages WHERE conversation_id=$1),updated_at=now() WHERE id=$1",
       [row.conversation_id],

@@ -64,4 +64,26 @@ describe("PostgreSQL persistence", () => {
     expect(message.selectedVariant).toBe(1);
     expect(message.content).toBe("Second");
   });
+
+  it("truncates after an edited message without deleting the edited message itself", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    const userId = crypto.randomUUID(); const assistantId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Edit test')",[conversationId,characterId]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'user','Before',$3)",[userId,conversationId,"2026-08-17T10:42:00.123456Z"]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant','Later',$3)",[assistantId,conversationId,"2026-08-17T10:42:01.123456Z"]);
+    await transaction(async (client) => {
+      await client.query(
+        `DELETE FROM messages WHERE conversation_id=$1 AND (
+          created_at > (SELECT created_at FROM messages WHERE id=$2)
+          OR (created_at = (SELECT created_at FROM messages WHERE id=$2) AND id::text > $2)
+        )`,
+        [conversationId,userId],
+      );
+      const updated = await client.query("UPDATE messages SET content='After' WHERE id=$1 RETURNING *",[userId]);
+      expect(updated.rowCount).toBe(1);
+    });
+    const remaining = await query<{ id: string; content: string }>("SELECT id,content FROM messages WHERE conversation_id=$1",[conversationId]);
+    expect(remaining.rows).toEqual([{ id:userId, content:"After" }]);
+  });
 });
