@@ -18,6 +18,7 @@ describe("PostgreSQL persistence", () => {
     expect(settings.model).toMatch(/^deepseek-/);
     expect(settings.roleplayPreset).toBe("immersive");
     expect(settings.memoryLimit).toBe(8);
+    expect(settings.contextTokenBudget).toBe(12000);
   });
 
   it("persists a complete character conversation with cascading cleanup", async () => {
@@ -64,6 +65,7 @@ describe("PostgreSQL persistence", () => {
     expect(message.variants).toEqual(["First","Second"]);
     expect(message.selectedVariant).toBe(1);
     expect(message.content).toBe("Second");
+    expect(message.memoryIds).toEqual([]);
   });
 
   it("truncates after an edited message without deleting the edited message itself", async () => {

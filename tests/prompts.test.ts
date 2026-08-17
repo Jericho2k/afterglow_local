@@ -17,6 +17,10 @@ describe("roleplay prompt", () => {
     expect(prompt).toContain("Never write the user's dialogue");
     expect(prompt).toContain("independent motives");
     expect(prompt).toContain("Do not merely restate");
+    expect(prompt).toContain("CURRENT CONTINUITY");
+    expect(prompt).toContain("Initial scenario / premise");
+    expect(prompt).toContain("Never reset a developed relationship");
+    expect(prompt).toContain("Do not invent an offscreen move");
   });
 
   it("supports a direct but autonomous adult roleplay preset", () => {

@@ -66,8 +66,8 @@ export async function POST(request: Request) {
       const characterId = characterIds.get(item.characterId); if (!characterId) continue;
       const conversationId = item.conversationId ? conversationIds.get(item.conversationId) ?? null : null;
       await client.query(
-        "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords,pinned) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-        [randomUUID(),characterId,conversationId,item.content,item.importance,item.keywords,item.pinned],
+        "INSERT INTO memories (id,character_id,conversation_id,content,kind,importance,keywords,pinned) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        [randomUUID(),characterId,conversationId,item.content,item.kind,item.importance,item.keywords,item.pinned],
       );
       memoryCount += 1;
     }
@@ -75,8 +75,8 @@ export async function POST(request: Request) {
       const s = backup.settings;
       await client.query(
         `UPDATE app_settings SET owner_name=$1,owner_profile=$2,model=$3,roleplay_preset=$4,temperature=$5,max_tokens=$6,
-         context_messages=$7,consolidation_interval=$8,memory_limit=$9,updated_at=now() WHERE id='owner'`,
-        [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.consolidationInterval,s.memoryLimit],
+         context_messages=$7,context_token_budget=$8,consolidation_interval=$9,memory_limit=$10,updated_at=now() WHERE id='owner'`,
+        [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit],
       );
     }
     return { characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount };

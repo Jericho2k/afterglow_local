@@ -14,8 +14,8 @@ export async function PATCH(request: Request) {
   const s = parsed.data;
   await query(
     `UPDATE app_settings SET owner_name=$1,owner_profile=$2,model=$3,roleplay_preset=$4,temperature=$5,max_tokens=$6,
-     context_messages=$7,consolidation_interval=$8,memory_limit=$9,updated_at=now() WHERE id='owner'`,
-    [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.consolidationInterval,s.memoryLimit],
+     context_messages=$7,context_token_budget=$8,consolidation_interval=$9,memory_limit=$10,updated_at=now() WHERE id='owner'`,
+    [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit],
   );
   return Response.json({ settings: await getSettings() });
 }

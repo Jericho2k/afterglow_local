@@ -37,6 +37,7 @@ export const memorySchema = z.object({
   characterId: z.string().uuid(),
   conversationId: z.string().uuid().nullable().optional(),
   content: text(3000).min(1),
+  kind: z.enum(["identity", "relationship", "event", "promise", "preference", "boundary", "open_loop"]).default("event"),
   importance: z.number().int().min(1).max(5).default(3),
   keywords: z.array(text(80)).max(12).default([]),
   pinned: z.boolean().default(false),
@@ -44,6 +45,7 @@ export const memorySchema = z.object({
 
 export const memoryUpdateSchema = z.object({
   content: text(3000).min(1),
+  kind: z.enum(["identity", "relationship", "event", "promise", "preference", "boundary", "open_loop"]),
   importance: z.number().int().min(1).max(5),
   keywords: z.array(text(80)).max(12),
   pinned: z.boolean(),
@@ -67,6 +69,7 @@ export const settingsSchema = z.object({
   temperature: z.number().min(0).max(2).default(0.95),
   maxTokens: z.number().int().min(256).max(8000).default(1800),
   contextMessages: z.number().int().min(8).max(100).default(30),
+  contextTokenBudget: z.number().int().min(4000).max(100000).default(12000),
   consolidationInterval: z.number().int().min(6).max(50).default(10),
   memoryLimit: z.number().int().min(1).max(20).default(8),
 });
@@ -84,6 +87,7 @@ export const backupSchema = z.object({
   })).max(100000),
   memories: z.array(z.object({
     characterId: z.string().min(1), conversationId: z.string().nullable().optional(), content: text(3000).min(1),
+    kind: z.enum(["identity", "relationship", "event", "promise", "preference", "boundary", "open_loop"]).default("event"),
     importance: z.number().int().min(1).max(5).default(3), keywords: z.array(text(80)).max(12).default([]), pinned: z.boolean().default(false),
   })).max(20000),
 });

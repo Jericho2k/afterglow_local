@@ -33,14 +33,18 @@ export type Message = {
   content: string;
   variants: string[];
   selectedVariant: number;
+  memoryIds: string[];
   createdAt: string;
 };
+
+export type MemoryKind = "identity" | "relationship" | "event" | "promise" | "preference" | "boundary" | "open_loop";
 
 export type Memory = {
   id: string;
   characterId: string;
   conversationId: string | null;
   content: string;
+  kind: MemoryKind;
   importance: number;
   keywords: string[];
   pinned: boolean;
@@ -55,6 +59,7 @@ export type AppSettings = {
   temperature: number;
   maxTokens: number;
   contextMessages: number;
+  contextTokenBudget: number;
   consolidationInterval: number;
   memoryLimit: number;
 };

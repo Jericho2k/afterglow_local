@@ -4,6 +4,7 @@ import { characterFromRow, getSettings, messageFromRow, query } from "@/lib/db";
 import { streamCompletion } from "@/lib/deepseek";
 import { maybeConsolidate, relevantMemories } from "@/lib/memory";
 import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
+import { recallText, selectRecentMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 
@@ -23,6 +24,16 @@ export async function POST(request: Request) {
   if (!characterResult.rowCount) return Response.json({ error: "Character not found" }, { status: 404 });
   const character = characterFromRow(characterResult.rows[0]);
   const settings = await getSettings();
+  let currentSummary = String(row.summary || "");
+  // If a previous background consolidation was interrupted by a deploy or cold
+  // shutdown, catch it up before building the next prompt.
+  const caughtUp = await maybeConsolidate(conversationId).catch((error) => {
+    console.error("Pre-reply memory consolidation failed", error); return false;
+  });
+  if (caughtUp) {
+    const refreshed = await query("SELECT summary FROM conversations WHERE id=$1", [conversationId]);
+    currentSummary = String(refreshed.rows[0]?.summary || currentSummary);
+  }
   let regenerateTarget: ReturnType<typeof messageFromRow> | null = null;
   let userMessageId: string | null = null;
 
@@ -40,13 +51,14 @@ export async function POST(request: Request) {
     if (last.rows[0]?.role === "assistant") regenerateTarget = messageFromRow(last.rows[0]);
   }
 
-  const historyResult = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT $2", [conversationId, settings.contextMessages]);
-  const history = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
+  const historyResult = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2", [conversationId, settings.contextMessages]);
+  const availableHistory = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
+  const history = selectRecentMessages(availableHistory, settings.contextMessages, settings.contextTokenBudget);
   const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
-  const recallContext = lastUserInput || history.at(-1)?.content || character.scenario || character.name;
+  const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
   const memories = await relevantMemories(character.id, recallContext, settings.memoryLimit);
-  const system = roleplayPrompt(character, String(row.summary || ""), memories, settings);
+  const system = roleplayPrompt(character, currentSummary, memories, settings);
   const modelHistory = history.map((message) => ({ role: message.role, content: message.content }));
   if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
 
@@ -94,11 +106,11 @@ export async function POST(request: Request) {
         let selectedVariant: number;
         if (regenerateTarget) {
           variants = [...regenerateTarget.variants,assistant]; selectedVariant = variants.length - 1;
-          await query("UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3 WHERE id=$4", [assistant,JSON.stringify(variants),selectedVariant,assistantId]);
+          await query("UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[] WHERE id=$5", [assistant,JSON.stringify(variants),selectedVariant,memories.map((memory) => memory.id),assistantId]);
           await query("UPDATE conversations SET updated_at=now() WHERE id=$1", [conversationId]);
         } else {
           variants = [assistant]; selectedVariant = 0;
-          await query("INSERT INTO messages (id,conversation_id,role,content,variants,selected_variant) VALUES ($1,$2,'assistant',$3,$4::jsonb,0)", [assistantId,conversationId,assistant,JSON.stringify(variants)]);
+          await query("INSERT INTO messages (id,conversation_id,role,content,variants,selected_variant,memory_ids) VALUES ($1,$2,'assistant',$3,$4::jsonb,0,$5::uuid[])", [assistantId,conversationId,assistant,JSON.stringify(variants),memories.map((memory) => memory.id)]);
           await query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1", [conversationId]);
         }
         if (usage) await query(

@@ -17,8 +17,8 @@ export async function POST(request: Request) {
   if (!parsed.success) return Response.json({ error: "Invalid memory", details: parsed.error.flatten() }, { status: 400 });
   const m = parsed.data;
   const result = await query(
-    "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords,pinned) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-    [randomUUID(),m.characterId,m.conversationId ?? null,m.content,m.importance,m.keywords,m.pinned],
+    "INSERT INTO memories (id,character_id,conversation_id,content,kind,importance,keywords,pinned) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
+    [randomUUID(),m.characterId,m.conversationId ?? null,m.content,m.kind,m.importance,m.keywords,m.pinned],
   );
   return Response.json({ memory: memoryFromRow(result.rows[0]) }, { status: 201 });
 }
@@ -39,8 +39,8 @@ export async function PATCH(request: Request) {
   if (!parsed.success) return Response.json({ error: "Invalid memory" }, { status: 400 });
   const m = parsed.data;
   const result = await query(
-    "UPDATE memories SET content=$1,importance=$2,keywords=$3,pinned=$4,updated_at=now() WHERE id=$5 RETURNING *",
-    [m.content,m.importance,m.keywords,m.pinned,id],
+    "UPDATE memories SET content=$1,kind=$2,importance=$3,keywords=$4,pinned=$5,updated_at=now() WHERE id=$6 RETURNING *",
+    [m.content,m.kind,m.importance,m.keywords,m.pinned,id],
   );
   if (!result.rowCount) return Response.json({ error: "Memory not found" }, { status: 404 });
   return Response.json({ memory: memoryFromRow(result.rows[0]) });

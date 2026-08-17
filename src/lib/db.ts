@@ -51,6 +51,7 @@ async function schema() {
       content text NOT NULL,
       variants jsonb NOT NULL DEFAULT '[]'::jsonb,
       selected_variant integer NOT NULL DEFAULT 0,
+      memory_ids uuid[] NOT NULL DEFAULT '{}',
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS messages_conversation_time_idx ON messages(conversation_id, created_at);
@@ -59,6 +60,7 @@ async function schema() {
       character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       conversation_id uuid REFERENCES conversations(id) ON DELETE CASCADE,
       content text NOT NULL,
+      kind text NOT NULL DEFAULT 'event',
       importance smallint NOT NULL DEFAULT 3 CHECK (importance BETWEEN 1 AND 5),
       keywords text[] NOT NULL DEFAULT '{}',
       pinned boolean NOT NULL DEFAULT false,
@@ -86,6 +88,7 @@ async function schema() {
       temperature double precision NOT NULL DEFAULT 0.95,
       max_tokens integer NOT NULL DEFAULT 1800,
       context_messages integer NOT NULL DEFAULT 30,
+      context_token_budget integer NOT NULL DEFAULT 12000,
       consolidation_interval integer NOT NULL DEFAULT 10,
       memory_limit integer NOT NULL DEFAULT 8,
       updated_at timestamptz NOT NULL DEFAULT now()
@@ -93,7 +96,10 @@ async function schema() {
   `);
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'event'");
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS roleplay_preset text NOT NULL DEFAULT 'immersive'");
+  await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS context_token_budget integer NOT NULL DEFAULT 12000");
   await pool().query(
     "INSERT INTO app_settings (id, owner_name, owner_profile, model) VALUES ('owner',$1,$2,$3) ON CONFLICT (id) DO NOTHING",
     [process.env.OWNER_NAME || "You", process.env.OWNER_PROFILE || "", process.env.DEEPSEEK_MODEL || "deepseek-v4-flash"],
@@ -158,13 +164,14 @@ export function messageFromRow(row: Record<string, unknown>): Message {
   const variants = role === "assistant" ? (stored.length ? stored : [content]) : [];
   const requested = Number(row.selected_variant ?? 0);
   const selectedVariant = variants.length ? Math.min(Math.max(Number.isInteger(requested) ? requested : 0, 0), variants.length - 1) : 0;
-  return { id: String(row.id), conversationId: String(row.conversation_id), role, content, variants, selectedVariant, createdAt: new Date(String(row.created_at)).toISOString() };
+  return { id: String(row.id), conversationId: String(row.conversation_id), role, content, variants, selectedVariant,
+    memoryIds: Array.isArray(row.memory_ids) ? row.memory_ids.map(String) : [], createdAt: new Date(String(row.created_at)).toISOString() };
 }
 
 export function memoryFromRow(row: Record<string, unknown>): Memory {
   return {
     id: String(row.id), characterId: String(row.character_id), conversationId: row.conversation_id ? String(row.conversation_id) : null,
-    content: String(row.content), importance: Number(row.importance), keywords: (row.keywords as string[]) ?? [],
+    content: String(row.content), kind: (["identity","relationship","event","promise","preference","boundary","open_loop"].includes(String(row.kind)) ? String(row.kind) : "event") as Memory["kind"], importance: Number(row.importance), keywords: (row.keywords as string[]) ?? [],
     pinned: Boolean(row.pinned), createdAt: new Date(String(row.created_at)).toISOString(),
   };
 }
@@ -176,7 +183,7 @@ export function settingsFromRow(row: Record<string, unknown>): AppSettings {
   return {
     ownerName: String(row.owner_name), ownerProfile: String(row.owner_profile), model: String(row.model),
     roleplayPreset,
-    temperature: Number(row.temperature), maxTokens: Number(row.max_tokens), contextMessages: Number(row.context_messages),
+    temperature: Number(row.temperature), maxTokens: Number(row.max_tokens), contextMessages: Number(row.context_messages), contextTokenBudget: Number(row.context_token_budget || 12000),
     consolidationInterval: Number(row.consolidation_interval), memoryLimit: Number(row.memory_limit),
   };
 }

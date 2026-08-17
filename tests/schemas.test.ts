@@ -30,12 +30,14 @@ describe("instance settings and backups", () => {
     expect(settings.model).toBe("deepseek-v4-pro");
     expect(settings.roleplayPreset).toBe("raw");
     expect(settings.contextMessages).toBe(30);
+    expect(settings.contextTokenBudget).toBe(12000);
   });
 
   it("rejects unsafe model identifiers and oversized context controls", () => {
     expect(settingsSchema.safeParse({ ownerName: "Alex", model: "https://evil.test/model" }).success).toBe(false);
     expect(settingsSchema.safeParse({ ownerName: "Alex", roleplayPreset:"anything-goes" }).success).toBe(false);
     expect(settingsSchema.safeParse({ ownerName: "Alex", contextMessages: 1000 }).success).toBe(false);
+    expect(settingsSchema.safeParse({ ownerName: "Alex", contextTokenBudget: 1000 }).success).toBe(false);
   });
 
   it("validates a portable versioned backup", () => {
