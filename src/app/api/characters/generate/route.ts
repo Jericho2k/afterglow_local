@@ -1,6 +1,6 @@
 import { requireAuth } from "@/lib/auth";
 import { completion, parseJson } from "@/lib/deepseek";
-import { characterGenerationPrompt } from "@/lib/prompts";
+import { characterGenerationPrompt, characterGenerationTokenBudget } from "@/lib/prompts";
 import { characterSchema, generateCharacterSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { getSettings } from "@/lib/db";
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     const raw = await completion([
       { role: "system", content: "You are an expert character designer. Return valid JSON only." },
       { role: "user", content: characterGenerationPrompt(input.data.idea, input.data.tone, input.data.nsfwEnabled, input.data.mode) },
-    ], { json: true, maxTokens: input.data.mode === "dump" ? 4000 : 2400, temperature: input.data.mode === "dump" ? 0.35 : 0.9, model: settings.model });
+    ], { json: true, maxTokens: characterGenerationTokenBudget(input.data.mode, input.data.idea.length), temperature: input.data.mode === "dump" ? 0.3 : 0.9, model: settings.model });
     const generated = parseJson<Record<string, unknown>>(raw);
     const character = characterSchema.parse({ ...generated, nsfwEnabled: input.data.nsfwEnabled });
     return Response.json({ character });
