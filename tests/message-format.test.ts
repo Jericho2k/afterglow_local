@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tokenizeCharacterMessage } from "@/lib/message-format";
+import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
 
 describe("character message formatting", () => {
   it("separates straight-quoted speech and removes display markers", () => {
@@ -22,5 +22,19 @@ describe("character message formatting", () => {
       { text: "*She begins.* ", kind: "narration" },
       { text: "Still typing", kind: "speech" },
     ]);
+  });
+
+  it("hides double-asterisk formatting without removing single action markers", () => {
+    const segments = tokenizeCharacterMessage('**She smiles.** "**Come closer.**" *Now.*');
+    expect(segments).toEqual([
+      { text: "She smiles. ", kind: "narration" },
+      { text: "Come closer.", kind: "speech" },
+      { text: " *Now.*", kind: "narration" },
+    ]);
+  });
+
+  it("turns long conversation titles into a compact header preview", () => {
+    expect(compactMessagePreview("  A very long message\nwith extra spacing that should not fill the entire header  ", 32))
+      .toBe("A very long message with extra…");
   });
 });

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppSettings, Character, Conversation, Memory, Message, UsageSummary } from "@/lib/types";
-import { tokenizeCharacterMessage } from "@/lib/message-format";
+import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
 
 const blankCharacter = {
   name: "", tagline: "", avatarUrl: "", accent: "#e879a9", backstory: "", personality: "", scenario: "",
@@ -171,7 +171,7 @@ export default function Home() {
     <main className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}>×</button></div>
-        <button className="new-character" onClick={() => { setEditing(null); setStudioOpen(true); }}><span>＋</span> Create a character</button>
+        <button className="new-character" onClick={() => { setSidebarOpen(false); setEditing(null); setStudioOpen(true); }}><span aria-hidden="true">＋</span> Create a character</button>
         <div className="section-label"><span>Your characters</span><span>{characters.length}</span></div>
         <div className="character-list">
           {characters.map((character) => (
@@ -181,13 +181,13 @@ export default function Home() {
             </button>
           ))}
         </div>
-        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>Private by design</strong><small>Your database, your API key</small></div></div><div className="sidebar-links"><button className="text-button" onClick={() => setSettingsOpen(true)}>Settings & data</button><button className="text-button" onClick={async () => { await api("/api/auth", { method: "DELETE" }); setAuthenticated(false); }}>Lock app</button></div></div>
+        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>Private by design</strong><small>Your database, your API key</small></div></div><div className="sidebar-links"><button className="sidebar-tool" onClick={() => { setSidebarOpen(false); setSettingsOpen(true); }}><span aria-hidden="true">⚙</span><span><strong>Settings</strong><small>Model, memory & data</small></span></button><button className="sidebar-lock" aria-label="Lock app" title="Lock app" onClick={async () => { await api("/api/auth", { method: "DELETE" }); setSidebarOpen(false); setAuthenticated(false); }}>◇</button></div></div>
       </aside>
 
       {selected ? (
         <section className="chat-panel">
           <header className="chat-header">
-            <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open characters">☰</button><Avatar character={selected} large /><div><div className="eyebrow">{conversation?.title || "Private conversation"}</div><h1>{selected.name}</h1><p>{selected.tagline}</p></div></div>
+            <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open characters">☰</button><Avatar character={selected} large /><div><div className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</div><h1>{selected.name}</h1><p>{selected.tagline}</p></div></div>
             <div className="header-actions">
               <button className="icon-button labeled" onClick={() => setHistoryOpen(true)}><span>◫</span><span>Chats</span>{conversations.length > 1 && <b>{conversations.length}</b>}</button>
               <button className="icon-button labeled" onClick={() => setMemoryOpen(true)}><span>⌁</span><span>Memories</span>{memories.length > 0 && <b>{memories.length}</b>}</button>
@@ -214,10 +214,10 @@ export default function Home() {
           <div className="composer-wrap">
             <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span>•</span><span>{settings.model} · long-term memory</span></div>
             <div className="composer">
-              <textarea value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${selected.name}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} disabled={streaming} />
+              <textarea value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${selected.name}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
               <button className="send-button" aria-label="Send message" disabled={streaming || !composer.trim()} onClick={() => void send()}>↑</button>
             </div>
-            <small className="composer-hint">Enter to send · Shift + Enter for a new line</small>
+            <small className="composer-hint"><span className="desktop-composer-hint">Enter to send · Shift + Enter for a new line</span><span className="mobile-composer-hint">Enter for a new line · Tap ↑ to send</span></small>
           </div>
         </section>
       ) : (
