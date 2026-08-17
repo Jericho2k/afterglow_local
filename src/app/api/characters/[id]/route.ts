@@ -20,6 +20,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
   const denied = await requireAuth(); if (denied) return denied;
   const { id } = await context.params;
-  await query("DELETE FROM characters WHERE id=$1", [id]);
+  const result = await query("DELETE FROM characters WHERE id=$1", [id]);
+  if (!result.rowCount) return Response.json({ error: "Character not found" }, { status: 404 });
   return Response.json({ ok: true });
 }
