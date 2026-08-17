@@ -30,7 +30,7 @@ export const generateCharacterSchema = z.object({
 export const chatSchema = z.object({
   conversationId: z.string().uuid(),
   content: text(12000).default(""),
-  action: z.enum(["send", "regenerate"]).default("send"),
+  action: z.enum(["send", "regenerate", "continue"]).default("send"),
 });
 
 export const memorySchema = z.object({

@@ -80,7 +80,7 @@ export default function Home() {
   }, [selectedId, authenticated, loadChat]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" }); }, [messages, streaming]);
 
-  async function send(action: "send" | "regenerate" = "send", regenerationTargetOverride?: string | null) {
+  async function send(action: "send" | "regenerate" | "continue" = "send", regenerationTargetOverride?: string | null) {
     if (!conversation || streaming || (action === "send" && !composer.trim())) return;
     setError(""); setStreaming(true);
     const content = action === "send" ? composer.trim() : "";
@@ -204,7 +204,7 @@ export default function Home() {
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`}>
                     {editingMessageId === message.id ? <div className="inline-editor"><textarea autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1)}>›</button><em>Selected</em></div>}</>}
                   </div>
-                  {message.content && !streaming && editingMessageId !== message.id && <div className="message-actions"><button onClick={() => beginEdit(message)}>✎ Edit</button><button onClick={() => void deleteFromMessage(message)}>⌫ Delete from here</button>{message.role === "assistant" && index === messages.length - 1 && <button onClick={() => void send("regenerate")}>↻ Regenerate</button>}</div>}
+                  {message.content && !streaming && editingMessageId !== message.id && <div className="message-actions"><button onClick={() => beginEdit(message)}>✎ Edit</button><button onClick={() => void deleteFromMessage(message)}>⌫ Delete from here</button>{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
                 </div>
               </article>
             ))}

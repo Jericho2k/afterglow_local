@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { characterGenerationPrompt, characterGenerationTokenBudget, roleplayPrompt } from "@/lib/prompts";
+import { characterGenerationPrompt, characterGenerationTokenBudget, continueSceneCue, roleplayPrompt } from "@/lib/prompts";
 import type { Character } from "@/lib/types";
 
 const character: Character = {
@@ -15,6 +15,12 @@ describe("roleplay prompt", () => {
     expect(prompt).toContain("They made a promise.");
     expect(prompt).toContain("fictional adults aged 18 or older");
     expect(prompt).toContain("Never write the user's dialogue");
+  });
+
+  it("continues the scene without inventing a user turn", () => {
+    expect(continueSceneCue).toContain("control signal, not dialogue from the user");
+    expect(continueSceneCue).toContain("Do not write the user's dialogue");
+    expect(continueSceneCue).toContain("Do not repeat or paraphrase");
   });
 });
 

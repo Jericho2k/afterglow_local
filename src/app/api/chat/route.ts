@@ -3,7 +3,7 @@ import { requireAuth } from "@/lib/auth";
 import { characterFromRow, getSettings, messageFromRow, query } from "@/lib/db";
 import { streamCompletion } from "@/lib/deepseek";
 import { maybeConsolidate, relevantMemories } from "@/lib/memory";
-import { roleplayPrompt } from "@/lib/prompts";
+import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
        title=CASE WHEN message_count <= 1 AND title LIKE 'Chat with %' THEN left($2,120) ELSE title END WHERE id=$1`,
       [conversationId, content.replace(/\s+/g, " ")],
     );
-  } else {
+  } else if (action === "regenerate") {
     const last = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1", [conversationId]);
     if (last.rows[0]?.role === "assistant") regenerateTarget = messageFromRow(last.rows[0]);
   }
@@ -43,15 +43,18 @@ export async function POST(request: Request) {
   const historyResult = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT $2", [conversationId, settings.contextMessages]);
   const history = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
   const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
-  if (!lastUserInput) return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
-  const memories = await relevantMemories(character.id, lastUserInput, settings.memoryLimit);
+  if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
+  const recallContext = lastUserInput || history.at(-1)?.content || character.scenario || character.name;
+  const memories = await relevantMemories(character.id, recallContext, settings.memoryLimit);
   const system = roleplayPrompt(character, String(row.summary || ""), memories, settings);
+  const modelHistory = history.map((message) => ({ role: message.role, content: message.content }));
+  if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
 
   let upstream: ReadableStream<Uint8Array>;
   try {
     upstream = await streamCompletion([
       { role: "system", content: system },
-      ...history.map((message) => ({ role: message.role, content: message.content })),
+      ...modelHistory,
     ], { signal: request.signal, model: settings.model, maxTokens: settings.maxTokens, temperature: settings.temperature });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Model request failed" }, { status: 502 });

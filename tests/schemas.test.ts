@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backupSchema, characterSchema, generateCharacterSchema, messageUpdateSchema, settingsSchema } from "@/lib/schemas";
+import { backupSchema, characterSchema, chatSchema, generateCharacterSchema, messageUpdateSchema, settingsSchema } from "@/lib/schemas";
 
 describe("character validation", () => {
   it("applies safe defaults", () => {
@@ -56,5 +56,11 @@ describe("message updates", () => {
     expect(messageUpdateSchema.safeParse({ content: "Edited in place" }).success).toBe(true);
     expect(messageUpdateSchema.safeParse({ variantIndex: 2 }).success).toBe(true);
     expect(messageUpdateSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("accepts a continuation request without message content", () => {
+    const parsed = chatSchema.parse({ conversationId: crypto.randomUUID(), action: "continue" });
+    expect(parsed.action).toBe("continue");
+    expect(parsed.content).toBe("");
   });
 });
