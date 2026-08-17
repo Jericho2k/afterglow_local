@@ -76,15 +76,39 @@ describe("PostgreSQL persistence", () => {
     await transaction(async (client) => {
       await client.query(
         `DELETE FROM messages WHERE conversation_id=$1 AND (
-          created_at > (SELECT created_at FROM messages WHERE id=$2)
-          OR (created_at = (SELECT created_at FROM messages WHERE id=$2) AND id::text > $2)
+          created_at > $2::timestamptz
+          OR (created_at = $2::timestamptz AND id::text > $3::text)
         )`,
-        [conversationId,userId],
+        [conversationId,"2026-08-17T10:42:00.123456Z",userId],
       );
       const updated = await client.query("UPDATE messages SET content='After' WHERE id=$1 RETURNING *",[userId]);
       expect(updated.rowCount).toBe(1);
     });
     const remaining = await query<{ id: string; content: string }>("SELECT id,content FROM messages WHERE conversation_id=$1",[conversationId]);
     expect(remaining.rows).toEqual([{ id:userId, content:"After" }]);
+  });
+
+  it("deletes the selected message and every later message", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    const firstId = crypto.randomUUID(); const targetId = crypto.randomUUID(); const laterId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title,message_count) VALUES ($1,$2,'Delete test',3)",[conversationId,characterId]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant','Keep',$3)",[firstId,conversationId,"2026-08-17T10:42:00.000000Z"]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'user','Delete',$3)",[targetId,conversationId,"2026-08-17T10:42:01.123456Z"]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant','Also delete',$3)",[laterId,conversationId,"2026-08-17T10:42:02.000000Z"]);
+    await transaction(async (client) => {
+      await client.query(
+        `DELETE FROM messages WHERE conversation_id=$1 AND (
+          created_at > $2::timestamptz
+          OR (created_at = $2::timestamptz AND id::text >= $3::text)
+        )`,
+        [conversationId,"2026-08-17T10:42:01.123456Z",targetId],
+      );
+      await client.query("UPDATE conversations SET message_count=(SELECT COUNT(*) FROM messages WHERE conversation_id=$1) WHERE id=$1",[conversationId]);
+    });
+    const remaining = await query<{ id:string }>("SELECT id FROM messages WHERE conversation_id=$1",[conversationId]);
+    const conversation = await query<{ message_count:number }>("SELECT message_count FROM conversations WHERE id=$1",[conversationId]);
+    expect(remaining.rows).toEqual([{ id:firstId }]);
+    expect(Number(conversation.rows[0].message_count)).toBe(1);
   });
 });

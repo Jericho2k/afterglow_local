@@ -24,10 +24,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (parsed.data.truncateAfter) {
       await client.query(
         `DELETE FROM messages WHERE conversation_id=$1 AND (
-          created_at > (SELECT created_at FROM messages WHERE id=$2)
-          OR (created_at = (SELECT created_at FROM messages WHERE id=$2) AND id::text > $2)
+          created_at > $2::timestamptz
+          OR (created_at = $2::timestamptz AND id::text > $3::text)
         )`,
-        [row.conversation_id,id],
+        [row.conversation_id,row.created_at,id],
       );
     }
     const variants = currentMessage.role === "assistant" ? [...currentMessage.variants] : [];
@@ -53,10 +53,10 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
     const row = current.rows[0];
     await client.query(
       `DELETE FROM messages WHERE conversation_id=$1 AND (
-        created_at > (SELECT created_at FROM messages WHERE id=$2)
-        OR (created_at = (SELECT created_at FROM messages WHERE id=$2) AND id::text >= $2)
+        created_at > $2::timestamptz
+        OR (created_at = $2::timestamptz AND id::text >= $3::text)
       )`,
-      [row.conversation_id,id],
+      [row.conversation_id,row.created_at,id],
     );
     await client.query(
       "UPDATE conversations SET message_count=(SELECT COUNT(*) FROM messages WHERE conversation_id=$1),updated_at=now() WHERE id=$1",
