@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backupSchema, characterSchema, generateCharacterSchema, settingsSchema } from "@/lib/schemas";
+import { backupSchema, characterSchema, generateCharacterSchema, messageUpdateSchema, settingsSchema } from "@/lib/schemas";
 
 describe("character validation", () => {
   it("applies safe defaults", () => {
@@ -39,5 +39,22 @@ describe("instance settings and backups", () => {
   it("validates a portable versioned backup", () => {
     const parsed = backupSchema.safeParse({ version: 1, characters: [], conversations: [], messages: [], memories: [] });
     expect(parsed.success).toBe(true);
+  });
+
+  it("preserves generated reply variants in backups", () => {
+    const parsed = backupSchema.parse({
+      version: 1, characters: [], conversations: [], memories: [],
+      messages: [{ conversationId: "conversation", role: "assistant", content: "Second", variants: ["First", "Second"], selectedVariant: 1 }],
+    });
+    expect(parsed.messages[0].variants).toEqual(["First", "Second"]);
+    expect(parsed.messages[0].selectedVariant).toBe(1);
+  });
+});
+
+describe("message updates", () => {
+  it("accepts either inline edits or response-option selection", () => {
+    expect(messageUpdateSchema.safeParse({ content: "Edited in place" }).success).toBe(true);
+    expect(messageUpdateSchema.safeParse({ variantIndex: 2 }).success).toBe(true);
+    expect(messageUpdateSchema.safeParse({}).success).toBe(false);
   });
 });

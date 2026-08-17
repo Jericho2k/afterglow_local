@@ -49,6 +49,8 @@ async function schema() {
       conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
       role text NOT NULL CHECK (role IN ('user', 'assistant')),
       content text NOT NULL,
+      variants jsonb NOT NULL DEFAULT '[]'::jsonb,
+      selected_variant integer NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS messages_conversation_time_idx ON messages(conversation_id, created_at);
@@ -88,6 +90,8 @@ async function schema() {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
+  await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query(
     "INSERT INTO app_settings (id, owner_name, owner_profile, model) VALUES ('owner',$1,$2,$3) ON CONFLICT (id) DO NOTHING",
     [process.env.OWNER_NAME || "You", process.env.OWNER_PROFILE || "", process.env.DEEPSEEK_MODEL || "deepseek-v4-flash"],
@@ -146,7 +150,13 @@ export function conversationFromRow(row: Record<string, unknown>): Conversation 
 }
 
 export function messageFromRow(row: Record<string, unknown>): Message {
-  return { id: String(row.id), conversationId: String(row.conversation_id), role: row.role as Message["role"], content: String(row.content), createdAt: new Date(String(row.created_at)).toISOString() };
+  const content = String(row.content);
+  const role = row.role as Message["role"];
+  const stored = Array.isArray(row.variants) ? row.variants.filter((item): item is string => typeof item === "string") : [];
+  const variants = role === "assistant" ? (stored.length ? stored : [content]) : [];
+  const requested = Number(row.selected_variant ?? 0);
+  const selectedVariant = variants.length ? Math.min(Math.max(Number.isInteger(requested) ? requested : 0, 0), variants.length - 1) : 0;
+  return { id: String(row.id), conversationId: String(row.conversation_id), role, content, variants, selectedVariant, createdAt: new Date(String(row.created_at)).toISOString() };
 }
 
 export function memoryFromRow(row: Record<string, unknown>): Memory {

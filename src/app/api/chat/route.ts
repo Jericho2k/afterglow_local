@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "@/lib/auth";
-import { characterFromRow, getSettings, messageFromRow, query, transaction } from "@/lib/db";
+import { characterFromRow, getSettings, messageFromRow, query } from "@/lib/db";
 import { streamCompletion } from "@/lib/deepseek";
 import { maybeConsolidate, relevantMemories } from "@/lib/memory";
 import { roleplayPrompt } from "@/lib/prompts";
@@ -23,37 +23,25 @@ export async function POST(request: Request) {
   if (!characterResult.rowCount) return Response.json({ error: "Character not found" }, { status: 404 });
   const character = characterFromRow(characterResult.rows[0]);
   const settings = await getSettings();
-  let removedAssistant: { id: string; content: string; created_at: Date } | null = null;
-  const restoreRemovedAssistant = async () => {
-    if (!removedAssistant) return;
-    await query(
-      "INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant',$3,$4) ON CONFLICT (id) DO NOTHING",
-      [removedAssistant.id,conversationId,removedAssistant.content,removedAssistant.created_at],
-    );
-    await query("UPDATE conversations SET message_count=(SELECT COUNT(*) FROM messages WHERE conversation_id=$1),updated_at=now() WHERE id=$1",[conversationId]);
-  };
+  let regenerateTarget: ReturnType<typeof messageFromRow> | null = null;
+  let userMessageId: string | null = null;
 
   if (action === "send" && !content) return Response.json({ error: "Message cannot be empty" }, { status: 400 });
   if (action === "send") {
-    await query("INSERT INTO messages (id,conversation_id,role,content) VALUES ($1,$2,'user',$3)", [randomUUID(),conversationId,content]);
+    userMessageId = randomUUID();
+    await query("INSERT INTO messages (id,conversation_id,role,content) VALUES ($1,$2,'user',$3)", [userMessageId,conversationId,content]);
     await query(
       `UPDATE conversations SET message_count=message_count+1,updated_at=now(),
        title=CASE WHEN message_count <= 1 AND title LIKE 'Chat with %' THEN left($2,120) ELSE title END WHERE id=$1`,
       [conversationId, content.replace(/\s+/g, " ")],
     );
   } else {
-    await transaction(async (client) => {
-      const last = await client.query("SELECT id,role,content,created_at FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1", [conversationId]);
-      if (last.rows[0]?.role === "assistant") {
-        removedAssistant = last.rows[0] as { id: string; content: string; created_at: Date };
-        await client.query("DELETE FROM messages WHERE id=$1", [last.rows[0].id]);
-        await client.query("UPDATE conversations SET message_count=GREATEST(0,message_count-1),updated_at=now() WHERE id=$1", [conversationId]);
-      }
-    });
+    const last = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1", [conversationId]);
+    if (last.rows[0]?.role === "assistant") regenerateTarget = messageFromRow(last.rows[0]);
   }
 
   const historyResult = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT $2", [conversationId, settings.contextMessages]);
-  const history = historyResult.rows.reverse().map(messageFromRow);
+  const history = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
   const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
   if (!lastUserInput) return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
   const memories = await relevantMemories(character.id, lastUserInput, settings.memoryLimit);
@@ -66,13 +54,12 @@ export async function POST(request: Request) {
       ...history.map((message) => ({ role: message.role, content: message.content })),
     ], { signal: request.signal, model: settings.model, maxTokens: settings.maxTokens, temperature: settings.temperature });
   } catch (error) {
-    await restoreRemovedAssistant();
     return Response.json({ error: error instanceof Error ? error.message : "Model request failed" }, { status: 502 });
   }
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const assistantId = randomUUID();
+  const assistantId = regenerateTarget?.id ?? randomUUID();
   const responseStream = new ReadableStream({
     async start(controller) {
       const reader = upstream.getReader();
@@ -100,17 +87,25 @@ export async function POST(request: Request) {
           }
         }
         if (!assistant.trim()) throw new Error("The model returned an empty response");
-        await query("INSERT INTO messages (id,conversation_id,role,content) VALUES ($1,$2,'assistant',$3)", [assistantId,conversationId,assistant]);
-        await query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1", [conversationId]);
+        let variants: string[];
+        let selectedVariant: number;
+        if (regenerateTarget) {
+          variants = [...regenerateTarget.variants,assistant]; selectedVariant = variants.length - 1;
+          await query("UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3 WHERE id=$4", [assistant,JSON.stringify(variants),selectedVariant,assistantId]);
+          await query("UPDATE conversations SET updated_at=now() WHERE id=$1", [conversationId]);
+        } else {
+          variants = [assistant]; selectedVariant = 0;
+          await query("INSERT INTO messages (id,conversation_id,role,content,variants,selected_variant) VALUES ($1,$2,'assistant',$3,$4::jsonb,0)", [assistantId,conversationId,assistant,JSON.stringify(variants)]);
+          await query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1", [conversationId]);
+        }
         if (usage) await query(
           "INSERT INTO usage_events (id,conversation_id,model,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens) VALUES ($1,$2,$3,$4,$5,$6,$7)",
           [randomUUID(),conversationId,settings.model,usage.prompt_tokens ?? 0,usage.completion_tokens ?? 0,usage.prompt_cache_hit_tokens ?? 0,usage.prompt_cache_miss_tokens ?? 0],
         );
-        send({ type: "done", id: assistantId, memoriesUsed: memories.map((memory) => memory.id), usage });
+        send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, memoriesUsed: memories.map((memory) => memory.id), usage });
         controller.close();
-        void maybeConsolidate(conversationId).catch((error) => console.error("Memory consolidation failed", error));
+        if (!regenerateTarget) void maybeConsolidate(conversationId).catch((error) => console.error("Memory consolidation failed", error));
       } catch (error) {
-        await restoreRemovedAssistant().catch((restoreError) => console.error("Could not restore regenerated message",restoreError));
         send({ type: "error", error: error instanceof Error ? error.message : "Stream failed" });
         controller.close();
       }

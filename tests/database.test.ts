@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import { newDb } from "pg-mem";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ensureSchema, getSettings, query, setPoolForTesting, transaction } from "@/lib/db";
+import { ensureSchema, getSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
 
 beforeEach(async () => {
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
@@ -48,5 +48,20 @@ describe("PostgreSQL persistence", () => {
     const conversation = await query<Record<string, unknown>>("SELECT * FROM conversations WHERE id=$1",[conversationId]);
     const loadedCharacter = await query<Record<string, unknown>>("SELECT * FROM characters WHERE id=$1",[conversation.rows[0].character_id]);
     expect(loadedCharacter.rows[0].name).toBe("Mara");
+  });
+
+  it("persists selectable assistant response variants", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID(); const messageId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Versions')",[conversationId,characterId]);
+    await query(
+      "INSERT INTO messages (id,conversation_id,role,content,variants,selected_variant) VALUES ($1,$2,'assistant','Second',$3::jsonb,1)",
+      [messageId,conversationId,JSON.stringify(["First","Second"])],
+    );
+    const result = await query("SELECT * FROM messages WHERE id=$1",[messageId]);
+    const message = messageFromRow(result.rows[0]);
+    expect(message.variants).toEqual(["First","Second"]);
+    expect(message.selectedVariant).toBe(1);
+    expect(message.content).toBe("Second");
   });
 });

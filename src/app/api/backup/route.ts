@@ -55,8 +55,8 @@ export async function POST(request: Request) {
     for (const item of backup.messages) {
       const conversationId = conversationIds.get(item.conversationId); if (!conversationId) continue;
       await client.query(
-        "INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,$3,$4,COALESCE($5::timestamptz,now()))",
-        [randomUUID(),conversationId,item.role,item.content,item.createdAt ?? null],
+        "INSERT INTO messages (id,conversation_id,role,content,variants,selected_variant,created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,COALESCE($7::timestamptz,now()))",
+        [randomUUID(),conversationId,item.role,item.content,JSON.stringify(item.variants),Math.min(item.selectedVariant,Math.max(0,item.variants.length - 1)),item.createdAt ?? null],
       );
       messageCount += 1;
     }

@@ -31,6 +31,8 @@ export type Message = {
   conversationId: string;
   role: "user" | "assistant";
   content: string;
+  variants: string[];
+  selectedVariant: number;
   createdAt: string;
 };
 

@@ -50,9 +50,10 @@ export const memoryUpdateSchema = z.object({
 });
 
 export const messageUpdateSchema = z.object({
-  content: text(12000).min(1),
+  content: text(12000).min(1).optional(),
   truncateAfter: z.boolean().default(false),
-});
+  variantIndex: z.number().int().min(0).optional(),
+}).refine((value) => typeof value.content === "string" || value.variantIndex !== undefined, "Provide edited content or a variant index");
 
 export const conversationUpdateSchema = z.object({
   title: text(120).min(1),
@@ -77,7 +78,8 @@ export const backupSchema = z.object({
     id: z.string().min(1), characterId: z.string().min(1), title: text(120).min(1), summary: text(12000).default(""),
   })).max(5000),
   messages: z.array(z.object({
-    conversationId: z.string().min(1), role: z.enum(["user", "assistant"]), content: text(12000).min(1), createdAt: z.string().datetime().optional(),
+    conversationId: z.string().min(1), role: z.enum(["user", "assistant"]), content: text(12000).min(1),
+    variants: z.array(text(12000).min(1)).max(1000).default([]), selectedVariant: z.number().int().min(0).default(0), createdAt: z.string().datetime().optional(),
   })).max(100000),
   memories: z.array(z.object({
     characterId: z.string().min(1), conversationId: z.string().nullable().optional(), content: text(3000).min(1),

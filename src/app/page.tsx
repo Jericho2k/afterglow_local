@@ -41,6 +41,8 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [editing, setEditing] = useState<Character | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [error, setError] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const selected = useMemo(() => characters.find((item) => item.id === selectedId) ?? null, [characters, selectedId]);
@@ -77,18 +79,21 @@ export default function Home() {
   }, [selectedId, authenticated, loadChat]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" }); }, [messages, streaming]);
 
-  async function send(action: "send" | "regenerate" = "send") {
+  async function send(action: "send" | "regenerate" = "send", regenerationTargetOverride?: string | null) {
     if (!conversation || streaming || (action === "send" && !composer.trim())) return;
     setError(""); setStreaming(true);
     const content = action === "send" ? composer.trim() : "";
+    const inferredTarget = messages.at(-1)?.role === "assistant" ? messages.at(-1)?.id ?? null : null;
+    const regenerationTargetId = action === "regenerate" ? (regenerationTargetOverride === undefined ? inferredTarget : regenerationTargetOverride) : null;
+    let optimisticUserId: string | null = null;
     if (action === "send") {
       setComposer("");
-      setMessages((items) => [...items, { id: crypto.randomUUID(), conversationId: conversation.id, role: "user", content, createdAt: new Date().toISOString() }]);
-    } else {
-      setMessages((items) => items.at(-1)?.role === "assistant" ? items.slice(0, -1) : items);
+      optimisticUserId = crypto.randomUUID();
+      setMessages((items) => [...items, { id: optimisticUserId!, conversationId: conversation.id, role: "user", content, variants: [], selectedVariant: 0, createdAt: new Date().toISOString() }]);
     }
-    const placeholderId = crypto.randomUUID();
-    setMessages((items) => [...items, { id: placeholderId, conversationId: conversation.id, role: "assistant", content: "", createdAt: new Date().toISOString() }]);
+    const placeholderId = regenerationTargetId ?? crypto.randomUUID();
+    if (regenerationTargetId) setMessages((items) => items.map((message) => message.id === regenerationTargetId ? { ...message, content: "" } : message));
+    else setMessages((items) => [...items, { id: placeholderId, conversationId: conversation.id, role: "assistant", content: "", variants: [], selectedVariant: 0, createdAt: new Date().toISOString() }]);
     try {
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conversation.id, content, action }) });
       if (!response.ok || !response.body) { const data = await response.json().catch(() => ({})); throw new Error(data.error || "Chat request failed"); }
@@ -100,7 +105,7 @@ export default function Home() {
           if (!line.trim()) continue; const event = JSON.parse(line);
           if (event.type === "delta") setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, content: m.content + event.content } : m));
           if (event.type === "done") {
-            setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, id: event.id } : m));
+            setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, id: event.id, variants: event.variants, selectedVariant: event.selectedVariant } : optimisticUserId && m.id === optimisticUserId && event.userMessageId ? { ...m, id: event.userMessageId } : m));
             if (action === "send" && conversation.title.startsWith("Chat with ")) {
               const title = content.replace(/\s+/g," ").slice(0,120);
               setConversation((current) => current ? { ...current,title } : current);
@@ -111,8 +116,8 @@ export default function Home() {
         }
       }
     } catch (e) {
-      setMessages((items) => items.filter((m) => m.id !== placeholderId));
-      if (action === "regenerate" && conversation) await loadChat(conversation.characterId,conversation.id).catch(() => undefined);
+      if (regenerationTargetId && conversation) await loadChat(conversation.characterId,conversation.id).catch(() => undefined);
+      else setMessages((items) => items.filter((m) => m.id !== placeholderId));
       setError(e instanceof Error ? e.message : "The reply was interrupted");
     } finally { setStreaming(false); }
   }
@@ -125,17 +130,30 @@ export default function Home() {
     } catch (e) { setError(e instanceof Error ? e.message : "Could not start a new chat"); }
   }
 
-  async function editMessage(message: Message) {
-    if (streaming) return;
-    const content = window.prompt("Edit message", message.content)?.trim();
-    if (!content || content === message.content) return;
+  function beginEdit(message: Message) {
+    if (streaming) return; setEditingMessageId(message.id); setEditDraft(message.content);
+  }
+
+  async function saveMessageEdit(message: Message) {
+    const content = editDraft.trim();
+    if (!content) return;
+    if (content === message.content) { setEditingMessageId(null); return; }
     try {
-      await api(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ content, truncateAfter: message.role === "user" }) });
+      const data = await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ content, truncateAfter: message.role === "user" }) });
+      setEditingMessageId(null);
       if (message.role === "user") {
-        setMessages((items) => items.slice(0, items.findIndex((item) => item.id === message.id) + 1).map((item) => item.id === message.id ? { ...item, content } : item));
-        await send("regenerate");
-      } else setMessages((items) => items.map((item) => item.id === message.id ? { ...item, content } : item));
+        if (conversation) await loadChat(conversation.characterId,conversation.id);
+        await send("regenerate", null);
+      } else setMessages((items) => items.map((item) => item.id === message.id ? data.message : item));
     } catch (e) { setError(e instanceof Error ? e.message : "Could not edit message"); }
+  }
+
+  async function selectVariant(message: Message, index: number) {
+    if (streaming || index === message.selectedVariant || index < 0 || index >= message.variants.length) return;
+    try {
+      const data = await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ variantIndex: index }) });
+      setMessages((items) => items.map((item) => item.id === message.id ? data.message : item));
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not select that version"); }
   }
 
   async function deleteFromMessage(message: Message) {
@@ -182,8 +200,10 @@ export default function Home() {
                 {message.role === "assistant" && <Avatar character={selected} />}
                 <div className="message-stack">
                   <div className="message-meta"><strong>{message.role === "assistant" ? selected.name : "You"}</strong><time>{time(message.createdAt)}</time></div>
-                  <div className={`bubble ${!message.content && streaming ? "typing" : ""}`}>{message.content || <><i /><i /><i /></>}</div>
-                  {message.content && !streaming && <div className="message-actions"><button onClick={() => void editMessage(message)}>✎ Edit</button><button onClick={() => void deleteFromMessage(message)}>⌫ Delete from here</button>{message.role === "assistant" && index === messages.length - 1 && <button onClick={() => void send("regenerate")}>↻ Regenerate</button>}</div>}
+                  <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`}>
+                    {editingMessageId === message.id ? <div className="inline-editor"><textarea autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message)}>Save</button></div></div> : <>{message.content || <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1)}>›</button><em>Selected</em></div>}</>}
+                  </div>
+                  {message.content && !streaming && editingMessageId !== message.id && <div className="message-actions"><button onClick={() => beginEdit(message)}>✎ Edit</button><button onClick={() => void deleteFromMessage(message)}>⌫ Delete from here</button>{message.role === "assistant" && index === messages.length - 1 && <button onClick={() => void send("regenerate")}>↻ Regenerate</button>}</div>}
                 </div>
               </article>
             ))}
