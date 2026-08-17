@@ -67,4 +67,11 @@ describe("message updates", () => {
     expect(parsed.action).toBe("continue");
     expect(parsed.content).toBe("");
   });
+
+  it("accepts client-generated message IDs so optimistic chat state stays durable", () => {
+    const userMessageId = crypto.randomUUID(); const assistantMessageId = crypto.randomUUID();
+    const parsed = chatSchema.parse({ conversationId: crypto.randomUUID(), content: "Hello", action: "send", userMessageId, assistantMessageId });
+    expect(parsed.userMessageId).toBe(userMessageId);
+    expect(parsed.assistantMessageId).toBe(assistantMessageId);
+  });
 });

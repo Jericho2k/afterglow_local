@@ -97,9 +97,9 @@ export default function Home() {
     if (regenerationTargetId) setMessages((items) => items.map((message) => message.id === regenerationTargetId ? { ...message, content: "" } : message));
     else setMessages((items) => [...items, { id: placeholderId, conversationId: conversation.id, role: "assistant", content: "", variants: [], selectedVariant: 0, memoryIds: [], createdAt: new Date().toISOString() }]);
     try {
-      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conversation.id, content, action }) });
+      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conversation.id, content, action, userMessageId: optimisticUserId, assistantMessageId: placeholderId }) });
       if (!response.ok || !response.body) { const data = await response.json().catch(() => ({})); throw new Error(data.error || "Chat request failed"); }
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let completed = false;
       while (true) {
         const { done, value } = await reader.read(); if (done) break;
         buffer += decoder.decode(value, { stream: true }); const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
@@ -107,6 +107,7 @@ export default function Home() {
           if (!line.trim()) continue; const event = JSON.parse(line);
           if (event.type === "delta") setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, content: m.content + event.content } : m));
           if (event.type === "done") {
+            completed = true;
             setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, id: event.id, variants: event.variants, selectedVariant: event.selectedVariant, memoryIds: event.memoriesUsed ?? [] } : optimisticUserId && m.id === optimisticUserId && event.userMessageId ? { ...m, id: event.userMessageId } : m));
             if (action === "send" && conversation.title.startsWith("Chat with ")) {
               const title = content.replace(/\s+/g," ").slice(0,120);
@@ -117,6 +118,7 @@ export default function Home() {
           if (event.type === "error") throw new Error(event.error);
         }
       }
+      if (completed) await loadChat(conversation.characterId,conversation.id);
     } catch (e) {
       if (regenerationTargetId && conversation) await loadChat(conversation.characterId,conversation.id).catch(() => undefined);
       else setMessages((items) => items.filter((m) => m.id !== placeholderId));

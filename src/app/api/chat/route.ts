@@ -39,7 +39,7 @@ export async function POST(request: Request) {
 
   if (action === "send" && !content) return Response.json({ error: "Message cannot be empty" }, { status: 400 });
   if (action === "send") {
-    userMessageId = randomUUID();
+    userMessageId = parsed.data.userMessageId ?? randomUUID();
     await query("INSERT INTO messages (id,conversation_id,role,content) VALUES ($1,$2,'user',$3)", [userMessageId,conversationId,content]);
     await query(
       `UPDATE conversations SET message_count=message_count+1,updated_at=now(),
@@ -74,7 +74,7 @@ export async function POST(request: Request) {
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const assistantId = regenerateTarget?.id ?? randomUUID();
+  const assistantId = regenerateTarget?.id ?? parsed.data.assistantMessageId ?? randomUUID();
   const responseStream = new ReadableStream({
     async start(controller) {
       const reader = upstream.getReader();

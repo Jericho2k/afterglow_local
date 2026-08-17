@@ -31,6 +31,8 @@ export const chatSchema = z.object({
   conversationId: z.string().uuid(),
   content: text(12000).default(""),
   action: z.enum(["send", "regenerate", "continue"]).default("send"),
+  userMessageId: z.string().uuid().nullable().optional(),
+  assistantMessageId: z.string().uuid().optional(),
 });
 
 export const memorySchema = z.object({
