@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { newDb } from "pg-mem";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ensureSchema, getSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
-import { relevantMemories } from "@/lib/memory";
+import { invalidateDerivedContinuity, relevantMemories } from "@/lib/memory";
 
 beforeEach(async () => {
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
@@ -12,14 +12,33 @@ beforeEach(async () => {
 });
 
 describe("PostgreSQL persistence", () => {
+  it("upgrades the pre-archive schema before creating indexes on new columns", async () => {
+    const oldDb = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true }); const adapter = oldDb.adapters.createPg();
+    const oldPool = new adapter.Pool() as unknown as Pool;
+    await oldPool.query(`
+      CREATE TABLE characters (id uuid PRIMARY KEY,name text NOT NULL,tagline text NOT NULL DEFAULT '',avatar_url text NOT NULL DEFAULT '',accent text NOT NULL DEFAULT '#e879a9',backstory text NOT NULL DEFAULT '',personality text NOT NULL DEFAULT '',scenario text NOT NULL DEFAULT '',greeting text NOT NULL DEFAULT '',example_dialogue text NOT NULL DEFAULT '',response_directive text NOT NULL DEFAULT '',boundaries text NOT NULL DEFAULT '',nsfw_enabled boolean NOT NULL DEFAULT false,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE conversations (id uuid PRIMARY KEY,character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,title text NOT NULL DEFAULT '',summary text NOT NULL DEFAULT '',message_count integer NOT NULL DEFAULT 0,last_consolidated_count integer NOT NULL DEFAULT 0,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE messages (id uuid PRIMARY KEY,conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,role text NOT NULL,content text NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE memories (id uuid PRIMARY KEY,character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,conversation_id uuid REFERENCES conversations(id) ON DELETE CASCADE,content text NOT NULL,kind text NOT NULL DEFAULT 'event',importance smallint NOT NULL DEFAULT 3,keywords text[] NOT NULL DEFAULT '{}',pinned boolean NOT NULL DEFAULT false,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE usage_events (id uuid PRIMARY KEY,conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,model text NOT NULL,prompt_tokens integer NOT NULL DEFAULT 0,completion_tokens integer NOT NULL DEFAULT 0,cache_hit_tokens integer NOT NULL DEFAULT 0,cache_miss_tokens integer NOT NULL DEFAULT 0,created_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE app_settings (id text PRIMARY KEY,owner_name text NOT NULL DEFAULT 'You',owner_profile text NOT NULL DEFAULT '',model text NOT NULL DEFAULT 'deepseek-v4-flash',temperature double precision NOT NULL DEFAULT .95,max_tokens integer NOT NULL DEFAULT 1800,context_messages integer NOT NULL DEFAULT 30,consolidation_interval integer NOT NULL DEFAULT 10,memory_limit integer NOT NULL DEFAULT 8,updated_at timestamptz NOT NULL DEFAULT now());
+    `);
+    setPoolForTesting(oldPool); await expect(ensureSchema()).resolves.toBeUndefined();
+    const columns = await query<{column_name:string}>("SELECT column_name FROM information_schema.columns WHERE table_name='memories'");
+    expect(columns.rows.map((row) => row.column_name)).toEqual(expect.arrayContaining(["status","source_message_count","recall_count"]));
+    const tables = await query<{table_name:string}>("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
+    expect(tables.rows.map((row) => row.table_name)).toContain("memory_arcs");
+  });
+
   it("creates every durable application table and default settings", async () => {
     const tables = await query<{ table_name: string }>("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
-    expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","usage_events","app_settings"]));
+    expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","memory_arcs","usage_events","app_settings"]));
     const settings = await getSettings();
     expect(settings.model).toMatch(/^deepseek-/);
     expect(settings.roleplayPreset).toBe("immersive");
     expect(settings.memoryLimit).toBe(8);
     expect(settings.contextTokenBudget).toBe(12000);
+    expect(settings.memoryTokenBudget).toBe(6000);
   });
 
   it("persists a complete character conversation with cascading cleanup", async () => {
@@ -67,6 +86,7 @@ describe("PostgreSQL persistence", () => {
     expect(message.selectedVariant).toBe(1);
     expect(message.content).toBe("Second");
     expect(message.memoryIds).toEqual([]);
+    expect(message.arcIds).toEqual([]);
   });
 
   it("truncates after an edited message without deleting the edited message itself", async () => {
@@ -141,5 +161,37 @@ describe("PostgreSQL persistence", () => {
       "Mara always drinks black coffee.",
     ]));
     expect(recalled.map((memory) => memory.content)).not.toContain("They had their first dinner at the rooftop restaurant.");
+  });
+
+  it("retrieves a relevant event even after more than 300 newer memories", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Long story')",[conversationId,characterId]);
+    await query(
+      "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords,created_at) VALUES ($1,$2,$3,'They hid the obsidian locket beneath the pier.',5,$4,$5)",
+      [crypto.randomUUID(),characterId,conversationId,["obsidian locket"],"2020-01-01T00:00:00Z"],
+    );
+    for (let index = 0; index < 305; index += 1) await query(
+      "INSERT INTO memories (id,character_id,conversation_id,content,importance,created_at) VALUES ($1,$2,$3,$4,1,$5)",
+      [crypto.randomUUID(),characterId,conversationId,`Routine detail ${index}`,new Date(Date.UTC(2026,0,1,index)).toISOString()],
+    );
+    const recalled = await relevantMemories(characterId,conversationId,"Where is the obsidian locket?",8,2000);
+    expect(recalled.map((memory) => memory.content)).toContain("They hid the obsidian locket beneath the pier.");
+  });
+
+  it("invalidates only derived continuity beyond an edited timeline position", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title,summary,last_consolidated_count) VALUES ($1,$2,'Branch','Stale future',4)",[conversationId,characterId]);
+    for (const content of ["One","Two"]) await query("INSERT INTO messages (id,conversation_id,role,content) VALUES ($1,$2,'user',$3)",[crypto.randomUUID(),conversationId,content]);
+    const keepId = crypto.randomUUID(); const removeId = crypto.randomUUID();
+    await query("INSERT INTO memories (id,character_id,conversation_id,content,source_message_count) VALUES ($1,$2,$3,'Keep',2)",[keepId,characterId,conversationId]);
+    await query("INSERT INTO memories (id,character_id,conversation_id,content,source_message_count) VALUES ($1,$2,$3,'Ghost future',4)",[removeId,characterId,conversationId]);
+    await query("INSERT INTO memory_arcs (id,conversation_id,summary,end_message_count) VALUES ($1,$2,'Ghost chapter',4)",[crypto.randomUUID(),conversationId]);
+    await transaction((client) => invalidateDerivedContinuity(client,conversationId,2));
+    expect((await query<{id:string}>("SELECT id FROM memories WHERE conversation_id=$1 ORDER BY id",[conversationId])).rows.map((row) => row.id)).toEqual([keepId]);
+    expect(Number((await query("SELECT COUNT(*) count FROM memory_arcs WHERE conversation_id=$1",[conversationId])).rows[0].count)).toBe(0);
+    const conversation = (await query<{summary:string;message_count:number}>("SELECT summary,message_count FROM conversations WHERE id=$1",[conversationId])).rows[0];
+    expect(conversation.summary).toBe(""); expect(Number(conversation.message_count)).toBe(2);
   });
 });

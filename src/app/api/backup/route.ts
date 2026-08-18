@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "@/lib/auth";
-import { characterFromRow, conversationFromRow, getSettings, memoryFromRow, messageFromRow, query, transaction } from "@/lib/db";
+import { characterFromRow, conversationFromRow, getSettings, memoryArcFromRow, memoryFromRow, messageFromRow, query, transaction } from "@/lib/db";
 import { backupSchema } from "@/lib/schemas";
 
 export async function GET() {
   const denied = await requireAuth(); if (denied) return denied;
-  const [charactersResult, conversationsResult, messagesResult, memoriesResult, settings] = await Promise.all([
+  const [charactersResult, conversationsResult, messagesResult, memoriesResult, arcsResult, settings] = await Promise.all([
     query("SELECT * FROM characters ORDER BY created_at ASC"),
     query("SELECT * FROM conversations ORDER BY created_at ASC"),
     query("SELECT * FROM messages ORDER BY created_at ASC,id ASC"),
     query("SELECT * FROM memories ORDER BY created_at ASC"),
+    query("SELECT * FROM memory_arcs ORDER BY created_at ASC"),
     getSettings(),
   ]);
   const payload = {
@@ -20,6 +21,7 @@ export async function GET() {
     conversations: conversationsResult.rows.map(conversationFromRow),
     messages: messagesResult.rows.map(messageFromRow),
     memories: memoriesResult.rows.map(memoryFromRow),
+    arcs: arcsResult.rows.map(memoryArcFromRow),
   };
   return new Response(JSON.stringify(payload, null, 2), {
     headers: {
@@ -66,20 +68,29 @@ export async function POST(request: Request) {
       const characterId = characterIds.get(item.characterId); if (!characterId) continue;
       const conversationId = item.conversationId ? conversationIds.get(item.conversationId) ?? null : null;
       await client.query(
-        "INSERT INTO memories (id,character_id,conversation_id,content,kind,importance,keywords,pinned) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-        [randomUUID(),characterId,conversationId,item.content,item.kind,item.importance,item.keywords,item.pinned],
+        "INSERT INTO memories (id,character_id,conversation_id,content,kind,importance,keywords,pinned,status,resolution,resolved_at,source_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $9='resolved' THEN now() ELSE NULL END,$11)",
+        [randomUUID(),characterId,conversationId,item.content,item.kind,item.importance,item.keywords,item.pinned,item.status,item.resolution,item.sourceMessageCount],
       );
       memoryCount += 1;
+    }
+    let arcCount = 0;
+    for (const item of backup.arcs) {
+      const conversationId = conversationIds.get(item.conversationId); if (!conversationId) continue;
+      await client.query(
+        "INSERT INTO memory_arcs (id,conversation_id,summary,keywords,start_message_count,end_message_count) VALUES ($1,$2,$3,$4,$5,$6)",
+        [randomUUID(),conversationId,item.summary,item.keywords,item.startMessageCount,item.endMessageCount],
+      );
+      arcCount += 1;
     }
     if (backup.settings) {
       const s = backup.settings;
       await client.query(
         `UPDATE app_settings SET owner_name=$1,owner_profile=$2,model=$3,roleplay_preset=$4,temperature=$5,max_tokens=$6,
-         context_messages=$7,context_token_budget=$8,consolidation_interval=$9,memory_limit=$10,updated_at=now() WHERE id='owner'`,
-        [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit],
+         context_messages=$7,context_token_budget=$8,consolidation_interval=$9,memory_limit=$10,memory_token_budget=$11,updated_at=now() WHERE id='owner'`,
+        [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit,s.memoryTokenBudget],
       );
     }
-    return { characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount };
+    return { characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount, arcs: arcCount };
   });
   return Response.json({ ok: true, imported: counts }, { status: 201 });
 }

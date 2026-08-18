@@ -1,5 +1,5 @@
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import type { AppSettings, Character, Conversation, Memory, Message } from "./types";
+import type { AppSettings, Character, Conversation, Memory, MemoryArc, Message } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -52,6 +52,7 @@ async function schema() {
       variants jsonb NOT NULL DEFAULT '[]'::jsonb,
       selected_variant integer NOT NULL DEFAULT 0,
       memory_ids uuid[] NOT NULL DEFAULT '{}',
+      memory_arc_ids uuid[] NOT NULL DEFAULT '{}',
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS messages_conversation_time_idx ON messages(conversation_id, created_at);
@@ -64,10 +65,26 @@ async function schema() {
       importance smallint NOT NULL DEFAULT 3 CHECK (importance BETWEEN 1 AND 5),
       keywords text[] NOT NULL DEFAULT '{}',
       pinned boolean NOT NULL DEFAULT false,
+      status text NOT NULL DEFAULT 'active',
+      resolution text NOT NULL DEFAULT '',
+      resolved_at timestamptz,
+      last_recalled_at timestamptz,
+      recall_count integer NOT NULL DEFAULT 0,
+      source_message_count integer NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS memories_character_idx ON memories(character_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS memory_arcs (
+      id uuid PRIMARY KEY,
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      summary text NOT NULL,
+      keywords text[] NOT NULL DEFAULT '{}',
+      start_message_count integer NOT NULL DEFAULT 0,
+      end_message_count integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS memory_arcs_conversation_idx ON memory_arcs(conversation_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS usage_events (
       id uuid PRIMARY KEY,
       conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,
@@ -93,13 +110,22 @@ async function schema() {
       context_token_budget integer NOT NULL DEFAULT 12000,
       consolidation_interval integer NOT NULL DEFAULT 10,
       memory_limit integer NOT NULL DEFAULT 8,
+      memory_token_budget integer NOT NULL DEFAULT 6000,
       updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
+  await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_arc_ids uuid[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'event'");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS resolution text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS resolved_at timestamptz");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_recalled_at timestamptz");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS recall_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_message_count integer NOT NULL DEFAULT 0");
+  await pool().query("CREATE INDEX IF NOT EXISTS memories_conversation_status_idx ON memories(conversation_id, status, kind)");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS usage_type text NOT NULL DEFAULT 'chat'");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS estimated_cost_usd numeric(20,10)");
   await pool().query(`
@@ -119,6 +145,7 @@ async function schema() {
   `);
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS roleplay_preset text NOT NULL DEFAULT 'immersive'");
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS context_token_budget integer NOT NULL DEFAULT 12000");
+  await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS memory_token_budget integer NOT NULL DEFAULT 6000");
   await pool().query(
     "INSERT INTO app_settings (id, owner_name, owner_profile, model) VALUES ('owner',$1,$2,$3) ON CONFLICT (id) DO NOTHING",
     [process.env.OWNER_NAME || "You", process.env.OWNER_PROFILE || "", process.env.DEEPSEEK_MODEL || "deepseek-v4-flash"],
@@ -184,14 +211,32 @@ export function messageFromRow(row: Record<string, unknown>): Message {
   const requested = Number(row.selected_variant ?? 0);
   const selectedVariant = variants.length ? Math.min(Math.max(Number.isInteger(requested) ? requested : 0, 0), variants.length - 1) : 0;
   return { id: String(row.id), conversationId: String(row.conversation_id), role, content, variants, selectedVariant,
-    memoryIds: Array.isArray(row.memory_ids) ? row.memory_ids.map(String) : [], createdAt: new Date(String(row.created_at)).toISOString() };
+    memoryIds: textArrayFromRow(row.memory_ids), arcIds: textArrayFromRow(row.memory_arc_ids), createdAt: new Date(String(row.created_at)).toISOString() };
+}
+
+function textArrayFromRow(value: unknown) {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value !== "string" || value === "{}") return [];
+  return value.replace(/^\{|\}$/g, "").split(",").map((item) => item.replace(/^"|"$/g, "").trim()).filter(Boolean);
 }
 
 export function memoryFromRow(row: Record<string, unknown>): Memory {
+  const storedStatus = String(row.status || "active");
   return {
     id: String(row.id), characterId: String(row.character_id), conversationId: row.conversation_id ? String(row.conversation_id) : null,
-    content: String(row.content), kind: (["identity","relationship","event","promise","preference","boundary","open_loop"].includes(String(row.kind)) ? String(row.kind) : "event") as Memory["kind"], importance: Number(row.importance), keywords: (row.keywords as string[]) ?? [],
-    pinned: Boolean(row.pinned), createdAt: new Date(String(row.created_at)).toISOString(),
+    content: String(row.content), kind: (["identity","relationship","event","promise","preference","boundary","open_loop"].includes(String(row.kind)) ? String(row.kind) : "event") as Memory["kind"], importance: Number(row.importance), keywords: textArrayFromRow(row.keywords),
+    pinned: Boolean(row.pinned), status: (["active","resolved","superseded"].includes(storedStatus) ? storedStatus : "active") as Memory["status"],
+    resolution: String(row.resolution || ""), resolvedAt: row.resolved_at ? new Date(String(row.resolved_at)).toISOString() : null,
+    lastRecalledAt: row.last_recalled_at ? new Date(String(row.last_recalled_at)).toISOString() : null,
+    recallCount: Number(row.recall_count || 0), sourceMessageCount: Number(row.source_message_count || 0), createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+export function memoryArcFromRow(row: Record<string, unknown>): MemoryArc {
+  return {
+    id: String(row.id), conversationId: String(row.conversation_id), summary: String(row.summary),
+    keywords: textArrayFromRow(row.keywords), startMessageCount: Number(row.start_message_count),
+    endMessageCount: Number(row.end_message_count), createdAt: new Date(String(row.created_at)).toISOString(),
   };
 }
 
@@ -203,7 +248,7 @@ export function settingsFromRow(row: Record<string, unknown>): AppSettings {
     ownerName: String(row.owner_name), ownerProfile: String(row.owner_profile), model: String(row.model),
     roleplayPreset,
     temperature: Number(row.temperature), maxTokens: Number(row.max_tokens), contextMessages: Number(row.context_messages), contextTokenBudget: Number(row.context_token_budget || 12000),
-    consolidationInterval: Number(row.consolidation_interval), memoryLimit: Number(row.memory_limit),
+    consolidationInterval: Number(row.consolidation_interval), memoryLimit: Number(row.memory_limit), memoryTokenBudget: Number(row.memory_token_budget || 6000),
   };
 }
 

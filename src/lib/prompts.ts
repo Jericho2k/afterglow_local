@@ -1,6 +1,6 @@
-import type { AppSettings, Character, Memory, Message } from "./types";
+import type { AppSettings, Character, Memory, MemoryArc, Message } from "./types";
 
-export function roleplayPrompt(character: Character, summary: string, memories: Memory[], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset">) {
+export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset">) {
   const preset = settings?.roleplayPreset || "immersive";
   const presetDirection: Record<AppSettings["roleplayPreset"], string> = {
     immersive: `IMMERSIVE: Adapt fluidly between plot, emotion, humor, tenderness, conflict, and adult intimacy. Favor specific character-driven choices over a fixed prose formula.`,
@@ -20,13 +20,16 @@ ${presetDirection[preset]}
 CURRENT CONTINUITY
 Rolling state and story-so-far: ${summary || "This is the beginning of the relationship."}
 Relevant durable memories:
-${memories.length ? memories.map((m) => `- [${m.kind}; importance ${m.importance}] ${m.content}`).join("\n") : "- None yet"}
+${memories.length ? memories.map((m) => `- [${m.kind}; ${m.status}; importance ${m.importance}] ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
+Relevant historical arcs:
+${arcs.length ? arcs.map((arc) => `- ${arc.summary}`).join("\n") : "- None recalled for this moment"}
 
 Continuity precedence for facts that can change over time:
 1. The latest visible transcript and exact current physical scene
 2. The rolling current-state summary
 3. Relevant durable memories
-4. The initial scenario / premise
+4. Relevant historical arcs from the permanent archive
+5. The initial scenario / premise
 Stable identity, established boundaries, and explicit user corrections remain authoritative. Never reset a developed relationship, location, plan, or emotional state merely because the initial premise describes an earlier stage.
 
 CHARACTER
@@ -121,12 +124,15 @@ export function characterGenerationTokenBudget(mode: "idea" | "dump", sourceLeng
   return Math.min(8000, Math.max(4800, Math.ceil(sourceLength / 5)));
 }
 
-export function consolidationPrompt(summary: string, messages: Message[], ownerName = process.env.OWNER_NAME || "User") {
+export function consolidationPrompt(summary: string, messages: Message[], ownerName = process.env.OWNER_NAME || "User", activeCommitments: Memory[] = []) {
   const transcript = messages.map((m) => `${m.role === "user" ? ownerName : "Character"}: ${m.content}`).join("\n\n");
   return `You maintain human-like continuity for a fictional character relationship. Update the current-state ledger and extract durable episodic memories from the new transcript.
 
 Existing summary:
 ${summary || "None"}
+
+Active protected commitments (refer to these only by the exact supplied ID):
+${activeCommitments.length ? activeCommitments.map((memory) => `- ${memory.id} [${memory.kind}] ${memory.content}`).join("\n") : "- None"}
 
 New transcript:
 ${transcript}
@@ -134,14 +140,22 @@ ${transcript}
 Return ONLY valid JSON:
 {
   "summary": "A compact third-person continuity ledger, <= 1200 words. Begin with CURRENT STATE: time/place, present characters, physical situation, emotional/relationship state, active plan, and unresolved threads. Follow with MAJOR TIMELINE in chronological order.",
+  "arcSummary": "A self-contained 80-250 word chapter summary of only the new transcript, preserving causality, milestones, decisions, and consequences for permanent historical retrieval.",
+  "arcKeywords": ["specific people, places, objects, plans, and event phrases"],
   "memories": [
     { "content": "One atomic durable fact or event in third person", "kind": "event", "importance": 1, "keywords": ["specific retrieval phrase"] }
+  ],
+  "memoryUpdates": [
+    { "id": "an exact ID from Active protected commitments", "status": "resolved", "resolution": "The explicit event that completed, cancelled, or made the commitment impossible" }
   ]
 }
 
 Rules:
 - Return 0-10 memories; importance is 1-5.
 - kind must be one of: identity, relationship, event, promise, preference, boundary, open_loop.
+- arcSummary must cover the new transcript rather than rewriting the full lifetime summary. Return an empty string only when there is genuinely no new story material.
+- Keep promises and open loops active until the new transcript or existing summary explicitly records that they were fulfilled, cancelled, closed, or made impossible. Mere lack of mention, delay, a scene change, or uncertainty is never resolution.
+- memoryUpdates may reference only an exact supplied active-commitment ID. Omit unchanged commitments. Boundaries normally remain active.
 - Preserve firsts and milestones, confessions, relationship changes, promises, conflicts and resolutions, meaningful choices, recurring preferences, firm boundaries, secrets learned, and unresolved plans.
 - Preserve the non-graphic significance of intimate milestones (for example a first kiss, first consensual sex, aftercare, or a resulting relationship change) while omitting graphic sexual mechanics.
 - Keep the latest exact place, participants, posture/situation, emotional momentum, and unfinished action in CURRENT STATE even when those details are too temporary for a durable memory.

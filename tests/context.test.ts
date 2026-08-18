@@ -4,7 +4,7 @@ import type { Message } from "@/lib/types";
 
 const message = (id: string, role: Message["role"], content: string): Message => ({
   id, conversationId: "conversation", role, content, variants: role === "assistant" ? [content] : [],
-  selectedVariant: 0, memoryIds: [], createdAt: new Date().toISOString(),
+  selectedVariant: 0, memoryIds: [], arcIds: [], createdAt: new Date().toISOString(),
 });
 
 describe("rolling context", () => {

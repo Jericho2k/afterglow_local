@@ -31,6 +31,7 @@ describe("instance settings and backups", () => {
     expect(settings.roleplayPreset).toBe("raw");
     expect(settings.contextMessages).toBe(30);
     expect(settings.contextTokenBudget).toBe(12000);
+    expect(settings.memoryTokenBudget).toBe(6000);
   });
 
   it("rejects unsafe model identifiers and oversized context controls", () => {

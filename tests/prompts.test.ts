@@ -24,7 +24,7 @@ describe("roleplay prompt", () => {
   });
 
   it("supports a direct but autonomous adult roleplay preset", () => {
-    const prompt = roleplayPrompt(character, "", [], { ownerName:"Alex", ownerProfile:"", roleplayPreset:"raw" });
+    const prompt = roleplayPrompt(character, "", [], [], { ownerName:"Alex", ownerProfile:"", roleplayPreset:"raw" });
     expect(prompt).toContain("RAW ADULT");
     expect(prompt).toContain("do not sanitize");
     expect(prompt).toContain("they are not wish-fulfillment puppets");

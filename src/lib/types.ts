@@ -34,10 +34,12 @@ export type Message = {
   variants: string[];
   selectedVariant: number;
   memoryIds: string[];
+  arcIds: string[];
   createdAt: string;
 };
 
 export type MemoryKind = "identity" | "relationship" | "event" | "promise" | "preference" | "boundary" | "open_loop";
+export type MemoryStatus = "active" | "resolved" | "superseded";
 
 export type Memory = {
   id: string;
@@ -48,6 +50,22 @@ export type Memory = {
   importance: number;
   keywords: string[];
   pinned: boolean;
+  status: MemoryStatus;
+  resolution: string;
+  resolvedAt: string | null;
+  lastRecalledAt: string | null;
+  recallCount: number;
+  sourceMessageCount: number;
+  createdAt: string;
+};
+
+export type MemoryArc = {
+  id: string;
+  conversationId: string;
+  summary: string;
+  keywords: string[];
+  startMessageCount: number;
+  endMessageCount: number;
   createdAt: string;
 };
 
@@ -62,6 +80,7 @@ export type AppSettings = {
   contextTokenBudget: number;
   consolidationInterval: number;
   memoryLimit: number;
+  memoryTokenBudget: number;
 };
 
 export type UsageSummary = {

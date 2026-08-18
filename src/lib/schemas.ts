@@ -43,6 +43,8 @@ export const memorySchema = z.object({
   importance: z.number().int().min(1).max(5).default(3),
   keywords: z.array(text(80)).max(12).default([]),
   pinned: z.boolean().default(false),
+  status: z.enum(["active", "resolved", "superseded"]).default("active"),
+  resolution: text(1000).default(""),
 });
 
 export const memoryUpdateSchema = z.object({
@@ -51,6 +53,8 @@ export const memoryUpdateSchema = z.object({
   importance: z.number().int().min(1).max(5),
   keywords: z.array(text(80)).max(12),
   pinned: z.boolean(),
+  status: z.enum(["active", "resolved", "superseded"]).default("active"),
+  resolution: text(1000).default(""),
 });
 
 export const messageUpdateSchema = z.object({
@@ -74,6 +78,7 @@ export const settingsSchema = z.object({
   contextTokenBudget: z.number().int().min(4000).max(100000).default(12000),
   consolidationInterval: z.number().int().min(6).max(50).default(10),
   memoryLimit: z.number().int().min(1).max(20).default(8),
+  memoryTokenBudget: z.number().int().min(1000).max(30000).default(6000),
 });
 
 export const backupSchema = z.object({
@@ -91,5 +96,11 @@ export const backupSchema = z.object({
     characterId: z.string().min(1), conversationId: z.string().nullable().optional(), content: text(3000).min(1),
     kind: z.enum(["identity", "relationship", "event", "promise", "preference", "boundary", "open_loop"]).default("event"),
     importance: z.number().int().min(1).max(5).default(3), keywords: z.array(text(80)).max(12).default([]), pinned: z.boolean().default(false),
+    status: z.enum(["active", "resolved", "superseded"]).default("active"), resolution: text(1000).default(""),
+    sourceMessageCount: z.number().int().min(0).default(0),
   })).max(20000),
+  arcs: z.array(z.object({
+    conversationId: z.string().min(1), summary: text(4000).min(1), keywords: z.array(text(80)).max(12).default([]),
+    startMessageCount: z.number().int().min(0).default(0), endMessageCount: z.number().int().min(0).default(0),
+  })).max(20000).default([]),
 });

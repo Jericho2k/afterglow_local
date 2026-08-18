@@ -1,6 +1,18 @@
 import { requireAuth } from "@/lib/auth";
 import { messageFromRow, transaction } from "@/lib/db";
+import { invalidateDerivedContinuity } from "@/lib/memory";
 import { messageUpdateSchema } from "@/lib/schemas";
+import type { PoolClient } from "pg";
+
+async function messagePosition(client: PoolClient, row: Record<string, unknown>) {
+  const result = await client.query(
+    `SELECT COUNT(*)::int position FROM messages WHERE conversation_id=$1 AND (
+      created_at < $2::timestamptz OR (created_at=$2::timestamptz AND id::text <= $3::text)
+    )`,
+    [row.conversation_id,row.created_at,row.id],
+  );
+  return Number(result.rows[0].position);
+}
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const denied = await requireAuth(); if (denied) return denied;
@@ -12,12 +24,19 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (!current.rowCount) return null;
     const row = current.rows[0];
     const currentMessage = messageFromRow(row);
+    const position = await messagePosition(client,row);
     if (parsed.data.variantIndex !== undefined) {
       const variant = currentMessage.variants[parsed.data.variantIndex];
       if (currentMessage.role !== "assistant" || variant === undefined) return null;
       const updated = await client.query("UPDATE messages SET content=$1,selected_variant=$2 WHERE id=$3 RETURNING *", [variant,parsed.data.variantIndex,id]);
       if (!updated.rowCount) return null;
-      await client.query("UPDATE conversations SET updated_at=now() WHERE id=$1", [row.conversation_id]);
+      await client.query(
+        `DELETE FROM messages WHERE conversation_id=$1 AND (
+          created_at > $2::timestamptz OR (created_at=$2::timestamptz AND id::text > $3::text)
+        )`,
+        [row.conversation_id,row.created_at,id],
+      );
+      await invalidateDerivedContinuity(client,String(row.conversation_id),position);
       return messageFromRow(updated.rows[0]);
     }
     if (typeof parsed.data.content !== "string") return null;
@@ -34,10 +53,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (currentMessage.role === "assistant") variants[currentMessage.selectedVariant] = parsed.data.content;
     const updated = await client.query("UPDATE messages SET content=$1,variants=$2::jsonb WHERE id=$3 RETURNING *", [parsed.data.content,JSON.stringify(variants),id]);
     if (!updated.rowCount) return null;
-    await client.query(
-      "UPDATE conversations SET message_count=(SELECT COUNT(*) FROM messages WHERE conversation_id=$1),updated_at=now() WHERE id=$1",
-      [row.conversation_id],
-    );
+    await invalidateDerivedContinuity(client,String(row.conversation_id),position);
     return messageFromRow(updated.rows[0]);
   });
   if (!message) return Response.json({ error: "Message not found" }, { status: 404 });
@@ -51,6 +67,7 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
     const current = await client.query("SELECT * FROM messages WHERE id=$1 FOR UPDATE", [id]);
     if (!current.rowCount) return null;
     const row = current.rows[0];
+    const position = await messagePosition(client,row);
     await client.query(
       `DELETE FROM messages WHERE conversation_id=$1 AND (
         created_at > $2::timestamptz
@@ -58,10 +75,7 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
       )`,
       [row.conversation_id,row.created_at,id],
     );
-    await client.query(
-      "UPDATE conversations SET message_count=(SELECT COUNT(*) FROM messages WHERE conversation_id=$1),updated_at=now() WHERE id=$1",
-      [row.conversation_id],
-    );
+    await invalidateDerivedContinuity(client,String(row.conversation_id),position - 1);
     return row.conversation_id as string;
   });
   if (!deleted) return Response.json({ error: "Message not found" }, { status: 404 });
