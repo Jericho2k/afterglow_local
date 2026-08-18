@@ -1,4 +1,11 @@
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+export type DeepSeekUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
+};
 
 const baseUrl = () => (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
 export const model = () => process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
@@ -27,6 +34,13 @@ export async function completion(
   messages: ChatMessage[],
   options: { maxTokens?: number; temperature?: number; json?: boolean; signal?: AbortSignal; model?: string } = {},
 ) {
+  return (await completionWithUsage(messages, options)).content;
+}
+
+export async function completionWithUsage(
+  messages: ChatMessage[],
+  options: { maxTokens?: number; temperature?: number; json?: boolean; signal?: AbortSignal; model?: string } = {},
+) {
   const response = await request({
     model: options.model || model(), messages,
     thinking: { type: "disabled" },
@@ -37,7 +51,7 @@ export async function completion(
   const data = await response.json();
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error("DeepSeek returned an empty response");
-  return content;
+  return { content, usage: (data?.usage ?? null) as DeepSeekUsage | null };
 }
 
 export async function streamCompletion(

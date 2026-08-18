@@ -70,4 +70,14 @@ export type UsageSummary = {
   cacheHitTokens: number;
   cacheMissTokens: number;
   requests: number;
+  estimatedCostUsd: number;
+};
+
+export type UsageBreakdown = UsageSummary & { key: string };
+
+export type UsageResponse = {
+  usage: UsageSummary;
+  byModel: UsageBreakdown[];
+  byType: UsageBreakdown[];
+  pricingAsOf: string;
 };

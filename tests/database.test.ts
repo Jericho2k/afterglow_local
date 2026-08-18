@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { newDb } from "pg-mem";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ensureSchema, getSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
+import { relevantMemories } from "@/lib/memory";
 
 beforeEach(async () => {
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
@@ -112,5 +113,33 @@ describe("PostgreSQL persistence", () => {
     const conversation = await query<{ message_count:number }>("SELECT message_count FROM conversations WHERE id=$1",[conversationId]);
     expect(remaining.rows).toEqual([{ id:firstId }]);
     expect(Number(conversation.rows[0].message_count)).toBe(1);
+  });
+
+  it("never recalls generated memories from another chat with the same character", async () => {
+    const characterId = crypto.randomUUID();
+    const firstChatId = crypto.randomUUID();
+    const secondChatId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'First')",[firstChatId,characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Second')",[secondChatId,characterId]);
+    await query(
+      "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords) VALUES ($1,$2,$3,'They had their first dinner at the rooftop restaurant.',5,$4)",
+      [crypto.randomUUID(),characterId,firstChatId,["restaurant"]],
+    );
+    await query(
+      "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords) VALUES ($1,$2,$3,'This story began at the train station.',5,$4)",
+      [crypto.randomUUID(),characterId,secondChatId,["station"]],
+    );
+    await query(
+      "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords) VALUES ($1,$2,NULL,'Mara always drinks black coffee.',5,$3)",
+      [crypto.randomUUID(),characterId,["coffee"]],
+    );
+
+    const recalled = await relevantMemories(characterId,secondChatId,"restaurant station coffee",8);
+    expect(recalled.map((memory) => memory.content)).toEqual(expect.arrayContaining([
+      "This story began at the train station.",
+      "Mara always drinks black coffee.",
+    ]));
+    expect(recalled.map((memory) => memory.content)).not.toContain("They had their first dinner at the rooftop restaurant.");
   });
 });

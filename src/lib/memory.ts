@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { completion, parseJson } from "./deepseek";
+import { completionWithUsage, parseJson } from "./deepseek";
 import { getSettings, query } from "./db";
 import { consolidationPrompt } from "./prompts";
 import type { Memory, Message } from "./types";
 import { memoryFromRow, messageFromRow } from "./db";
+import { recordUsageEvent } from "./usage";
 
 const stopWords = new Set(["the", "and", "that", "this", "with", "from", "have", "your", "you", "are", "was", "for", "but", "not", "they", "she", "him", "her", "his", "our"]);
 const essentialKinds = new Set<Memory["kind"]>(["relationship", "promise", "boundary", "open_loop"]);
@@ -44,8 +45,11 @@ export function rankMemories(memories: Memory[], input: string, limit = 8) {
   return [...pinned, ...dynamic];
 }
 
-export async function relevantMemories(characterId: string, input: string, limit = 8) {
-  const result = await query("SELECT * FROM memories WHERE character_id = $1 ORDER BY pinned DESC, created_at DESC LIMIT 300", [characterId]);
+export async function relevantMemories(characterId: string, conversationId: string, input: string, limit = 8) {
+  const result = await query(
+    "SELECT * FROM memories WHERE character_id = $1 AND (conversation_id = $2 OR conversation_id IS NULL) ORDER BY pinned DESC, created_at DESC LIMIT 300",
+    [characterId,conversationId],
+  );
   return rankMemories(result.rows.map(memoryFromRow), input, limit);
 }
 
@@ -75,18 +79,22 @@ export async function maybeConsolidate(conversationId: string, force = false) {
       [conversationId, batchSize],
     );
     const messages = messageResult.rows.reverse().map(messageFromRow) as Message[];
-    const raw = await completion([
+    const response = await completionWithUsage([
       { role: "system", content: "You are a precise continuity editor and episodic-memory curator. Output JSON only." },
       { role: "user", content: consolidationPrompt(String(conversation.summary), messages, settings.ownerName) },
     ], { json: true, maxTokens: 2400, temperature: 0.2, model: settings.model });
-    const data = parseJson<Consolidation>(raw);
+    if (response.usage) await recordUsageEvent({ conversationId, model: settings.model, kind: "memory_consolidation", usage: response.usage });
+    const data = parseJson<Consolidation>(response.content);
     if (!data.summary) return false;
 
     await query(
       "UPDATE conversations SET summary = $1, last_consolidated_count = GREATEST(last_consolidated_count,$2), updated_at = now() WHERE id = $3",
       [data.summary.slice(0, 12000), messageCount, conversationId],
     );
-    const existingResult = await query("SELECT * FROM memories WHERE character_id = $1 ORDER BY created_at DESC LIMIT 500", [conversation.character_id]);
+    const existingResult = await query(
+      "SELECT * FROM memories WHERE character_id = $1 AND (conversation_id = $2 OR conversation_id IS NULL) ORDER BY created_at DESC LIMIT 500",
+      [conversation.character_id,conversationId],
+    );
     const existing = existingResult.rows.map(memoryFromRow);
     const seenContent = existing.map((memory) => memory.content);
     const kinds: Memory["kind"][] = ["identity","relationship","event","promise","preference","boundary","open_loop"];

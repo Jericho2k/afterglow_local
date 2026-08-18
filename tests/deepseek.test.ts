@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { completion, streamCompletion } from "@/lib/deepseek";
+import { completion, completionWithUsage, streamCompletion } from "@/lib/deepseek";
 
 afterEach(() => { vi.unstubAllGlobals(); delete process.env.DEEPSEEK_API_KEY; });
 
@@ -28,6 +28,18 @@ describe("DeepSeek client", () => {
     vi.stubGlobal("fetch", fetchMock);
     const stream = await streamCompletion([{ role: "user", content: "Hi" }], { model: "deepseek-v4-flash" });
     expect(stream).toBeInstanceOf(ReadableStream);
+  });
+
+  it("returns provider usage for non-streamed background calls", async () => {
+    process.env.DEEPSEEK_API_KEY = "test-secret";
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      choices: [{ message: { content: "organized" } }],
+      usage: { prompt_tokens: 120, completion_tokens: 30, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 40 },
+    })));
+    await expect(completionWithUsage([{ role: "user", content: "Organize this" }])).resolves.toEqual({
+      content: "organized",
+      usage: { prompt_tokens: 120, completion_tokens: 30, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 40 },
+    });
   });
 
   it("enables thinking for deliberate roleplay without unsupported sampling controls", async () => {

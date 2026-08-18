@@ -72,10 +72,12 @@ async function schema() {
       id uuid PRIMARY KEY,
       conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,
       model text NOT NULL,
+      usage_type text NOT NULL DEFAULT 'chat',
       prompt_tokens integer NOT NULL DEFAULT 0,
       completion_tokens integer NOT NULL DEFAULT 0,
       cache_hit_tokens integer NOT NULL DEFAULT 0,
       cache_miss_tokens integer NOT NULL DEFAULT 0,
+      estimated_cost_usd numeric(20,10),
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS usage_events_created_idx ON usage_events(created_at DESC);
@@ -98,6 +100,23 @@ async function schema() {
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'event'");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS usage_type text NOT NULL DEFAULT 'chat'");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS estimated_cost_usd numeric(20,10)");
+  await pool().query(`
+    UPDATE usage_events SET estimated_cost_usd = CASE model
+      WHEN 'deepseek-v4-flash' THEN (
+        cache_hit_tokens * 0.0028
+        + (CASE WHEN cache_hit_tokens + cache_miss_tokens = 0 THEN prompt_tokens ELSE cache_miss_tokens END) * 0.14
+        + completion_tokens * 0.28
+      ) / 1000000
+      WHEN 'deepseek-v4-pro' THEN (
+        cache_hit_tokens * 0.003625
+        + (CASE WHEN cache_hit_tokens + cache_miss_tokens = 0 THEN prompt_tokens ELSE cache_miss_tokens END) * 0.435
+        + completion_tokens * 0.87
+      ) / 1000000
+      ELSE NULL END
+    WHERE estimated_cost_usd IS NULL
+  `);
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS roleplay_preset text NOT NULL DEFAULT 'immersive'");
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS context_token_budget integer NOT NULL DEFAULT 12000");
   await pool().query(

@@ -5,9 +5,19 @@ import { memorySchema, memoryUpdateSchema } from "@/lib/schemas";
 
 export async function GET(request: Request) {
   const denied = await requireAuth(); if (denied) return denied;
-  const characterId = new URL(request.url).searchParams.get("characterId");
+  const params = new URL(request.url).searchParams;
+  const characterId = params.get("characterId");
+  const conversationId = params.get("conversationId");
   if (!characterId) return Response.json({ error: "characterId is required" }, { status: 400 });
-  const result = await query("SELECT * FROM memories WHERE character_id=$1 ORDER BY pinned DESC, importance DESC, created_at DESC", [characterId]);
+  const result = conversationId
+    ? await query(
+      "SELECT * FROM memories WHERE character_id=$1 AND (conversation_id=$2 OR conversation_id IS NULL) ORDER BY pinned DESC, importance DESC, created_at DESC",
+      [characterId,conversationId],
+    )
+    : await query(
+      "SELECT * FROM memories WHERE character_id=$1 AND conversation_id IS NULL ORDER BY pinned DESC, importance DESC, created_at DESC",
+      [characterId],
+    );
   return Response.json({ memories: result.rows.map(memoryFromRow) });
 }
 

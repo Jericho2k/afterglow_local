@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "@/lib/auth";
 import { characterFromRow, getSettings, messageFromRow, query } from "@/lib/db";
-import { streamCompletion } from "@/lib/deepseek";
+import { streamCompletion, type DeepSeekUsage } from "@/lib/deepseek";
 import { maybeConsolidate, relevantMemories } from "@/lib/memory";
 import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
 import { recallText, selectRecentMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
+import { recordUsageEvent } from "@/lib/usage";
 
 export const maxDuration = 120;
 
@@ -57,7 +58,7 @@ export async function POST(request: Request) {
   const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
   const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
-  const memories = await relevantMemories(character.id, recallContext, settings.memoryLimit);
+  const memories = await relevantMemories(character.id, conversationId, recallContext, settings.memoryLimit);
   const system = roleplayPrompt(character, currentSummary, memories, settings);
   const modelHistory = history.map((message) => ({ role: message.role, content: message.content }));
   if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
@@ -80,7 +81,7 @@ export async function POST(request: Request) {
       const reader = upstream.getReader();
       let buffer = "";
       let assistant = "";
-      let usage: Record<string, number> | null = null;
+      let usage: DeepSeekUsage | null = null;
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       try {
         while (true) {
@@ -113,10 +114,7 @@ export async function POST(request: Request) {
           await query("INSERT INTO messages (id,conversation_id,role,content,variants,selected_variant,memory_ids) VALUES ($1,$2,'assistant',$3,$4::jsonb,0,$5::uuid[])", [assistantId,conversationId,assistant,JSON.stringify(variants),memories.map((memory) => memory.id)]);
           await query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1", [conversationId]);
         }
-        if (usage) await query(
-          "INSERT INTO usage_events (id,conversation_id,model,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-          [randomUUID(),conversationId,settings.model,usage.prompt_tokens ?? 0,usage.completion_tokens ?? 0,usage.prompt_cache_hit_tokens ?? 0,usage.prompt_cache_miss_tokens ?? 0],
-        );
+        if (usage) await recordUsageEvent({ conversationId, model: settings.model, kind: action === "send" ? "chat" : action, usage });
         send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, memoriesUsed: memories.map((memory) => memory.id), usage });
         controller.close();
         if (!regenerateTarget) void maybeConsolidate(conversationId).catch((error) => console.error("Memory consolidation failed", error));

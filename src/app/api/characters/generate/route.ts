@@ -1,9 +1,10 @@
 import { requireAuth } from "@/lib/auth";
-import { completion, parseJson } from "@/lib/deepseek";
+import { completionWithUsage, parseJson } from "@/lib/deepseek";
 import { characterGenerationPrompt, characterGenerationTokenBudget } from "@/lib/prompts";
 import { characterSchema, generateCharacterSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { getSettings } from "@/lib/db";
+import { recordUsageEvent } from "@/lib/usage";
 
 export async function POST(request: Request) {
   const denied = await requireAuth(); if (denied) return denied;
@@ -12,11 +13,12 @@ export async function POST(request: Request) {
   if (!input.success) return Response.json({ error: "Describe the character in a little more detail." }, { status: 400 });
   try {
     const settings = await getSettings();
-    const raw = await completion([
+    const response = await completionWithUsage([
       { role: "system", content: "You are an expert character designer. Return valid JSON only." },
       { role: "user", content: characterGenerationPrompt(input.data.idea, input.data.tone, input.data.nsfwEnabled, input.data.mode) },
     ], { json: true, maxTokens: characterGenerationTokenBudget(input.data.mode, input.data.idea.length), temperature: input.data.mode === "dump" ? 0.3 : 0.9, model: settings.model });
-    const generated = parseJson<Record<string, unknown>>(raw);
+    if (response.usage) await recordUsageEvent({ model: settings.model, kind: "character_generation", usage: response.usage });
+    const generated = parseJson<Record<string, unknown>>(response.content);
     const character = characterSchema.parse({ ...generated, nsfwEnabled: input.data.nsfwEnabled });
     return Response.json({ character });
   } catch (error) {
