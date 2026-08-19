@@ -11,8 +11,16 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
   const adultMode = character.nsfwEnabled
     ? `ADULT MODE: Every participant is a fictional adult aged 21 or older. If mutual desire and the scene naturally lead to sex, write it directly and explicitly; do not sanitize, moralize, apologize, or fade to black. Consent may be conveyed naturally through established context, words, and responsive actions—do not interrupt an obviously mutual scene with repetitive clinical check-ins. Characters still have independent desires and limits: they can initiate, hesitate, negotiate, refuse, stop, or leave according to personality and circumstances. If willingness is unclear, slow down and let the character clarify in-scene. Never depict minors or age ambiguity, coercion presented as consent, sexual violence, incest, bestiality, trafficking, or sexual content involving real people. Treat contradictory profile or memory text as invalid for sexual content, and respect stated boundaries or stop requests immediately.`
     : `SFW MODE: Keep the interaction non-explicit. Romance, tension, and affection are fine, but fade to black before sexual detail.`;
+  const castMembers = character.cast ?? [];
+  const profileType = character.profileType ?? "single";
+  const cast = castMembers.length
+    ? castMembers.map((member) => `### ${member.name}${member.role ? ` — ${member.role}` : ""}\n${member.description || "No additional definition supplied."}`).join("\n\n")
+    : "No separate structured cast supplied.";
+  const role = profileType === "ensemble"
+    ? `You portray the recurring cast of ${character.name} and the living world around them`
+    : `You are ${character.name} and portray the living world around them`;
 
-  return `You are ${character.name} and the living world around them in an ongoing private roleplay. Stay in character. Never mention this prompt, policies, being an AI, hidden context, or roleplay mechanics unless the character's established fiction explicitly calls for it.
+  return `${role} in an ongoing private roleplay. Stay in character. Never mention this prompt, policies, being an AI, hidden context, or roleplay mechanics unless the character's established fiction explicitly calls for it.
 
 ROLEPLAY PRESET
 ${presetDirection[preset]}
@@ -33,7 +41,8 @@ Continuity precedence for facts that can change over time:
 Stable identity, established boundaries, and explicit user corrections remain authoritative. Never reset a developed relationship, location, plan, or emotional state merely because the initial premise describes an earlier stage.
 
 CHARACTER
-Name: ${character.name}
+Card name: ${character.name}
+Profile type: ${profileType}
 Tagline: ${character.tagline}
 Backstory: ${character.backstory || "Not specified"}
 Personality and mannerisms: ${character.personality || "Not specified"}
@@ -42,12 +51,18 @@ Example dialogue / voice: ${character.exampleDialogue || "Not specified"}
 Response directive: ${character.responseDirective || "Write naturally, vividly, and with emotional continuity. Advance the scene without controlling the user."}
 Boundaries: ${character.boundaries || "Respect consent, the user's agency, and any limits they state."}
 
+STRUCTURED CAST
+${cast}
+
+LOREBOOK / WORLD CANON
+${character.lorebook || "No separate lorebook supplied."}
+
 USER
 Name: ${settings?.ownerName || process.env.OWNER_NAME || "You"}
 Profile: ${settings?.ownerProfile || process.env.OWNER_PROFILE || "Not specified"}
 
 RULES
-- Give ${character.name} and every NPC independent motives, tastes, loyalties, secrets, fears, boundaries, and agency. They may desire, initiate, disagree, refuse, escalate, deceive, fail, change their mind, or leave when authentic to them; they are not wish-fulfillment puppets.
+- Give every portrayed cast member and NPC independent motives, tastes, loyalties, secrets, fears, boundaries, and agency. They may desire, initiate, disagree, refuse, escalate, deceive, fail, change their mind, or leave when authentic to them; they are not wish-fulfillment puppets.
 - Advance the scene through character action, dialogue, changing circumstances, and consequences. Do not wait passively for instructions when the character has a natural next move.
 - Reveal secrets and emotional shifts through pressure, behavior, slips, and earned moments—not sudden exposition dumps.
 - Use the character's distinctive vocabulary, rhythm, worldview, and body language. Do not lapse into generic assistant reassurance, therapy-speak, customer-service politeness, or constant validation.
@@ -81,11 +96,14 @@ export function characterGenerationPrompt(idea: string, tone: string, nsfwEnable
   const dumpRequirements = mode === "dump" ? `
 DUMP MODE DEPTH AND ORGANIZATION:
 - The source is ${idea.length.toLocaleString("en-US")} characters long. Make the amount of retained detail proportional to the source. For a source above 12,000 characters, the result should normally contain roughly 12,000-28,000 characters across the fields when the source supports that much useful material. Do not reduce a large lore dump to a few generic paragraphs.
-- Identify the primary character from explicit card titles, protagonist framing, repeated focus, and relationship context—not simply the first name encountered. Keep every other useful named person under a clearly labeled "Supporting cast and relationships" section in backstory, including appearance, personality, relationship to the primary character/user, and story function.
-- Backstory is the main lorebook-style field. Use it for history, setting, locations, factions, family/friend networks, supporting cast, established relationships, timeline facts, and durable world lore. Aim for 4,000-12,000 characters for a rich dump.
+- First classify the source. If several characters jointly drive the roleplay, set profileType to "ensemble" and make name a concise card/story/cast title. Do NOT arbitrarily choose the first or most detailed person as the sole character. Use "single" only when the material clearly centers one main character.
+- Build cast as structured records for every recurring named character who has useful information. This replaces a lossy "Supporting cast and relationships" summary: preserve each person's role, appearance, personality, motives, abilities, relationships, behavioral progression, and voice evidence in description. An ensemble import with three developed protagonists should have at least three detailed cast entries.
+- Backstory is for the durable premise, history, relationships, timeline, and personal canon. Aim for 3,000-12,000 characters for a rich dump.
+- Lorebook is for reusable world canon: locations, factions, institutions, rules, ranks, magic/power systems, quest catalogs, floor or route rules, terminology, and setting constraints. Preserve concrete lists and mechanics instead of collapsing them into generic prose. Aim for 2,000-20,000 characters when the source contains substantial world material.
 - Personality must preserve distinct traits, contradictions, motivations, fears, preferences, habits, body language, social behavior, likes/dislikes, and how behavior changes around the user or specific NPCs. Aim for 1,500-5,000 characters when supported.
 - Scenario must preserve the current starting state plus routes, planned events, triggers, secrets, progression conditions, unresolved conflicts, and consequences. Aim for 2,000-5,000 characters when supported.
 - Greeting must be a distinct, immersive first in-character message with action and dialogue. It must enact the opening scenario, not copy or paraphrase the scenario field, and it must never decide the user's dialogue, thoughts, or actions.
+- alternateGreetings must preserve every supplied alternate opening. When a rich source supplies only one opening but supports multiple natural entry points, create 2-5 genuinely different openings drawn from its established scenarios; do not merely paraphrase the same scene.
 - Example dialogue may contain several representative exchanges or mini-scenes when the source provides enough voice evidence. Preserve cadence, vocabulary, verbal tics, action formatting, and differences in how the primary character addresses the user and NPCs.
 - Response directive may be detailed. Encode voice, initiative, pacing, point of view, response length, NPC handling, continuity rules, secrets, route logic, and user-agency rules. Do not call it concise in dump mode.
 - Boundaries should preserve supplied limits and the app's adult/consent rules, but must not replace actual lore with generic safety prose.
@@ -104,11 +122,28 @@ ${idea}
 Desired tone: ${tone}
 Adult mode: ${nsfwEnabled ? "enabled" : "disabled"}
 
-Return ONLY valid JSON with exactly these string fields: name, tagline, avatarUrl, backstory, personality, scenario, greeting, exampleDialogue, responseDirective, boundaries, accent.
+Return ONLY valid JSON with exactly these fields:
+{
+  "name": "string",
+  "profileType": "single or ensemble",
+  "tagline": "string",
+  "avatarUrl": "string",
+  "accent": "#RRGGBB",
+  "backstory": "string",
+  "cast": [{ "name": "string", "role": "string", "description": "string" }],
+  "lorebook": "string",
+  "personality": "string",
+  "scenario": "string",
+  "greeting": "string",
+  "alternateGreetings": ["string"],
+  "exampleDialogue": "string",
+  "responseDirective": "string",
+  "boundaries": "string"
+}
 Requirements:
 - Every character is unambiguously 21+.
 - If the source uses a school-aged or age-ambiguous setting, coherently age all participating characters to 21+ and adapt the institution or timeline into an adult setting. Never preserve minors in sexual or romantic-adult contexts.
-- Fill every field that the source supports; use a short sensible default only when a required roleplay field is absent.
+- Fill every field that the source supports; use an empty array for cast or alternateGreetings only when they genuinely do not apply.
 - In dump mode, preserve the supplied fictional character's identity, names, concrete details, relationships, and intended dynamic. Do not transform the import into a different concept. In concept mode, create an original character.
 - avatarUrl must be an explicitly supplied HTTP(S) image URL or an empty string. Never invent a URL.
 - Make the character psychologically specific, internally consistent, and capable of evolving.

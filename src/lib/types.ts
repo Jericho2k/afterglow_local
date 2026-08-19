@@ -1,16 +1,27 @@
+export type CharacterCastMember = {
+  name: string;
+  role: string;
+  description: string;
+};
+
 export type Character = {
   id: string;
   name: string;
+  profileType: "single" | "ensemble";
   tagline: string;
   avatarUrl: string;
   accent: string;
   backstory: string;
+  cast: CharacterCastMember[];
+  lorebook: string;
   personality: string;
   scenario: string;
   greeting: string;
+  alternateGreetings: string[];
   exampleDialogue: string;
   responseDirective: string;
   boundaries: string;
+  sourceMaterial: string;
   nsfwEnabled: boolean;
   createdAt: string;
   updatedAt: string;

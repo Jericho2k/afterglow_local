@@ -3,10 +3,10 @@ import { characterGenerationPrompt, characterGenerationTokenBudget, continueScen
 import type { Character } from "@/lib/types";
 
 const character: Character = {
-  id: "1", name: "Mara", tagline: "Art thief", avatarUrl: "", accent: "#e879a9",
-  backstory: "Mara is 31.", personality: "Dry wit.", scenario: "Paris.", greeting: "Hello.",
+  id: "1", name: "Mara", profileType: "single", tagline: "Art thief", avatarUrl: "", accent: "#e879a9",
+  backstory: "Mara is 31.", cast: [], lorebook: "Paris factions.", personality: "Dry wit.", scenario: "Paris.", greeting: "Hello.", alternateGreetings: [],
   exampleDialogue: "A sample.", responseDirective: "Be vivid.", boundaries: "Respect stop words.",
-  nsfwEnabled: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  sourceMaterial: "", nsfwEnabled: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
 };
 
 describe("roleplay prompt", () => {
@@ -19,6 +19,7 @@ describe("roleplay prompt", () => {
     expect(prompt).toContain("Do not merely restate");
     expect(prompt).toContain("CURRENT CONTINUITY");
     expect(prompt).toContain("Initial scenario / premise");
+    expect(prompt).toContain("LOREBOOK / WORLD CANON");
     expect(prompt).toContain("Never reset a developed relationship");
     expect(prompt).toContain("Do not invent an offscreen move");
   });

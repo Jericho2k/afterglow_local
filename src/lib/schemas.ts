@@ -1,27 +1,57 @@
 import { z } from "zod";
 
-const text = (max: number) => z.string().trim().max(max);
+const text = (max: number, min = 0) => z.preprocess(
+  (value) => value == null ? "" : typeof value === "string" ? value : String(value),
+  z.string().trim().min(min).max(max),
+);
+
+const accent = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  const normalized = value.trim();
+  if (/^#[0-9a-fA-F]{3}$/.test(normalized)) {
+    return `#${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}${normalized[3]}${normalized[3]}`;
+  }
+  return normalized;
+}, z.string().regex(/^#[0-9a-fA-F]{6}$/)).default("#e879a9");
+
+export const characterCastMemberSchema = z.object({
+  name: text(120, 1),
+  role: text(240).default(""),
+  description: text(8000).default(""),
+});
 
 export const characterSchema = z.object({
-  name: text(80).min(1),
-  tagline: text(180).default(""),
+  name: text(120, 1),
+  profileType: z.enum(["single", "ensemble"]).default("single"),
+  tagline: text(300).default(""),
   avatarUrl: z.union([
     z.literal(""),
     z.string().url().max(1500).refine((value) => value.startsWith("https://") || value.startsWith("http://"), "Avatar URL must use HTTP or HTTPS"),
   ]).default(""),
-  accent: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#e879a9"),
-  backstory: text(12000).default(""),
-  personality: text(5000).default(""),
-  scenario: text(5000).default(""),
-  greeting: text(4000).default(""),
-  exampleDialogue: text(6000).default(""),
-  responseDirective: text(3000).default(""),
-  boundaries: text(3000).default(""),
+  accent,
+  backstory: text(30000).default(""),
+  cast: z.preprocess((value) => value == null ? [] : value, z.array(characterCastMemberSchema).max(50)).default([]),
+  lorebook: text(50000).default(""),
+  personality: text(12000).default(""),
+  scenario: text(12000).default(""),
+  greeting: text(8000).default(""),
+  alternateGreetings: z.preprocess((value) => value == null ? [] : value, z.array(text(8000, 1)).max(12)).default([]),
+  exampleDialogue: text(12000).default(""),
+  responseDirective: text(8000).default(""),
+  boundaries: text(5000).default(""),
+  sourceMaterial: text(100000).default(""),
   nsfwEnabled: z.boolean().default(false),
 });
 
+export function characterValidationMessage(error: z.ZodError) {
+  const issue = error.issues[0];
+  if (!issue) return "Invalid character";
+  const field = issue.path.length ? issue.path.join(" → ") : "Character";
+  return `${field}: ${issue.message}`;
+}
+
 export const generateCharacterSchema = z.object({
-  idea: text(50000).min(8),
+  idea: text(100000, 8),
   mode: z.enum(["idea", "dump"]).default("idea"),
   tone: z.enum(["romantic", "dramatic", "playful", "adventurous", "comforting", "custom"]).default("dramatic"),
   nsfwEnabled: z.boolean().default(false),
@@ -38,7 +68,7 @@ export const chatSchema = z.object({
 export const memorySchema = z.object({
   characterId: z.string().uuid(),
   conversationId: z.string().uuid().nullable().optional(),
-  content: text(3000).min(1),
+  content: text(3000, 1),
   kind: z.enum(["identity", "relationship", "event", "promise", "preference", "boundary", "open_loop"]).default("event"),
   importance: z.number().int().min(1).max(5).default(3),
   keywords: z.array(text(80)).max(12).default([]),
@@ -48,7 +78,7 @@ export const memorySchema = z.object({
 });
 
 export const memoryUpdateSchema = z.object({
-  content: text(3000).min(1),
+  content: text(3000, 1),
   kind: z.enum(["identity", "relationship", "event", "promise", "preference", "boundary", "open_loop"]),
   importance: z.number().int().min(1).max(5),
   keywords: z.array(text(80)).max(12),
@@ -58,17 +88,17 @@ export const memoryUpdateSchema = z.object({
 });
 
 export const messageUpdateSchema = z.object({
-  content: text(12000).min(1).optional(),
+  content: text(12000, 1).optional(),
   truncateAfter: z.boolean().default(false),
   variantIndex: z.number().int().min(0).optional(),
 }).refine((value) => typeof value.content === "string" || value.variantIndex !== undefined, "Provide edited content or a variant index");
 
 export const conversationUpdateSchema = z.object({
-  title: text(120).min(1),
+  title: text(120, 1),
 });
 
 export const settingsSchema = z.object({
-  ownerName: text(80).min(1).default("You"),
+  ownerName: text(80, 1).default("You"),
   ownerProfile: text(5000).default(""),
   model: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek-v4-flash"),
   roleplayPreset: z.enum(["immersive", "raw", "cinematic", "deliberate"]).default("immersive"),
@@ -86,21 +116,21 @@ export const backupSchema = z.object({
   settings: settingsSchema.optional(),
   characters: z.array(z.object({ id: z.string().min(1), data: characterSchema })).max(1000),
   conversations: z.array(z.object({
-    id: z.string().min(1), characterId: z.string().min(1), title: text(120).min(1), summary: text(12000).default(""),
+    id: z.string().min(1), characterId: z.string().min(1), title: text(120, 1), summary: text(12000).default(""),
   })).max(5000),
   messages: z.array(z.object({
-    conversationId: z.string().min(1), role: z.enum(["user", "assistant"]), content: text(12000).min(1),
-    variants: z.array(text(12000).min(1)).max(1000).default([]), selectedVariant: z.number().int().min(0).default(0), createdAt: z.string().datetime().optional(),
+    conversationId: z.string().min(1), role: z.enum(["user", "assistant"]), content: text(12000, 1),
+    variants: z.array(text(12000, 1)).max(1000).default([]), selectedVariant: z.number().int().min(0).default(0), createdAt: z.string().datetime().optional(),
   })).max(100000),
   memories: z.array(z.object({
-    characterId: z.string().min(1), conversationId: z.string().nullable().optional(), content: text(3000).min(1),
+    characterId: z.string().min(1), conversationId: z.string().nullable().optional(), content: text(3000, 1),
     kind: z.enum(["identity", "relationship", "event", "promise", "preference", "boundary", "open_loop"]).default("event"),
     importance: z.number().int().min(1).max(5).default(3), keywords: z.array(text(80)).max(12).default([]), pinned: z.boolean().default(false),
     status: z.enum(["active", "resolved", "superseded"]).default("active"), resolution: text(1000).default(""),
     sourceMessageCount: z.number().int().min(0).default(0),
   })).max(20000),
   arcs: z.array(z.object({
-    conversationId: z.string().min(1), summary: text(4000).min(1), keywords: z.array(text(80)).max(12).default([]),
+    conversationId: z.string().min(1), summary: text(4000, 1), keywords: z.array(text(80)).max(12).default([]),
     startMessageCount: z.number().int().min(0).default(0), endMessageCount: z.number().int().min(0).default(0),
   })).max(20000).default([]),
 });

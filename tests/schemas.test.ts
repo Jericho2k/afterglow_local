@@ -22,6 +22,29 @@ describe("character validation", () => {
     expect(parsed.mode).toBe("dump");
     expect(parsed.idea.length).toBeGreaterThan(10000);
   });
+
+  it("round-trips a rich generated ensemble through the save schema", () => {
+    const generated = characterSchema.parse({
+      name: "The Wayfarers · Tower of Babel",
+      profileType: "ensemble",
+      accent: "#e8a",
+      backstory: "The Seventh Spire betrayal. ".repeat(500),
+      cast: [
+        { name: "Eda", role: "Healer", description: "Optimistic support mage." },
+        { name: "Amara", role: "Fighter", description: "Reserved frontline swordsman." },
+        { name: "Thalia", role: "Scout", description: "Profit-minded thief." },
+      ],
+      lorebook: "Tower rules and quests. ".repeat(1000),
+      greeting: "Eda waits outside the Guild Hall.",
+      alternateGreetings: ["Amara studies the contract board.", "Thalia is caught stealing."],
+      sourceMaterial: "Complete original import. ".repeat(2000),
+    });
+    expect(characterSchema.safeParse(generated).success).toBe(true);
+    expect(generated.profileType).toBe("ensemble");
+    expect(generated.cast).toHaveLength(3);
+    expect(generated.accent).toBe("#ee88aa");
+    expect(generated.sourceMaterial.length).toBeGreaterThan(40000);
+  });
 });
 
 describe("instance settings and backups", () => {

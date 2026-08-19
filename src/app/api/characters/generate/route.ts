@@ -19,7 +19,11 @@ export async function POST(request: Request) {
     ], { json: true, maxTokens: characterGenerationTokenBudget(input.data.mode, input.data.idea.length), temperature: input.data.mode === "dump" ? 0.3 : 0.9, model: settings.model });
     if (response.usage) await recordUsageEvent({ model: settings.model, kind: "character_generation", usage: response.usage });
     const generated = parseJson<Record<string, unknown>>(response.content);
-    const character = characterSchema.parse({ ...generated, nsfwEnabled: input.data.nsfwEnabled });
+    const character = characterSchema.parse({
+      ...generated,
+      sourceMaterial: input.data.mode === "dump" ? input.data.idea : "",
+      nsfwEnabled: input.data.nsfwEnabled,
+    });
     return Response.json({ character });
   } catch (error) {
     console.error("Character generation failed", error);

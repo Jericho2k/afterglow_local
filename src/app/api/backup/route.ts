@@ -43,9 +43,9 @@ export async function POST(request: Request) {
     for (const item of backup.characters) {
       const id = randomUUID(); characterIds.set(item.id,id); const c = item.data;
       await client.query(
-        `INSERT INTO characters (id,name,tagline,avatar_url,accent,backstory,personality,scenario,greeting,example_dialogue,response_directive,boundaries,nsfw_enabled)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [id,c.name,c.tagline,c.avatarUrl,c.accent,c.backstory,c.personality,c.scenario,c.greeting,c.exampleDialogue,c.responseDirective,c.boundaries,c.nsfwEnabled],
+        `INSERT INTO characters (id,name,profile_type,tagline,avatar_url,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18)`,
+        [id,c.name,c.profileType,c.tagline,c.avatarUrl,c.accent,c.backstory,JSON.stringify(c.cast),c.lorebook,c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled],
       );
     }
     for (const item of backup.conversations) {

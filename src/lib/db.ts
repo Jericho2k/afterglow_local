@@ -20,16 +20,21 @@ async function schema() {
     CREATE TABLE IF NOT EXISTS characters (
       id uuid PRIMARY KEY,
       name text NOT NULL,
+      profile_type text NOT NULL DEFAULT 'single',
       tagline text NOT NULL DEFAULT '',
       avatar_url text NOT NULL DEFAULT '',
       accent text NOT NULL DEFAULT '#e879a9',
       backstory text NOT NULL DEFAULT '',
+      cast_members jsonb NOT NULL DEFAULT '[]'::jsonb,
+      lorebook text NOT NULL DEFAULT '',
       personality text NOT NULL DEFAULT '',
       scenario text NOT NULL DEFAULT '',
       greeting text NOT NULL DEFAULT '',
+      alternate_greetings jsonb NOT NULL DEFAULT '[]'::jsonb,
       example_dialogue text NOT NULL DEFAULT '',
       response_directive text NOT NULL DEFAULT '',
       boundaries text NOT NULL DEFAULT '',
+      source_material text NOT NULL DEFAULT '',
       nsfw_enabled boolean NOT NULL DEFAULT false,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
@@ -114,6 +119,11 @@ async function schema() {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS profile_type text NOT NULL DEFAULT 'single'");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS cast_members jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS lorebook text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS alternate_greetings jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS source_material text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
@@ -185,12 +195,16 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
 }
 
 export function characterFromRow(row: Record<string, unknown>): Character {
+  const cast = Array.isArray(row.cast_members) ? row.cast_members.filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === "object").map((member) => ({
+    name: String(member.name || ""), role: String(member.role || ""), description: String(member.description || ""),
+  })).filter((member) => member.name) : [];
+  const alternateGreetings = Array.isArray(row.alternate_greetings) ? row.alternate_greetings.filter((item): item is string => typeof item === "string") : [];
   return {
-    id: String(row.id), name: String(row.name), tagline: String(row.tagline),
+    id: String(row.id), name: String(row.name), profileType: row.profile_type === "ensemble" ? "ensemble" : "single", tagline: String(row.tagline),
     avatarUrl: String(row.avatar_url), accent: String(row.accent), backstory: String(row.backstory),
-    personality: String(row.personality), scenario: String(row.scenario), greeting: String(row.greeting),
+    cast, lorebook: String(row.lorebook || ""), personality: String(row.personality), scenario: String(row.scenario), greeting: String(row.greeting), alternateGreetings,
     exampleDialogue: String(row.example_dialogue), responseDirective: String(row.response_directive),
-    boundaries: String(row.boundaries), nsfwEnabled: Boolean(row.nsfw_enabled),
+    boundaries: String(row.boundaries), sourceMaterial: String(row.source_material || ""), nsfwEnabled: Boolean(row.nsfw_enabled),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
