@@ -20,6 +20,17 @@ const imageSource = z.union([
   z.string().max(3_500_000).regex(/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/, "Unsupported image data"),
 ]).default("");
 
+// Supabase Storage object key. Paths are always scoped by account UUID, and
+// the leading segment is fixed so a crafted key cannot escape the folder the
+// storage policies grant this user.
+const storagePath = z.union([
+  z.literal(""),
+  z.string().max(400).regex(/^users\/[0-9a-fA-F-]{36}\/[A-Za-z0-9._\-/]+$/, "Unsupported storage path")
+    .refine((value) => !value.includes(".."), "Unsupported storage path"),
+]).default("");
+
+const visibility = z.enum(["private", "unlisted", "public"]).default("private");
+
 export const characterCastMemberSchema = z.object({
   name: text(120, 1),
   role: text(240).default(""),
@@ -31,6 +42,7 @@ export const characterSchema = z.object({
   profileType: z.enum(["single", "ensemble"]).default("single"),
   tagline: text(300).default(""),
   avatarUrl: imageSource,
+  avatarPath: storagePath,
   accent,
   backstory: text(30000).default(""),
   cast: z.preprocess((value) => value == null ? [] : value, z.array(characterCastMemberSchema).max(50)).default([]),
@@ -44,6 +56,7 @@ export const characterSchema = z.object({
   boundaries: text(5000).default(""),
   sourceMaterial: text(100000).default(""),
   worldIds: z.preprocess((value) => value == null ? [] : value, z.array(z.string().uuid()).max(50)).default([]),
+  visibility,
   nsfwEnabled: z.boolean().default(false),
 });
 
@@ -111,14 +124,26 @@ export const personaSchema = z.object({
   name: text(100, 1),
   description: text(6000).default(""),
   avatarUrl: imageSource,
+  avatarPath: storagePath,
   accent,
   isDefault: z.boolean().default(false),
+});
+
+export const profileSchema = z.object({
+  username: z.union([
+    z.literal(""),
+    z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_-]{2,29}$/, "Usernames are 3-30 characters: letters, numbers, dashes and underscores"),
+  ]).default(""),
+  displayName: text(80, 1),
+  bio: text(2000).default(""),
+  avatarPath: storagePath,
 });
 
 export const worldSchema = z.object({
   name: text(120, 1),
   description: text(500).default(""),
   content: text(100000, 1),
+  visibility,
 });
 
 export const settingsSchema = z.object({

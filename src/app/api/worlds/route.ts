@@ -1,19 +1,34 @@
 import { randomUUID } from "node:crypto";
-import { requireAuth } from "@/lib/auth";
-import { query, worldFromRow } from "@/lib/db";
+import { asUser, worldFromRow } from "@/lib/db";
 import { worldSchema } from "@/lib/schemas";
+import { currentAccount, unauthorized } from "@/lib/session";
 
 export async function GET() {
-  const denied = await requireAuth(); if (denied) return denied;
-  const [result,links] = await Promise.all([query("SELECT * FROM worlds ORDER BY updated_at DESC"),query("SELECT world_id FROM character_worlds")]);
-  return Response.json({ worlds: result.rows.map((row) => ({ ...worldFromRow(row), characterCount: links.rows.filter((link) => String(link.world_id) === String(row.id)).length })) });
+  const account = await currentAccount();
+  if (!account) return unauthorized();
+  const worlds = await asUser(account.id, async (client) => {
+    const result = await client.query("SELECT * FROM worlds WHERE user_id=$1 ORDER BY updated_at DESC", [account.id]);
+    const links = await client.query(
+      "SELECT cw.world_id FROM character_worlds cw JOIN characters c ON c.id=cw.character_id AND c.user_id=$1",
+      [account.id],
+    );
+    return result.rows.map((row) => ({
+      ...worldFromRow(row),
+      characterCount: links.rows.filter((link) => String(link.world_id) === String(row.id)).length,
+    }));
+  });
+  return Response.json({ worlds });
 }
 
 export async function POST(request: Request) {
-  const denied = await requireAuth(); if (denied) return denied;
+  const account = await currentAccount();
+  if (!account) return unauthorized();
   const parsed = worldSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message || "Invalid world" }, { status: 400 });
   const id = randomUUID(); const value = parsed.data;
-  const result = await query("INSERT INTO worlds (id,name,description,content) VALUES ($1,$2,$3,$4) RETURNING *", [id,value.name,value.description,value.content]);
+  const result = await asUser(account.id, (client) => client.query(
+    "INSERT INTO worlds (id,user_id,name,description,content,visibility) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+    [id,account.id,value.name,value.description,value.content,value.visibility],
+  ));
   return Response.json({ world: worldFromRow(result.rows[0]) }, { status: 201 });
 }

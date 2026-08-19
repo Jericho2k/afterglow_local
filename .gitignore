@@ -13,3 +13,4 @@ AGENTS.md
 sources/
 .codex/
 .agents/
+*.tsbuildinfo

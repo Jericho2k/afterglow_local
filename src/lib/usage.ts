@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { query } from "./db";
+import { userQuery } from "./db";
 import type { DeepSeekUsage } from "./deepseek";
 
 export type UsageKind = "chat" | "regenerate" | "continue" | "memory_consolidation" | "character_generation";
@@ -35,13 +35,19 @@ export function estimateUsageCostUsd(model: string, usage: DeepSeekUsage) {
   ) / 1_000_000;
 }
 
-export async function recordUsageEvent(input: { conversationId?: string | null; model: string; kind: UsageKind; usage: DeepSeekUsage }) {
+/**
+ * Appends one billable event to the ledger, attributed to the account that
+ * caused it. Every paid call routes through here, so per-account cost, token
+ * and volume reporting is a single grouped query away.
+ */
+export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; model: string; kind: UsageKind; usage: DeepSeekUsage }) {
   const usage = normalizedUsage(input.usage);
   const cost = estimateUsageCostUsd(input.model, input.usage);
-  await query(
+  await userQuery(
+    input.userId,
     `INSERT INTO usage_events
-      (id,conversation_id,model,usage_type,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,estimated_cost_usd)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [randomUUID(),input.conversationId ?? null,input.model,input.kind,usage.promptTokens,usage.completionTokens,usage.cacheHitTokens,usage.cacheMissTokens,cost],
+      (id,conversation_id,user_id,model,usage_type,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,estimated_cost_usd)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [randomUUID(),input.conversationId ?? null,input.userId,input.model,input.kind,usage.promptTokens,usage.completionTokens,usage.cacheHitTokens,usage.cacheMissTokens,cost],
   );
 }

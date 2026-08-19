@@ -1,5 +1,5 @@
-import { requireAuth } from "@/lib/auth";
-import { query } from "@/lib/db";
+import { asUser } from "@/lib/db";
+import { currentAccount, unauthorized } from "@/lib/session";
 import { pricingAsOf } from "@/lib/usage";
 
 const aggregate = `COUNT(*)::int requests,
@@ -17,17 +17,36 @@ function usage(row: Record<string, unknown>) {
   };
 }
 
+/**
+ * The calling account's ledger only. Every aggregate is filtered by owner, so
+ * one account's spend is never visible to, or mixed into, another's.
+ */
 export async function GET() {
-  const denied = await requireAuth(); if (denied) return denied;
-  const [result, models, types] = await Promise.all([
-    query(`SELECT ${aggregate} FROM usage_events`),
-    query(`SELECT model, ${aggregate} FROM usage_events GROUP BY model ORDER BY requests DESC`),
-    query(`SELECT usage_type, ${aggregate} FROM usage_events GROUP BY usage_type ORDER BY requests DESC`),
-  ]);
-  return Response.json({
-    usage: usage(result.rows[0]),
-    byModel: models.rows.map((item) => ({ key: String(item.model), ...usage(item) })),
-    byType: types.rows.map((item) => ({ key: String(item.usage_type), ...usage(item) })),
-    pricingAsOf,
+  const account = await currentAccount();
+  if (!account) return unauthorized();
+
+  const payload = await asUser(account.id, async (client) => {
+    const [result, models, types, today, replies] = await Promise.all([
+      client.query(`SELECT ${aggregate} FROM usage_events WHERE user_id=$1`, [account.id]),
+      client.query(`SELECT model, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY model ORDER BY requests DESC`, [account.id]),
+      client.query(`SELECT usage_type, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY usage_type ORDER BY requests DESC`, [account.id]),
+      client.query(`SELECT ${aggregate} FROM usage_events WHERE user_id=$1 AND created_at >= date_trunc('day', now())`, [account.id]),
+      // Volume the quota work will meter against: replies produced today.
+      client.query(
+        `SELECT COUNT(*)::int count FROM messages
+         WHERE user_id=$1 AND role='assistant' AND created_at >= date_trunc('day', now())`,
+        [account.id],
+      ),
+    ]);
+    return {
+      usage: usage(result.rows[0]),
+      today: usage(today.rows[0]),
+      repliesToday: Number(replies.rows[0].count),
+      byModel: models.rows.map((item) => ({ key: String(item.model), ...usage(item) })),
+      byType: types.rows.map((item) => ({ key: String(item.usage_type), ...usage(item) })),
+      pricingAsOf,
+    };
   });
+
+  return Response.json(payload);
 }

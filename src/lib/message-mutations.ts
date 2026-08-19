@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 
-export type MessageLocator = { conversationId?: string; messagePosition?: number };
+export type MessageLocator = { conversationId?: string; messagePosition?: number; userId?: string };
 
 export async function persistedMessagePosition(client: PoolClient, conversationId: string, messageId: string) {
   const result = await client.query(
@@ -17,36 +17,48 @@ export async function persistedMessagePosition(client: PoolClient, conversationI
 }
 
 export async function lockMessageForMutation(client: PoolClient, id: string, locator: MessageLocator = {}) {
-  const direct = await client.query("SELECT * FROM messages WHERE id=$1 FOR UPDATE", [id]);
+  // The owner predicate makes a message id belonging to another account
+  // resolve to nothing, so neither branch below can be used to reach across
+  // accounts even before row level security is consulted.
+  const owner = locator.userId ?? null;
+  const direct = owner
+    ? await client.query("SELECT * FROM messages WHERE id=$1 AND user_id=$2 FOR UPDATE", [id, owner])
+    : await client.query("SELECT * FROM messages WHERE id=$1 FOR UPDATE", [id]);
   if (direct.rowCount || !locator.conversationId || !locator.messagePosition) return direct.rows[0] ?? null;
 
   // A streamed/optimistic message can briefly retain its browser-generated ID.
   // Position within a conversation is stable while the inline editor is open,
   // so use it only as a narrowly scoped recovery key when the supplied ID is stale.
-  const recovered = await client.query(
-    `SELECT * FROM messages WHERE conversation_id=$1
-     ORDER BY created_at ASC,id ASC OFFSET $2 LIMIT 1 FOR UPDATE`,
-    [locator.conversationId, locator.messagePosition - 1],
-  );
+  const recovered = owner
+    ? await client.query(
+      `SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$3
+       ORDER BY created_at ASC,id ASC OFFSET $2 LIMIT 1 FOR UPDATE`,
+      [locator.conversationId, locator.messagePosition - 1, owner],
+    )
+    : await client.query(
+      `SELECT * FROM messages WHERE conversation_id=$1
+       ORDER BY created_at ASC,id ASC OFFSET $2 LIMIT 1 FOR UPDATE`,
+      [locator.conversationId, locator.messagePosition - 1],
+    );
   return recovered.rows[0] ?? null;
 }
 
-export async function truncateMessagesAfterPosition(client: PoolClient, conversationId: string, position: number) {
+export async function truncateMessagesAfterPosition(client: PoolClient, conversationId: string, position: number, userId?: string) {
   return client.query(
     `DELETE FROM messages WHERE id IN (
-       SELECT id FROM messages WHERE conversation_id=$1
+       SELECT id FROM messages WHERE conversation_id=$1 AND ($3::uuid IS NULL OR user_id=$3)
        ORDER BY created_at ASC,id ASC OFFSET $2
      )`,
-    [conversationId, Math.max(0,position)],
+    [conversationId, Math.max(0,position), userId ?? null],
   );
 }
 
-export async function deleteMessagesFromPosition(client: PoolClient, conversationId: string, position: number) {
+export async function deleteMessagesFromPosition(client: PoolClient, conversationId: string, position: number, userId?: string) {
   return client.query(
     `DELETE FROM messages WHERE id IN (
-       SELECT id FROM messages WHERE conversation_id=$1
+       SELECT id FROM messages WHERE conversation_id=$1 AND ($3::uuid IS NULL OR user_id=$3)
        ORDER BY created_at ASC,id ASC OFFSET $2
      )`,
-    [conversationId, Math.max(0,position - 1)],
+    [conversationId, Math.max(0,position - 1), userId ?? null],
   );
 }
