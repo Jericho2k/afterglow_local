@@ -23,7 +23,16 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const requestedId = parsed.data.messageId ?? id;
   const message = await transaction(async (client) => {
     const row = await lockMessageForMutation(client,requestedId,parsed.data);
-    if (!row) return null;
+    if (!row) {
+      const available = parsed.data.conversationId
+        ? await client.query("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id",[parsed.data.conversationId])
+        : { rows: [] };
+      console.error("message_mutation_miss",{
+        pathId:id,requestedId,conversationId:parsed.data.conversationId ?? null,messagePosition:parsed.data.messagePosition ?? null,
+        availableIds:available.rows.map((item) => String(item.id)),
+      });
+      return null;
+    }
     const resolvedId = String(row.id);
     const currentMessage = messageFromRow(row);
     const position = await messagePosition(client,row);
