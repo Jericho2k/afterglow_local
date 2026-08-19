@@ -1,6 +1,7 @@
 import { requireAuth } from "@/lib/auth";
 import { messageFromRow, transaction } from "@/lib/db";
 import { invalidateDerivedContinuity } from "@/lib/memory";
+import { lockMessageForMutation } from "@/lib/message-mutations";
 import { messageUpdateSchema } from "@/lib/schemas";
 import type { PoolClient } from "pg";
 
@@ -20,21 +21,21 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const parsed = messageUpdateSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Invalid message" }, { status: 400 });
   const message = await transaction(async (client) => {
-    const current = await client.query("SELECT * FROM messages WHERE id=$1 FOR UPDATE", [id]);
-    if (!current.rowCount) return null;
-    const row = current.rows[0];
+    const row = await lockMessageForMutation(client,id,parsed.data);
+    if (!row) return null;
+    const resolvedId = String(row.id);
     const currentMessage = messageFromRow(row);
     const position = await messagePosition(client,row);
     if (parsed.data.variantIndex !== undefined) {
       const variant = currentMessage.variants[parsed.data.variantIndex];
       if (currentMessage.role !== "assistant" || variant === undefined) return null;
-      const updated = await client.query("UPDATE messages SET content=$1,selected_variant=$2 WHERE id=$3 RETURNING *", [variant,parsed.data.variantIndex,id]);
+      const updated = await client.query("UPDATE messages SET content=$1,selected_variant=$2 WHERE id=$3 RETURNING *", [variant,parsed.data.variantIndex,resolvedId]);
       if (!updated.rowCount) return null;
       await client.query(
         `DELETE FROM messages WHERE conversation_id=$1 AND (
           created_at > $2::timestamptz OR (created_at=$2::timestamptz AND id::text > $3::text)
         )`,
-        [row.conversation_id,row.created_at,id],
+        [row.conversation_id,row.created_at,resolvedId],
       );
       await invalidateDerivedContinuity(client,String(row.conversation_id),position);
       return messageFromRow(updated.rows[0]);
@@ -46,12 +47,12 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           created_at > $2::timestamptz
           OR (created_at = $2::timestamptz AND id::text > $3::text)
         )`,
-        [row.conversation_id,row.created_at,id],
+        [row.conversation_id,row.created_at,resolvedId],
       );
     }
     const variants = currentMessage.role === "assistant" ? [...currentMessage.variants] : [];
     if (currentMessage.role === "assistant") variants[currentMessage.selectedVariant] = parsed.data.content;
-    const updated = await client.query("UPDATE messages SET content=$1,variants=$2::jsonb WHERE id=$3 RETURNING *", [parsed.data.content,JSON.stringify(variants),id]);
+    const updated = await client.query("UPDATE messages SET content=$1,variants=$2::jsonb WHERE id=$3 RETURNING *", [parsed.data.content,JSON.stringify(variants),resolvedId]);
     if (!updated.rowCount) return null;
     await invalidateDerivedContinuity(client,String(row.conversation_id),position);
     return messageFromRow(updated.rows[0]);
@@ -63,17 +64,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
   const denied = await requireAuth(); if (denied) return denied;
   const { id } = await context.params;
+  const locator = await _request.json().catch(() => ({})) as { conversationId?: string; messagePosition?: number };
   const deleted = await transaction(async (client) => {
-    const current = await client.query("SELECT * FROM messages WHERE id=$1 FOR UPDATE", [id]);
-    if (!current.rowCount) return null;
-    const row = current.rows[0];
+    const row = await lockMessageForMutation(client,id,locator);
+    if (!row) return null;
+    const resolvedId = String(row.id);
     const position = await messagePosition(client,row);
     await client.query(
       `DELETE FROM messages WHERE conversation_id=$1 AND (
         created_at > $2::timestamptz
         OR (created_at = $2::timestamptz AND id::text >= $3::text)
       )`,
-      [row.conversation_id,row.created_at,id],
+      [row.conversation_id,row.created_at,resolvedId],
     );
     await invalidateDerivedContinuity(client,String(row.conversation_id),position - 1);
     return row.conversation_id as string;

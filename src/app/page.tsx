@@ -182,12 +182,12 @@ export default function Home() {
     if (streaming) return; setEditingMessageId(message.id); setEditDraft(message.content);
   }
 
-  async function saveMessageEdit(message: Message) {
+  async function saveMessageEdit(message: Message, messagePosition: number) {
     const content = editDraft.trim();
     if (!content) return;
     if (content === message.content) { setEditingMessageId(null); return; }
     try {
-      await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ content, truncateAfter: true }) });
+      await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ content, truncateAfter: true, conversationId: message.conversationId, messagePosition }) });
       setEditingMessageId(null);
       if (message.role === "user") {
         if (conversation) await loadChat(conversation.characterId,conversation.id);
@@ -196,17 +196,17 @@ export default function Home() {
     } catch (e) { setError(e instanceof Error ? e.message : "Could not edit message"); }
   }
 
-  async function selectVariant(message: Message, index: number) {
+  async function selectVariant(message: Message, index: number, messagePosition: number) {
     if (streaming || index === message.selectedVariant || index < 0 || index >= message.variants.length) return;
     try {
-      await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ variantIndex: index }) });
+      await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ variantIndex: index, conversationId: message.conversationId, messagePosition }) });
       if (conversation) await loadChat(conversation.characterId,conversation.id);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not select that version"); }
   }
 
-  async function deleteFromMessage(message: Message) {
+  async function deleteFromMessage(message: Message, messagePosition: number) {
     if (!conversation || streaming || !window.confirm("Delete this message and everything after it?")) return;
-    try { await api(`/api/messages/${message.id}`, { method: "DELETE" }); await loadChat(conversation.characterId, conversation.id); }
+    try { await api(`/api/messages/${message.id}`, { method: "DELETE", body: JSON.stringify({ conversationId: message.conversationId, messagePosition }) }); await loadChat(conversation.characterId, conversation.id); }
     catch (e) { setError(e instanceof Error ? e.message : "Could not delete message"); }
   }
 
@@ -260,9 +260,9 @@ export default function Home() {
                 <div className="message-stack">
                   <div className="message-meta"><strong>{message.role === "assistant" ? selected.name : activePersona?.name || "You"}</strong><time>{time(message.createdAt)}</time></div>
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`}>
-                    {editingMessageId === message.id ? <div className="inline-editor"><textarea autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1)}>›</button><em>Selected</em></div>}</>}
+                    {editingMessageId === message.id ? <div className="inline-editor"><textarea autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
                   </div>
-                  {message.content && !streaming && editingMessageId !== message.id && <div className="message-actions"><button onClick={() => beginEdit(message)}>✎ Edit</button><button onClick={() => void deleteFromMessage(message)}>⌫ Delete from here</button>{message.role === "assistant" && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {message.memoryIds.length + message.arcIds.length ? `${message.memoryIds.length + message.arcIds.length} recalled` : "Context"}</button>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
+                  {message.content && !streaming && editingMessageId !== message.id && <div className="message-actions"><button onClick={() => beginEdit(message)}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {message.memoryIds.length + message.arcIds.length ? `${message.memoryIds.length + message.arcIds.length} recalled` : "Context"}</button>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
                 </div>
               </article>
             ))}

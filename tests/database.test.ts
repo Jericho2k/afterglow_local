@@ -3,6 +3,7 @@ import { newDb } from "pg-mem";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ensureSchema, getSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
 import { invalidateDerivedContinuity, relevantMemories } from "@/lib/memory";
+import { lockMessageForMutation } from "@/lib/message-mutations";
 
 beforeEach(async () => {
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
@@ -208,5 +209,17 @@ describe("PostgreSQL persistence", () => {
     expect(Number((await query("SELECT COUNT(*) count FROM memory_arcs WHERE conversation_id=$1",[conversationId])).rows[0].count)).toBe(0);
     const conversation = (await query<{summary:string;message_count:number}>("SELECT summary,message_count FROM conversations WHERE id=$1",[conversationId])).rows[0];
     expect(conversation.summary).toBe(""); expect(Number(conversation.message_count)).toBe(2);
+  });
+
+  it("recovers a persisted message by conversation position when its browser ID is stale", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    const firstId = crypto.randomUUID(); const secondId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Identity sync')",[conversationId,characterId]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant','First','2026-01-01T00:00:00Z')",[firstId,conversationId]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'user','Second','2026-01-01T00:00:01Z')",[secondId,conversationId]);
+
+    const recovered = await transaction((client) => lockMessageForMutation(client,crypto.randomUUID(),{ conversationId,messagePosition:2 }));
+    expect(String(recovered?.id)).toBe(secondId);
   });
 });
