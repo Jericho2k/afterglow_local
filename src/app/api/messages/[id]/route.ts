@@ -1,19 +1,8 @@
 import { requireAuth } from "@/lib/auth";
 import { messageFromRow, transaction } from "@/lib/db";
 import { invalidateDerivedContinuity } from "@/lib/memory";
-import { deleteMessagesFromPosition, lockMessageForMutation, truncateMessagesAfterPosition } from "@/lib/message-mutations";
+import { deleteMessagesFromPosition, lockMessageForMutation, persistedMessagePosition, truncateMessagesAfterPosition } from "@/lib/message-mutations";
 import { messageUpdateSchema } from "@/lib/schemas";
-import type { PoolClient } from "pg";
-
-async function messagePosition(client: PoolClient, row: Record<string, unknown>) {
-  const result = await client.query(
-    `SELECT COUNT(*)::int position FROM messages WHERE conversation_id=$1 AND (
-      created_at < $2::timestamptz OR (created_at=$2::timestamptz AND id::text <= $3::text)
-    )`,
-    [row.conversation_id,row.created_at,row.id],
-  );
-  return Number(result.rows[0].position);
-}
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const denied = await requireAuth(); if (denied) return denied;
@@ -35,7 +24,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     }
     const resolvedId = String(row.id);
     const currentMessage = messageFromRow(row);
-    const position = await messagePosition(client,row);
+    const position = await persistedMessagePosition(client,String(row.conversation_id),String(row.id));
     if (parsed.data.variantIndex !== undefined) {
       const variant = currentMessage.variants[parsed.data.variantIndex];
       if (currentMessage.role !== "assistant" || variant === undefined) return null;
@@ -68,7 +57,7 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
   const deleted = await transaction(async (client) => {
     const row = await lockMessageForMutation(client,requestedId,locator);
     if (!row) return null;
-    const position = await messagePosition(client,row);
+    const position = await persistedMessagePosition(client,String(row.conversation_id),String(row.id));
     await deleteMessagesFromPosition(client,String(row.conversation_id),position);
     await invalidateDerivedContinuity(client,String(row.conversation_id),position - 1);
     return row.conversation_id as string;

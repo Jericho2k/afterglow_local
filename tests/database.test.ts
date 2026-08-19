@@ -3,7 +3,7 @@ import { newDb } from "pg-mem";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ensureSchema, getSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
 import { invalidateDerivedContinuity, relevantMemories } from "@/lib/memory";
-import { deleteMessagesFromPosition, lockMessageForMutation, truncateMessagesAfterPosition } from "@/lib/message-mutations";
+import { deleteMessagesFromPosition, lockMessageForMutation, persistedMessagePosition, truncateMessagesAfterPosition } from "@/lib/message-mutations";
 
 beforeEach(async () => {
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
@@ -237,5 +237,16 @@ describe("PostgreSQL persistence", () => {
     expect((await query<{id:string}>("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id",[conversationId])).rows.map((row) => row.id)).toEqual(ids.slice(0,2));
     await transaction((client) => deleteMessagesFromPosition(client,conversationId,2));
     expect((await query<{id:string}>("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id",[conversationId])).rows.map((row) => row.id)).toEqual(ids.slice(0,1));
+  });
+
+  it("calculates message position entirely from persisted timestamps", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    const ids = [crypto.randomUUID(),crypto.randomUUID()];
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Precise position')",[conversationId,characterId]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant','First','2026-01-01T00:00:00.123456Z')",[ids[0],conversationId]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'user','Second','2026-01-01T00:00:00.123789Z')",[ids[1],conversationId]);
+    expect(await transaction((client) => persistedMessagePosition(client,conversationId,ids[0]))).toBe(1);
+    expect(await transaction((client) => persistedMessagePosition(client,conversationId,ids[1]))).toBe(2);
   });
 });

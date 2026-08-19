@@ -2,6 +2,20 @@ import type { PoolClient } from "pg";
 
 export type MessageLocator = { conversationId?: string; messagePosition?: number };
 
+export async function persistedMessagePosition(client: PoolClient, conversationId: string, messageId: string) {
+  const result = await client.query(
+    `SELECT COUNT(*)::int position
+     FROM messages candidate
+     JOIN messages target ON target.id=$2 AND target.conversation_id=$1
+     WHERE candidate.conversation_id=$1 AND (
+       candidate.created_at < target.created_at
+       OR (candidate.created_at=target.created_at AND candidate.id::text <= target.id::text)
+     )`,
+    [conversationId,messageId],
+  );
+  return Number(result.rows[0]?.position ?? 0);
+}
+
 export async function lockMessageForMutation(client: PoolClient, id: string, locator: MessageLocator = {}) {
   const direct = await client.query("SELECT * FROM messages WHERE id=$1 FOR UPDATE", [id]);
   if (direct.rowCount || !locator.conversationId || !locator.messagePosition) return direct.rows[0] ?? null;
