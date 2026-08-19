@@ -196,7 +196,7 @@ export default function Home() {
     try {
       const persisted = await persistedMessageAt(messagePosition);
       if (!persisted) throw new Error("This message is no longer in the conversation. Reload the chat and try again.");
-      await api<{ message: Message }>(`/api/messages/${persisted.id}`, { method: "PATCH", body: JSON.stringify({ content, truncateAfter: true, conversationId: persisted.conversationId, messagePosition }) });
+      await api<{ message: Message }>(`/api/messages/${persisted.id}`, { method: "PATCH", body: JSON.stringify({ messageId: persisted.id, content, truncateAfter: true, conversationId: persisted.conversationId, messagePosition }) });
       setEditingMessageId(null);
       if (message.role === "user") {
         if (conversation) await loadChat(conversation.characterId,conversation.id);
@@ -210,7 +210,7 @@ export default function Home() {
     try {
       const persisted = await persistedMessageAt(messagePosition);
       if (!persisted) throw new Error("This message is no longer in the conversation. Reload the chat and try again.");
-      await api<{ message: Message }>(`/api/messages/${persisted.id}`, { method: "PATCH", body: JSON.stringify({ variantIndex: index, conversationId: persisted.conversationId, messagePosition }) });
+      await api<{ message: Message }>(`/api/messages/${persisted.id}`, { method: "PATCH", body: JSON.stringify({ messageId: persisted.id, variantIndex: index, conversationId: persisted.conversationId, messagePosition }) });
       if (conversation) await loadChat(conversation.characterId,conversation.id);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not select that version"); }
   }
@@ -220,7 +220,7 @@ export default function Home() {
     try {
       const persisted = await persistedMessageAt(messagePosition);
       if (!persisted) throw new Error("This message is no longer in the conversation. Reload the chat and try again.");
-      await api(`/api/messages/${persisted.id}`, { method: "DELETE", body: JSON.stringify({ conversationId: persisted.conversationId, messagePosition }) });
+      await api(`/api/messages/${persisted.id}`, { method: "DELETE", body: JSON.stringify({ messageId: persisted.id, conversationId: persisted.conversationId, messagePosition }) });
       await loadChat(conversation.characterId, conversation.id);
     }
     catch (e) { setError(e instanceof Error ? e.message : "Could not delete message"); }

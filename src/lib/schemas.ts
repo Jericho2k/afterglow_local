@@ -95,6 +95,7 @@ export const messageUpdateSchema = z.object({
   content: text(12000, 1).optional(),
   truncateAfter: z.boolean().default(false),
   variantIndex: z.number().int().min(0).optional(),
+  messageId: z.string().uuid().optional(),
   conversationId: z.string().uuid().optional(),
   messagePosition: z.number().int().min(1).optional(),
 }).refine((value) => typeof value.content === "string" || value.variantIndex !== undefined, "Provide edited content or a variant index");

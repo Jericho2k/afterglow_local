@@ -20,8 +20,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const { id } = await context.params;
   const parsed = messageUpdateSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Invalid message" }, { status: 400 });
+  const requestedId = parsed.data.messageId ?? id;
   const message = await transaction(async (client) => {
-    const row = await lockMessageForMutation(client,id,parsed.data);
+    const row = await lockMessageForMutation(client,requestedId,parsed.data);
     if (!row) return null;
     const resolvedId = String(row.id);
     const currentMessage = messageFromRow(row);
@@ -53,9 +54,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
   const denied = await requireAuth(); if (denied) return denied;
   const { id } = await context.params;
-  const locator = await _request.json().catch(() => ({})) as { conversationId?: string; messagePosition?: number };
+  const locator = await _request.json().catch(() => ({})) as { messageId?: string; conversationId?: string; messagePosition?: number };
+  const requestedId = locator.messageId ?? id;
   const deleted = await transaction(async (client) => {
-    const row = await lockMessageForMutation(client,id,locator);
+    const row = await lockMessageForMutation(client,requestedId,locator);
     if (!row) return null;
     const position = await messagePosition(client,row);
     await deleteMessagesFromPosition(client,String(row.conversation_id),position);
