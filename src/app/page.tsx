@@ -74,8 +74,13 @@ export default function Home() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [recallMessage, setRecallMessage] = useState<Message | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [editWidth, setEditWidth] = useState<number | null>(null);
   const [error, setError] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const pinnedToBottomRef = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
   const selected = useMemo(() => characters.find((item) => item.id === selectedId) ?? null, [characters, selectedId]);
   const activePersona = useMemo(() => personas.find((item) => item.id === conversation?.personaId) ?? personas.find((item) => item.isDefault) ?? null, [personas, conversation?.personaId]);
 
@@ -114,11 +119,48 @@ export default function Home() {
     setError("");
     loadChat(selectedId).catch((e) => setError(e instanceof Error ? e.message : "Could not open conversation"));
   }, [selectedId, authenticated, loadChat]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" }); }, [messages, streaming]);
+  const scrollToBottom = useCallback(() => {
+    const node = messagesRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+    pinnedToBottomRef.current = true; setAtBottom(true);
+  }, []);
+  // The message list unmounts with the chat view, so snap to the newest message as it mounts.
+  const attachMessageList = useCallback((node: HTMLDivElement | null) => {
+    messagesRef.current = node;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+    pinnedToBottomRef.current = true; setAtBottom(true);
+  }, []);
+  const trackScrollPosition = useCallback(() => {
+    const node = messagesRef.current;
+    if (!node) return;
+    const pinned = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+    pinnedToBottomRef.current = pinned; setAtBottom(pinned);
+  }, []);
+  // Open every chat at the newest message instead of at the top of the history.
+  useEffect(() => { scrollToBottom(); }, [conversation?.id, scrollToBottom]);
+  // Follow new content only while the reader is already at the bottom, and never animate it.
+  useEffect(() => { if (pinnedToBottomRef.current) scrollToBottom(); }, [messages, scrollToBottom]);
+  // Grow the composer with its content instead of keeping one fixed row.
+  useEffect(() => {
+    const node = composerRef.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${node.scrollHeight}px`;
+  }, [composer, selectedId]);
+  // Keep the inline message editor exactly as tall as the message it holds.
+  useEffect(() => {
+    const node = editorRef.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${node.scrollHeight}px`;
+  }, [editDraft, editingMessageId]);
 
   async function send(action: "send" | "regenerate" | "continue" = "send", regenerationTargetOverride?: string | null) {
     if (!conversation || streaming || (action === "send" && !composer.trim())) return;
     setError(""); setStreaming(true);
+    scrollToBottom();
     const content = action === "send" ? composer.trim() : "";
     const inferredTarget = messages.at(-1)?.role === "assistant" ? messages.at(-1)?.id ?? null : null;
     const regenerationTargetId = action === "regenerate" ? (regenerationTargetOverride === undefined ? inferredTarget : regenerationTargetOverride) : null;
@@ -178,8 +220,14 @@ export default function Home() {
     } catch (e) { setError(e instanceof Error ? e.message : "Could not update this chat"); }
   }
 
-  function beginEdit(message: Message) {
-    if (streaming) return; setEditingMessageId(message.id); setEditDraft(message.content);
+  function beginEdit(message: Message, bubble?: Element | null) {
+    if (streaming) return;
+    // Open the editor at the rendered size of the message it replaces, with
+    // just enough room left for the Cancel/Save row on very short messages.
+    const width = bubble instanceof HTMLElement ? Math.round(bubble.getBoundingClientRect().width) : 0;
+    const room = messagesRef.current?.clientWidth ?? 0;
+    setEditWidth(width > 0 ? Math.max(width, Math.min(320, room || width)) : null);
+    setEditingMessageId(message.id); setEditDraft(message.content);
   }
 
   async function persistedMessageAt(messagePosition: number) {
@@ -196,12 +244,9 @@ export default function Home() {
     try {
       const persisted = await persistedMessageAt(messagePosition);
       if (!persisted) throw new Error("This message is no longer in the conversation. Reload the chat and try again.");
-      await api<{ message: Message }>(`/api/messages/${persisted.id}`, { method: "PATCH", body: JSON.stringify({ messageId: persisted.id, content, truncateAfter: true, conversationId: persisted.conversationId, messagePosition }) });
+      await api<{ message: Message }>(`/api/messages/${persisted.id}`, { method: "PATCH", body: JSON.stringify({ messageId: persisted.id, content, truncateAfter: false, conversationId: persisted.conversationId, messagePosition }) });
       setEditingMessageId(null);
-      if (message.role === "user") {
-        if (conversation) await loadChat(conversation.characterId,conversation.id);
-        await send("regenerate", null);
-      } else if (conversation) await loadChat(conversation.characterId,conversation.id);
+      if (conversation) await loadChat(conversation.characterId,conversation.id);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not edit message"); }
   }
 
@@ -268,24 +313,24 @@ export default function Home() {
               <button className="icon-button labeled" title="View, edit, or delete character" onClick={() => { setStudioStartSection("identity"); setEditing(selected); setStudioOpen(true); }}><span>✎</span><span>Profile</span></button>
             </div>
           </header>
-          <div className="messages">
+          <div className="messages" ref={attachMessageList} onScroll={trackScrollPosition}>
             <div className="date-divider"><span>THE STORY SO FAR</span></div>
             {messages.map((message, index) => (
               <article key={message.id} className={`message ${message.role}`}>
                 {message.role === "assistant" && <Avatar character={selected} />}
                 <div className="message-stack">
                   <div className="message-meta"><strong>{message.role === "assistant" ? selected.name : activePersona?.name || "You"}</strong><time>{time(message.createdAt)}</time></div>
-                  <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`}>
-                    {editingMessageId === message.id ? <div className="inline-editor"><textarea autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
+                  <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`} style={editingMessageId === message.id && editWidth ? { width: editWidth } : undefined}>
+                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
                   </div>
-                  {message.content && !streaming && editingMessageId !== message.id && <div className="message-actions"><button onClick={() => beginEdit(message)}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {message.memoryIds.length + message.arcIds.length ? `${message.memoryIds.length + message.arcIds.length} recalled` : "Context"}</button>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
+                  {message.content && !streaming && editingMessageId !== message.id && <div className="message-actions"><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {message.memoryIds.length + message.arcIds.length ? `${message.memoryIds.length + message.arcIds.length} recalled` : "Context"}</button>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
                 </div>
               </article>
             ))}
-            <div ref={bottomRef} />
           </div>
           {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           <div className="composer-wrap">
+            {!atBottom && <button className="jump-latest" aria-label="Jump to the latest message" onClick={scrollToBottom}>↓ Latest</button>}
             <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span>•</span><span>{settings.model} · {activePersona?.name || "You"}</span>{conversation && (conversation.instructionPresets.length > 0 || conversation.customInstructions) && <><span>•</span><span>{conversation.instructionPresets.length + (conversation.customInstructions ? 1 : 0)} instructions</span></>}</div>
             {composerToolsOpen && <div className="composer-tools">
               <button onClick={() => { setStudioStartSection("world"); setEditing(selected); setStudioOpen(true); setComposerToolsOpen(false); }}><span>▤</span><strong>World</strong><small>{selected.worldIds.length} attached</small></button>
@@ -295,7 +340,7 @@ export default function Home() {
             </div>}
             <div className="composer">
               <button className={`composer-plus ${composerToolsOpen ? "active" : ""}`} aria-label="Chat tools" onClick={() => setComposerToolsOpen((value) => !value)}>{composerToolsOpen ? "×" : "+"}</button>
-              <textarea value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${selected.name}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
+              <textarea ref={composerRef} value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${selected.name}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
               <button className="send-button" aria-label="Send message" disabled={streaming || !composer.trim()} onClick={() => void send()}>↑</button>
             </div>
             <small className="composer-hint"><span className="desktop-composer-hint">Enter to send · Shift + Enter for a new line</span><span className="mobile-composer-hint">Enter for a new line · Tap ↑ to send</span></small>
