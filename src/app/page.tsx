@@ -1,23 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AppSettings, Character, Conversation, Memory, MemoryArc, Message, UsageResponse } from "@/lib/types";
+import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, Persona, UsageResponse, World } from "@/lib/types";
 import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
 
 type CharacterDraft = Omit<Character, "id" | "createdAt" | "updatedAt">;
+type WorldWithCount = World & { characterCount?: number };
+type AppView = "home" | "chats" | "worlds" | "profile" | "likes";
 
 const blankCharacter: CharacterDraft = {
   name: "", profileType: "single", tagline: "", avatarUrl: "", accent: "#e879a9", backstory: "", cast: [], lorebook: "", personality: "", scenario: "",
-  greeting: "", alternateGreetings: [], exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "", nsfwEnabled: false,
+  greeting: "", alternateGreetings: [], exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "", worldIds: [], nsfwEnabled: false,
 };
 
 function characterDraft(character?: Character | null): CharacterDraft {
-  if (!character) return { ...blankCharacter, cast: [], alternateGreetings: [] };
+  if (!character) return { ...blankCharacter, cast: [], alternateGreetings: [], worldIds: [] };
   return {
     name: character.name, profileType: character.profileType, tagline: character.tagline, avatarUrl: character.avatarUrl, accent: character.accent,
     backstory: character.backstory, cast: character.cast.map((member) => ({ ...member })), lorebook: character.lorebook, personality: character.personality,
     scenario: character.scenario, greeting: character.greeting, alternateGreetings: [...character.alternateGreetings], exampleDialogue: character.exampleDialogue,
-    responseDirective: character.responseDirective, boundaries: character.boundaries, sourceMaterial: character.sourceMaterial, nsfwEnabled: character.nsfwEnabled,
+    responseDirective: character.responseDirective, boundaries: character.boundaries, sourceMaterial: character.sourceMaterial, worldIds: [...character.worldIds], nsfwEnabled: character.nsfwEnabled,
   };
 }
 
@@ -38,6 +40,11 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 function initials(name: string) { return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
 function time(value: string) { return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value)); }
 function memoriesUrl(characterId: string, conversationId?: string | null) { const params = new URLSearchParams({ characterId }); if (conversationId) params.set("conversationId",conversationId); return `/api/memories?${params}`; }
+async function imageFileData(file: File) {
+  if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type)) throw new Error("Choose a PNG, JPEG, WebP, or GIF image.");
+  if (file.size > 2_400_000) throw new Error("Image files must be smaller than 2.4 MB for database storage.");
+  return await new Promise<string>((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("Could not read that image")); reader.readAsDataURL(file); });
+}
 
 export default function Home() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -49,6 +56,8 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [memoryArcs, setMemoryArcs] = useState<MemoryArc[]>([]);
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  const [worlds, setWorlds] = useState<WorldWithCount[]>([]);
   const [composer, setComposer] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
@@ -56,6 +65,10 @@ export default function Home() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeView, setActiveView] = useState<AppView>("home");
+  const [studioStartSection, setStudioStartSection] = useState<"identity" | "definition" | "world">("identity");
+  const [composerToolsOpen, setComposerToolsOpen] = useState(false);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [editing, setEditing] = useState<Character | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -64,6 +77,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const selected = useMemo(() => characters.find((item) => item.id === selectedId) ?? null, [characters, selectedId]);
+  const activePersona = useMemo(() => personas.find((item) => item.id === conversation?.personaId) ?? personas.find((item) => item.isDefault) ?? null, [personas, conversation?.personaId]);
 
   const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
     const query = new URLSearchParams({ characterId });
@@ -82,12 +96,19 @@ export default function Home() {
       setSelectedId((current) => current && data.characters.some((item) => item.id === current) ? current : data.characters[0]?.id ?? null);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not load characters"); }
   }, []);
+  const loadLibraries = useCallback(async () => {
+    const [personaData,worldData] = await Promise.all([
+      api<{ personas: Persona[] }>("/api/personas"),
+      api<{ worlds: WorldWithCount[] }>("/api/worlds"),
+    ]);
+    setPersonas(personaData.personas); setWorlds(worldData.worlds);
+  }, []);
 
   useEffect(() => {
     setAgeAccepted(localStorage.getItem("afterglow_age_verified") === "yes");
     api<{ authenticated: boolean }>("/api/session").then((data) => setAuthenticated(data.authenticated)).catch(() => setAuthenticated(false));
   }, []);
-  useEffect(() => { if (authenticated) { void loadCharacters(); api<{ settings: AppSettings }>("/api/settings").then((data) => setSettings(data.settings)).catch(() => undefined); } }, [authenticated, loadCharacters]);
+  useEffect(() => { if (authenticated) { void loadCharacters(); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings }>("/api/settings").then((data) => setSettings(data.settings)).catch(() => undefined); } }, [authenticated, loadCharacters, loadLibraries]);
   useEffect(() => {
     if (!selectedId || !authenticated) { setConversation(null); setConversations([]); setMessages([]); setMemories([]); setMemoryArcs([]); return; }
     setError("");
@@ -140,13 +161,21 @@ export default function Home() {
     } finally { setStreaming(false); }
   }
 
-  async function newConversation(greetingIndex = 0) {
+  async function newConversation(greetingIndex = 0, personaId?: string | null) {
     if (!selected || streaming) return;
     try {
-      const data = await api<{ conversation: Conversation; messages: Message[] }>("/api/conversations", { method: "POST", body: JSON.stringify({ characterId: selected.id, greetingIndex }) });
+      const data = await api<{ conversation: Conversation; messages: Message[] }>("/api/conversations", { method: "POST", body: JSON.stringify({ characterId: selected.id, greetingIndex, personaId: personaId ?? activePersona?.id ?? null }) });
       setConversation(data.conversation); setMessages(data.messages); setConversations((items) => [data.conversation, ...items]); setHistoryOpen(false);
       const memoryData = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,data.conversation.id)); setMemories(memoryData.memories); setMemoryArcs(memoryData.arcs);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not start a new chat"); }
+  }
+
+  async function updateConversationContext(changes: Partial<Pick<Conversation,"personaId" | "instructionPresets" | "customInstructions">>) {
+    if (!conversation) return;
+    try {
+      const data = await api<{ conversation: Conversation }>(`/api/conversations/${conversation.id}`, { method: "PATCH", body: JSON.stringify(changes) });
+      setConversation(data.conversation); setConversations((items) => items.map((item) => item.id === data.conversation.id ? data.conversation : item));
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not update this chat"); }
   }
 
   function beginEdit(message: Message) {
@@ -189,29 +218,38 @@ export default function Home() {
     <main className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}>×</button></div>
-        <button className="new-character" onClick={() => { setSidebarOpen(false); setEditing(null); setStudioOpen(true); }}><span aria-hidden="true">＋</span> Create a character</button>
-        <div className="section-label"><span>Your characters</span><span>{characters.length}</span></div>
+        <nav className="primary-nav">
+          <button className={activeView === "home" ? "active" : ""} onClick={() => { setActiveView("home"); setSidebarOpen(false); }}><span>⌂</span><strong>Home</strong></button>
+          <button className={activeView === "chats" ? "active" : ""} onClick={() => { setActiveView("chats"); setSidebarOpen(false); }}><span>◫</span><strong>Chats</strong></button>
+          <button onClick={() => { setStudioStartSection("identity"); setEditing(null); setStudioOpen(true); setSidebarOpen(false); }}><span>＋</span><strong>Create</strong></button>
+          <button className={activeView === "worlds" ? "active" : ""} onClick={() => { setActiveView("worlds"); setSidebarOpen(false); }}><span>▤</span><strong>World</strong></button>
+          <button className={activeView === "profile" ? "active" : ""} onClick={() => { setActiveView("profile"); setSidebarOpen(false); }}><span>◉</span><strong>Profile</strong></button>
+          <button className={activeView === "likes" ? "active" : ""} onClick={() => { setActiveView("likes"); setSidebarOpen(false); }}><span>♡</span><strong>Likes</strong></button>
+          <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><span>⚙</span><strong>Settings</strong></button>
+        </nav>
+        <div className="section-label"><span>Recent characters</span><span>{characters.length}</span></div>
         <div className="character-list">
-          {characters.map((character) => (
+          {characters.slice(0,6).map((character) => (
             <div key={character.id} className={`character-row ${selectedId === character.id ? "active" : ""}`}>
-              <button className="character-select" onClick={() => { setSelectedId(character.id); setSidebarOpen(false); }}>
-                <Avatar character={character} /><span className="character-copy"><strong>{character.name}</strong><small>{character.tagline || "A story waiting to unfold"}</small></span>
+              <button className="character-select" onClick={() => { setSelectedId(character.id); setActiveView("chats"); setSidebarOpen(false); }}>
+                <Avatar character={character} /><span className="character-copy"><strong>{character.name}</strong><small>{character.profileType === "ensemble" ? "Multiple characters" : "Character"}</small></span>
               </button>
-              <button className="character-manage" aria-label={`View or edit ${character.name}`} title="View, edit, or delete character" onClick={() => { setEditing(character); setStudioOpen(true); }}>•••</button>
+              <button className="character-manage" aria-label={`View or edit ${character.name}`} title="View, edit, or delete character" onClick={() => { setStudioStartSection("identity"); setEditing(character); setStudioOpen(true); }}>•••</button>
             </div>
           ))}
         </div>
-        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>Private by design</strong><small>Your database, your API key</small></div></div><div className="sidebar-links"><button className="sidebar-tool" onClick={() => { setSidebarOpen(false); setSettingsOpen(true); }}><span aria-hidden="true">⚙</span><span><strong>Settings</strong><small>Model, memory & data</small></span></button><button className="sidebar-lock" aria-label="Lock app" title="Lock app" onClick={async () => { await api("/api/auth", { method: "DELETE" }); setSidebarOpen(false); setAuthenticated(false); }}>◇</button></div></div>
+        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{activePersona?.name || "Private profile"}</strong><small>{activePersona ? "Active chat persona" : "Your database, your API key"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Lock app" title="Lock app" onClick={async () => { await api("/api/auth", { method: "DELETE" }); setSidebarOpen(false); setAuthenticated(false); }}>◇ Lock</button></div></div>
       </aside>
+      {activeView !== "chats" && <button className="global-mobile-menu" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>☰</button>}
 
-      {selected ? (
+      {activeView === "home" ? <HomeFeed characters={characters} onOpen={(character) => { setSelectedId(character.id); setActiveView("chats"); }} onCreate={() => { setEditing(null); setStudioStartSection("identity"); setStudioOpen(true); }} /> : activeView === "worlds" ? <WorldLibrary worlds={worlds} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <PersonaLibrary personas={personas} onChange={() => void loadLibraries()} /> : activeView === "likes" ? <PlaceholderView icon="♡" title="Your liked characters" text="Liked public characters will collect here once discovery and publishing are enabled." /> : selected ? (
         <section className="chat-panel">
           <header className="chat-header">
-            <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open characters">☰</button><button className="identity-profile" title="View or edit character profile" onClick={() => { setEditing(selected); setStudioOpen(true); }}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{selected.name}</strong><small>{selected.tagline}</small></span></button></div>
+            <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open menu">☰</button><button className="identity-profile" title="View or edit character profile" onClick={() => { setStudioStartSection("identity"); setEditing(selected); setStudioOpen(true); }}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{selected.name}</strong><small>{selected.profileType === "ensemble" ? "Multiple characters" : `Chatting as ${activePersona?.name || "You"}`}</small></span></button></div>
             <div className="header-actions">
               <button className="icon-button labeled" onClick={() => setHistoryOpen(true)}><span>◫</span><span>Chats</span>{conversations.length > 1 && <b>{conversations.length}</b>}</button>
               <button className="icon-button labeled" onClick={() => setMemoryOpen(true)}><span>⌁</span><span>Memories</span>{memories.length > 0 && <b>{memories.length}</b>}</button>
-              <button className="icon-button labeled" title="View, edit, or delete character" onClick={() => { setEditing(selected); setStudioOpen(true); }}><span>✎</span><span>Profile</span></button>
+              <button className="icon-button labeled" title="View, edit, or delete character" onClick={() => { setStudioStartSection("identity"); setEditing(selected); setStudioOpen(true); }}><span>✎</span><span>Profile</span></button>
             </div>
           </header>
           <div className="messages">
@@ -220,7 +258,7 @@ export default function Home() {
               <article key={message.id} className={`message ${message.role}`}>
                 {message.role === "assistant" && <Avatar character={selected} />}
                 <div className="message-stack">
-                  <div className="message-meta"><strong>{message.role === "assistant" ? selected.name : "You"}</strong><time>{time(message.createdAt)}</time></div>
+                  <div className="message-meta"><strong>{message.role === "assistant" ? selected.name : activePersona?.name || "You"}</strong><time>{time(message.createdAt)}</time></div>
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`}>
                     {editingMessageId === message.id ? <div className="inline-editor"><textarea autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1)}>›</button><em>Selected</em></div>}</>}
                   </div>
@@ -232,8 +270,15 @@ export default function Home() {
           </div>
           {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           <div className="composer-wrap">
-            <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span>•</span><span>{settings.model} · long-term memory</span></div>
+            <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span>•</span><span>{settings.model} · {activePersona?.name || "You"}</span>{conversation && (conversation.instructionPresets.length > 0 || conversation.customInstructions) && <><span>•</span><span>{conversation.instructionPresets.length + (conversation.customInstructions ? 1 : 0)} instructions</span></>}</div>
+            {composerToolsOpen && <div className="composer-tools">
+              <button onClick={() => { setStudioStartSection("world"); setEditing(selected); setStudioOpen(true); setComposerToolsOpen(false); }}><span>▤</span><strong>World</strong><small>{selected.worldIds.length} attached</small></button>
+              <label><span>◉</span><strong>Persona</strong><select aria-label="Active persona" value={conversation?.personaId || activePersona?.id || ""} onChange={(e) => void updateConversationContext({ personaId: e.target.value || null })}>{personas.map((persona) => <option value={persona.id} key={persona.id}>{persona.name}{persona.isDefault ? " · default" : ""}</option>)}</select></label>
+              <button onClick={() => { setInstructionsOpen(true); setComposerToolsOpen(false); }}><span>⌘</span><strong>Instructions</strong><small>{conversation?.instructionPresets.length || 0} selected</small></button>
+              <button onClick={() => { setActiveView("profile"); setComposerToolsOpen(false); }}><span>◎</span><strong>Manage personas</strong><small>Create & edit</small></button>
+            </div>}
             <div className="composer">
+              <button className={`composer-plus ${composerToolsOpen ? "active" : ""}`} aria-label="Chat tools" onClick={() => setComposerToolsOpen((value) => !value)}>{composerToolsOpen ? "×" : "+"}</button>
               <textarea value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${selected.name}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
               <button className="send-button" aria-label="Send message" disabled={streaming || !composer.trim()} onClick={() => void send()}>↑</button>
             </div>
@@ -244,11 +289,12 @@ export default function Home() {
         <section className="empty-state"><div className="orb">✦</div><span className="eyebrow">Your private story studio</span><h1>Create someone<br />worth remembering.</h1><p>Shape their history, voice, desires, and boundaries. Afterglow keeps the moments that matter.</p><button className="primary" onClick={() => setStudioOpen(true)}>Create your first character</button></section>
       )}
 
-      {studioOpen && <CharacterStudio character={editing} onClose={() => { setStudioOpen(false); setEditing(null); }} onSaved={async (character) => { setStudioOpen(false); setEditing(null); await loadCharacters(); setSelectedId(character.id); }} onDeleted={async () => { setStudioOpen(false); setEditing(null); await loadCharacters(); }} />}
+      {studioOpen && <CharacterStudio character={editing} worlds={worlds} startSection={studioStartSection} onOpenWorldLibrary={() => { setStudioOpen(false); setEditing(null); setActiveView("worlds"); }} onLibrariesChanged={() => void loadLibraries()} onClose={() => { setStudioOpen(false); setEditing(null); }} onSaved={async (character) => { setStudioOpen(false); setEditing(null); await Promise.all([loadCharacters(),loadLibraries()]); setSelectedId(character.id); setActiveView("chats"); }} onDeleted={async () => { setStudioOpen(false); setEditing(null); await loadCharacters(); }} />}
       {memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); setMemoryArcs(data.arcs); }} />}
-      {historyOpen && selected && <ConversationDrawer character={selected} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setHistoryOpen(false)} onNew={(greetingIndex) => void newConversation(greetingIndex)} onSelect={async (id) => { await loadChat(selected.id,id); setHistoryOpen(false); }} onChange={() => void loadChat(selected.id)} />}
+      {historyOpen && selected && <ConversationDrawer character={selected} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setHistoryOpen(false)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={async (id) => { await loadChat(selected.id,id); setHistoryOpen(false); }} onChange={() => void loadChat(selected.id)} />}
       {settingsOpen && <SettingsDrawer settings={settings} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings(value); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings }>("/api/settings"); setSettings(data.settings); }} />}
       {recallMessage && <RecallDrawer message={recallMessage} memories={memories} arcs={memoryArcs} onClose={() => setRecallMessage(null)} />}
+      {instructionsOpen && conversation && <InstructionsDrawer conversation={conversation} onClose={() => setInstructionsOpen(false)} onSave={async (changes) => { await updateConversationContext(changes); setInstructionsOpen(false); }} />}
     </main>
   );
 }
@@ -268,10 +314,10 @@ function AgeGate({ onAccept }: { onAccept: () => void }) {
   return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">18+</div><span className="eyebrow">Adults only</span><h1>Before you enter.</h1><p>This private instance can host mature fictional roleplay. You must be at least 18 and of legal age where you live.</p><button className="primary" onClick={onAccept}>I am an adult — continue</button><small>Afterglow prohibits sexual content involving minors, non-consensual exploitation, or real people.</small></div></main>;
 }
 
-function CharacterStudio({ character, onClose, onSaved, onDeleted }: { character: Character | null; onClose: () => void; onSaved: (character: Character) => void; onDeleted: () => void }) {
+function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, onLibrariesChanged, onClose, onSaved, onDeleted }: { character: Character | null; worlds: WorldWithCount[]; startSection: "identity" | "definition" | "world"; onOpenWorldLibrary: () => void; onLibrariesChanged: () => void; onClose: () => void; onSaved: (character: Character) => void; onDeleted: () => void }) {
   const [form, setForm] = useState<CharacterDraft>(() => characterDraft(character));
   const [idea, setIdea] = useState(""); const [generatorMode, setGeneratorMode] = useState<"idea" | "dump">("idea"); const [tone, setTone] = useState("dramatic");
-  const [section, setSection] = useState<"identity" | "definition" | "world">("identity"); const [generated, setGenerated] = useState(false);
+  const [section, setSection] = useState<"identity" | "definition" | "world">(startSection); const [generated, setGenerated] = useState(false);
   const [busy, setBusy] = useState(false); const [error, setError] = useState("");
   const field = <K extends keyof CharacterDraft>(key: K, value: CharacterDraft[K]) => setForm((current) => ({ ...current, [key]: value }));
   const openings = [form.greeting, ...form.alternateGreetings];
@@ -286,7 +332,12 @@ function CharacterStudio({ character, onClose, onSaved, onDeleted }: { character
   async function save() {
     setBusy(true); setError("");
     try {
-      const payload = characterDraft({ ...form, id: character?.id || "draft", createdAt: character?.createdAt || new Date().toISOString(), updatedAt: character?.updatedAt || new Date().toISOString() });
+      let worldIds = [...form.worldIds];
+      if (form.lorebook.trim()) {
+        const created = await api<{ world: World }>("/api/worlds", { method: "POST", body: JSON.stringify({ name: `${form.name.trim()} world`, description: "World material separated automatically from the character import.", content: form.lorebook.trim() }) });
+        worldIds = [...new Set([...worldIds,created.world.id])]; onLibrariesChanged();
+      }
+      const payload = characterDraft({ ...form, tagline: "", lorebook: "", worldIds, id: character?.id || "draft", createdAt: character?.createdAt || new Date().toISOString(), updatedAt: character?.updatedAt || new Date().toISOString() });
       const data = await api<{ character: Character }>(character ? `/api/characters/${character.id}` : "/api/characters", { method: character ? "PATCH" : "POST", body: JSON.stringify(payload) });
       onSaved(data.character);
     } catch (e) { setError(e instanceof Error ? e.message : "Save failed"); } finally { setBusy(false); }
@@ -299,16 +350,16 @@ function CharacterStudio({ character, onClose, onSaved, onDeleted }: { character
     else field("alternateGreetings", form.alternateGreetings.map((opening, openingIndex) => openingIndex === index - 1 ? value : opening));
   }
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><section className="studio modal"><header><div><span className="eyebrow">{character ? "Character details" : "Character studio"}</span><h2>{character ? `View or edit ${character.name}` : "Bring someone to life"}</h2></div><button className="icon-button" onClick={onClose}>×</button></header>
-    {!character && <div className="generator"><div className="generator-tabs"><button className={generatorMode === "idea" ? "active" : ""} onClick={() => setGeneratorMode("idea")}>Quick idea</button><button className={generatorMode === "dump" ? "active" : ""} onClick={() => setGeneratorMode("dump")}>Paste everything</button></div><div><label>{generatorMode === "dump" ? "Dump all your character material" : "Start with an idea"}<small>{generatorMode === "dump" ? "Paste up to 100,000 characters. Afterglow now detects ensemble casts, separates world lore, creates opening options, and keeps the untouched source for later review." : "Describe one character or a complete cast/story concept."}</small></label><textarea maxLength={100000} value={idea} onChange={(e) => setIdea(e.target.value)} placeholder={generatorMode === "dump" ? "Paste the complete card, descriptions, dialogue, scenarios, lorebooks, rules, and notes here…" : "A sharp-witted art thief in her thirties who meets me at a rain-soaked Paris café…"} rows={generatorMode === "dump" ? 12 : 3} /></div><div className="generator-row"><select value={tone} onChange={(e) => setTone(e.target.value)}><option value="dramatic">Dramatic</option><option value="romantic">Romantic</option><option value="playful">Playful</option><option value="adventurous">Adventurous</option><option value="comforting">Comforting</option><option value="custom">Preserve supplied tone</option></select><span className="character-count">{idea.length.toLocaleString()} / 100,000</span><button className="magic-button" disabled={busy || idea.trim().length < 8} onClick={() => void generate()}>✦ {busy ? (generatorMode === "dump" ? "Mapping cast & lore…" : "Dreaming…") : (generatorMode === "dump" ? "Import and organize" : "Generate profile")}</button></div></div>}
-    <div className="character-card-preview"><Avatar character={{ ...form, id: "preview", createdAt: "", updatedAt: "" }} large /><div><span className="eyebrow">{form.profileType === "ensemble" ? "Ensemble card" : "Character card"}</span><strong>{form.name || "Untitled character"}</strong><p>{form.tagline || "Your hook will appear here."}</p><div><span>{form.cast.length} cast</span><span>{openings.filter(Boolean).length} openings</span><span>{form.lorebook.length.toLocaleString()} lore chars</span></div></div></div>
-    {generated && <div className="import-summary"><strong>Import mapped without discarding the source.</strong><span>{form.profileType === "ensemble" ? "Ensemble detected" : "Single lead detected"} · {form.cast.length} cast entries · {openings.filter(Boolean).length} openings · {form.sourceMaterial.length.toLocaleString()} source characters retained</span></div>}
+    {!character && <div className="generator"><div className="generator-tabs"><button className={generatorMode === "idea" ? "active" : ""} onClick={() => setGeneratorMode("idea")}>Quick idea</button><button className={generatorMode === "dump" ? "active" : ""} onClick={() => setGeneratorMode("dump")}>Paste everything</button></div><div><label>{generatorMode === "dump" ? "Dump all your character material" : "Start with an idea"}<small>{generatorMode === "dump" ? "Paste up to 100,000 characters. Afterglow detects multiple-character cards, separates reusable world material, creates opening options, and keeps the untouched source for review." : "Describe one character or a complete cast/story concept."}</small></label><textarea maxLength={100000} value={idea} onChange={(e) => setIdea(e.target.value)} placeholder={generatorMode === "dump" ? "Paste the complete card, descriptions, dialogue, scenarios, lorebooks, rules, and notes here…" : "A sharp-witted art thief in her thirties who meets me at a rain-soaked Paris café…"} rows={generatorMode === "dump" ? 12 : 3} /></div><div className="generator-row"><select value={tone} onChange={(e) => setTone(e.target.value)}><option value="dramatic">Dramatic</option><option value="romantic">Romantic</option><option value="playful">Playful</option><option value="adventurous">Adventurous</option><option value="comforting">Comforting</option><option value="custom">Preserve supplied tone</option></select><span className="character-count">{idea.length.toLocaleString()} / 100,000</span><button className="magic-button" disabled={busy || idea.trim().length < 8} onClick={() => void generate()}>✦ {busy ? (generatorMode === "dump" ? "Mapping characters & worlds…" : "Dreaming…") : (generatorMode === "dump" ? "Import and organize" : "Generate profile")}</button></div></div>}
+    <div className="character-card-preview"><Avatar character={{ ...form, id: "preview", createdAt: "", updatedAt: "" }} large /><div><span className="eyebrow">{form.profileType === "ensemble" ? "Multiple characters" : "Character card"}</span><strong>{form.name || "Untitled character"}</strong><p>{form.profileType === "ensemble" ? `${form.cast.length} recurring characters` : "Single-character roleplay"}</p><div><span>{form.cast.length} cast</span><span>{openings.filter(Boolean).length} openings</span><span>{form.worldIds.length + (form.lorebook.trim() ? 1 : 0)} worlds</span></div></div></div>
+    {generated && <div className="import-summary"><strong>Import mapped without discarding the source.</strong><span>{form.profileType === "ensemble" ? "Multiple characters detected" : "Single character detected"} · {form.cast.length} cast entries · {openings.filter(Boolean).length} openings · {form.sourceMaterial.length.toLocaleString()} source characters retained</span></div>}
     <nav className="studio-sections"><button className={section === "identity" ? "active" : ""} onClick={() => setSection("identity")}>General</button><button className={section === "definition" ? "active" : ""} onClick={() => setSection("definition")}>Definition</button><button className={section === "world" ? "active" : ""} onClick={() => setSection("world")}>World & openings</button></nav>
     <div className="form-grid">
       {character && <div className="profile-note wide"><span>Complete saved profile</span><p>Saving updates future replies without deleting existing chats or memories. Imported source is retained separately from the chat prompt.</p></div>}
       {section === "identity" && <>
-        <label>Card type<select value={form.profileType} onChange={(e) => field("profileType", e.target.value as CharacterDraft["profileType"])}><option value="single">Single character</option><option value="ensemble">Ensemble / group RP</option></select></label><label>Accent<input type="color" value={form.accent} onChange={(e) => field("accent", e.target.value)} /></label>
-        <label className="wide">{form.profileType === "ensemble" ? "Card / story title" : "Character name"}<input value={form.name} onChange={(e) => field("name", e.target.value)} placeholder={form.profileType === "ensemble" ? "The Wayfarers · Tower of Babel" : "Character name"} /></label>
-        <label className="wide">Tagline<input value={form.tagline} onChange={(e) => field("tagline", e.target.value)} placeholder="A one-line hook" /></label><label className="wide">Avatar image URL <span>(optional)</span><input value={form.avatarUrl} onChange={(e) => field("avatarUrl", e.target.value)} placeholder="https://…" /></label>
+        <label>Card type<select value={form.profileType} onChange={(e) => field("profileType", e.target.value as CharacterDraft["profileType"])}><option value="single">Single character</option><option value="ensemble">Multiple characters</option></select></label><label>Accent<input type="color" value={form.accent} onChange={(e) => field("accent", e.target.value)} /></label>
+        <label className="wide">Character name<input value={form.name} onChange={(e) => field("name", e.target.value)} placeholder={form.profileType === "ensemble" ? "The Wayfarers · Tower of Babel" : "Character name"} /></label>
+        <div className="avatar-source wide"><div><strong>Character image</strong><small>Upload from your media library or use a direct image link.</small></div><div className="avatar-source-actions"><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (e) => { const file=e.target.files?.[0]; if(!file) return; try { field("avatarUrl",await imageFileData(file)); } catch(err) { setError(err instanceof Error ? err.message : "Image import failed"); } finally { e.target.value=""; } }} /></label>{form.avatarUrl && <button className="secondary" onClick={() => field("avatarUrl","")}>Remove</button>}</div><input aria-label="Character image URL" value={form.avatarUrl.startsWith("data:") ? "" : form.avatarUrl} onChange={(e) => field("avatarUrl", e.target.value)} placeholder="https://… (optional)" /></div>
         <label className="toggle-row wide"><span><strong>Adult mode</strong><small>Allows consensual explicit roleplay between fictional adults.</small></span><input type="checkbox" checked={form.nsfwEnabled} onChange={(e) => field("nsfwEnabled", e.target.checked)} /></label>
       </>}
       {section === "definition" && <>
@@ -319,7 +370,8 @@ function CharacterStudio({ character, onClose, onSaved, onDeleted }: { character
       </>}
       {section === "world" && <>
         <label className="wide">Opening scenario<textarea value={form.scenario} onChange={(e) => field("scenario", e.target.value)} rows={fieldRows(form.scenario, 6)} /></label>
-        <label className="wide">Lorebook / world canon<textarea value={form.lorebook} onChange={(e) => field("lorebook", e.target.value)} rows={fieldRows(form.lorebook, 9, 24)} placeholder="Locations, factions, rules, ranks, magic systems, quests, terminology…" /></label>
+        <section className="structured-editor world-picker wide"><div className="structured-heading"><span><strong>Attached worlds</strong><small>Reusable world documents can be attached to any number of characters.</small></span><button className="secondary" onClick={onOpenWorldLibrary}>Open World library</button></div>{worlds.length ? worlds.map((world) => <label key={world.id} className={form.worldIds.includes(world.id) ? "selected" : ""}><input type="checkbox" checked={form.worldIds.includes(world.id)} onChange={(e) => field("worldIds",e.target.checked ? [...form.worldIds,world.id] : form.worldIds.filter((id) => id !== world.id))} /><span><strong>{world.name}</strong><small>{world.description || `${world.content.length.toLocaleString()} characters of world canon`}</small></span></label>) : <div className="empty-library-note">No reusable worlds yet. Create one in the World library, then attach it here.</div>}</section>
+        {form.lorebook.trim() && <label className="wide staged-world">Imported world draft <span>This was extracted by Auto Fill. Saving creates it as a separate reusable World and attaches it here.</span><textarea value={form.lorebook} onChange={(e) => field("lorebook",e.target.value)} rows={fieldRows(form.lorebook,8,20)} /></label>}
         <section className="structured-editor openings-editor wide"><div className="structured-heading"><span><strong>Initial message options</strong><small>The first is the default. Every new chat can choose any opening.</small></span><button className="secondary" onClick={() => field("alternateGreetings", [...form.alternateGreetings, ""])} disabled={form.alternateGreetings.length >= 11}>＋ Add opening</button></div>{openings.map((opening, index) => <article key={index}><div><strong>Opening {index + 1}{index === 0 ? " · default" : ""}</strong>{index > 0 && <button aria-label={`Remove opening ${index + 1}`} onClick={() => field("alternateGreetings", form.alternateGreetings.filter((_, openingIndex) => openingIndex !== index - 1))}>×</button>}</div><textarea value={opening} onChange={(e) => updateOpening(index, e.target.value)} rows={fieldRows(opening, 5, 14)} placeholder="An immersive first message with action and dialogue…" /></article>)}</section>
         <label className="wide source-material">Original import source <span>Preserved verbatim for review and future re-imports; it is not sent with every chat reply.</span><textarea value={form.sourceMaterial} onChange={(e) => field("sourceMaterial", e.target.value)} rows={8} placeholder="The untouched paste will be stored here after an import." /></label>
       </>}
@@ -343,10 +395,46 @@ function RecallDrawer({ message, memories, arcs, onClose }: { message: Message; 
   return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer recall-drawer"><header><div><span className="eyebrow">Reply context</span><h2>What this reply remembered</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="memory-explainer"><span>⌁</span><p>Every reply also receives the complete character profile, current rolling summary, and recent transcript. Below are the additional durable memories and historical chapters recalled from the permanent archive.</p></div><div className="memory-list">{recalled.map((memory) => <article className="memory-card" key={memory.id}><div><span className="memory-pin">{memory.kind.replace("_"," ")} · {memory.status} · importance {memory.importance}/5</span></div><p>{memory.content}</p>{memory.resolution && <p className="memory-resolution">Resolution: {memory.resolution}</p>}</article>)}{recalledArcs.map((arc) => <article className="memory-card" key={arc.id}><div><span className="memory-pin">Historical arc · messages {arc.startMessageCount}–{arc.endMessageCount}</span></div><p>{arc.summary}</p></article>)}{!recalled.length && !recalledArcs.length && <section className="summary-card"><span className="eyebrow">No separate archive recall</span><p>Character canon, rolling continuity, and the recent transcript were still included. Older replies created before archive tracing will also show this message.</p></section>}</div></aside></div>;
 }
 
-function ConversationDrawer({ character, conversations, activeId, onClose, onNew, onSelect, onChange }: { character: Character; conversations: Conversation[]; activeId: string | null; onClose: () => void; onNew: (greetingIndex: number) => void; onSelect: (id: string) => void; onChange: () => void }) {
+function ConversationDrawer({ character, personas, conversations, activeId, onClose, onNew, onSelect, onChange }: { character: Character; personas: Persona[]; conversations: Conversation[]; activeId: string | null; onClose: () => void; onNew: (greetingIndex: number, personaId: string | null) => void; onSelect: (id: string) => void; onChange: () => void }) {
   const [greetingIndex, setGreetingIndex] = useState(0);
-  const greetings = [character.greeting, ...character.alternateGreetings].filter(Boolean);
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer conversation-drawer"><header><div><span className="eyebrow">Chat history</span><h2>Stories with {character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="drawer-action">{greetings.length > 1 && <label className="opening-picker">Start from<select value={greetingIndex} onChange={(e) => setGreetingIndex(Number(e.target.value))}>{greetings.map((_, index) => <option value={index} key={index}>Opening {index + 1}{index === 0 ? " · default" : ""}</option>)}</select><span>{compactMessagePreview(greetings[greetingIndex], 150)}</span></label>}<button className="primary" onClick={() => onNew(greetingIndex)}>＋ Start separate story</button><p>Starts a completely separate story. Only journal entries explicitly marked “All chats” carry over.</p></div><div className="conversation-list">{conversations.map((item) => <article key={item.id} className={`conversation-card ${item.id === activeId ? "active" : ""}`}><button className="conversation-main" onClick={() => onSelect(item.id)}><strong>{item.title}</strong><span>{item.messageCount} messages · {new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(item.updatedAt))}</span></button><div><button title="Rename" onClick={async () => { const title = window.prompt("Conversation title",item.title)?.trim(); if (!title || title === item.title) return; await api(`/api/conversations/${item.id}`,{method:"PATCH",body:JSON.stringify({title})}); onChange(); }}>✎</button><button title="Delete" onClick={async () => { if (!window.confirm(`Delete “${item.title}” and its chat-specific memories? All-chats journal entries will remain.`)) return; await api(`/api/conversations/${item.id}`,{method:"DELETE"}); onChange(); }}>⌫</button></div></article>)}</div></aside></div>;
+  const [personaId,setPersonaId] = useState(personas.find((item) => item.isDefault)?.id ?? personas[0]?.id ?? "");
+  const greetings = [character.greeting, ...character.alternateGreetings].map((text,index) => ({ text,index })).filter((item) => item.text.trim());
+  const selectedGreeting = greetings.find((item) => item.index === greetingIndex) ?? greetings[0];
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer conversation-drawer"><header><div><span className="eyebrow">Chat history</span><h2>Stories with {character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="drawer-action">{greetings.length > 1 && <label className="opening-picker">Start from<select value={selectedGreeting?.index ?? 0} onChange={(e) => setGreetingIndex(Number(e.target.value))}>{greetings.map((item,position) => <option value={item.index} key={item.index}>Opening {position + 1}{item.index === 0 ? " · default" : ""}</option>)}</select><span>{compactMessagePreview(selectedGreeting?.text || "", 150)}</span></label>}<label className="opening-picker">Chat as<select value={personaId} onChange={(e) => setPersonaId(e.target.value)}>{personas.map((persona) => <option value={persona.id} key={persona.id}>{persona.name}{persona.isDefault ? " · default" : ""}</option>)}</select></label><button className="primary" onClick={() => onNew(selectedGreeting?.index ?? 0,personaId || null)}>＋ Start separate story</button><p>Starts a completely separate story with its own persona, instructions, and memories.</p></div><div className="conversation-list">{conversations.map((item) => <article key={item.id} className={`conversation-card ${item.id === activeId ? "active" : ""}`}><button className="conversation-main" onClick={() => onSelect(item.id)}><strong>{item.title}</strong><span>{item.messageCount} messages · {personas.find((persona) => persona.id === item.personaId)?.name || "Default persona"} · {new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(item.updatedAt))}</span></button><div><button title="Rename" onClick={async () => { const title = window.prompt("Conversation title",item.title)?.trim(); if (!title || title === item.title) return; await api(`/api/conversations/${item.id}`,{method:"PATCH",body:JSON.stringify({title})}); onChange(); }}>✎</button><button title="Delete" onClick={async () => { if (!window.confirm(`Delete “${item.title}” and its chat-specific memories? All-chats journal entries will remain.`)) return; await api(`/api/conversations/${item.id}`,{method:"DELETE"}); onChange(); }}>⌫</button></div></article>)}</div></aside></div>;
+}
+
+function HomeFeed({ characters, onOpen, onCreate }: { characters: Character[]; onOpen: (character: Character) => void; onCreate: () => void }) {
+  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Your private library</span><h1>Home</h1><p>Characters and stories ready to continue.</p></div><button className="primary" onClick={onCreate}>＋ Create character</button></header><div className="feed-grid">{characters.map((character) => <button key={character.id} className="feed-card" onClick={() => onOpen(character)}><div className="feed-card-art" style={{ "--accent": character.accent } as React.CSSProperties}>{character.avatarUrl ? <img src={character.avatarUrl} alt="" /> : <span>{initials(character.name)}</span>}<em>{character.nsfwEnabled ? "18+" : "SFW"}</em></div><div><span className="eyebrow">{character.profileType === "ensemble" ? "Multiple characters" : "Character"}</span><strong>{character.name}</strong><small>{character.cast.length ? `${character.cast.length} cast members` : `${character.worldIds.length} attached worlds`} · {character.alternateGreetings.length + (character.greeting ? 1 : 0)} openings</small></div></button>)}{!characters.length && <div className="empty-library-note">Your character feed is empty. Create or import your first card to begin.</div>}</div></section>;
+}
+
+function PlaceholderView({ icon, title, text }: { icon: string; title: string; text: string }) {
+  return <section className="placeholder-view"><span>{icon}</span><h1>{title}</h1><p>{text}</p></section>;
+}
+
+function WorldLibrary({ worlds, onChange }: { worlds: WorldWithCount[]; onChange: () => void }) {
+  const [editing,setEditing] = useState<World | null | "new">(null); const [name,setName] = useState(""); const [description,setDescription] = useState(""); const [content,setContent] = useState(""); const [busy,setBusy] = useState(false); const [error,setError] = useState("");
+  function open(world?: World) { setEditing(world ?? "new"); setName(world?.name ?? ""); setDescription(world?.description ?? ""); setContent(world?.content ?? ""); setError(""); }
+  async function save() { setBusy(true); setError(""); try { await api(editing === "new" ? "/api/worlds" : `/api/worlds/${editing!.id}`,{method:editing === "new"?"POST":"PATCH",body:JSON.stringify({name,description,content})}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Could not save world"); } finally { setBusy(false); } }
+  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Reusable canon</span><h1>World</h1><p>Write lore once, then attach the same document to any characters that live there.</p></div><button className="primary" onClick={() => open()}>＋ New world</button></header><div className="document-grid">{worlds.map((world) => <article key={world.id} className="document-card"><span className="document-icon">▤</span><div><strong>{world.name}</strong><p>{world.description || compactMessagePreview(world.content,140)}</p><small>{world.content.length.toLocaleString()} characters · used by {world.characterCount ?? 0} cards</small></div><button onClick={() => open(world)}>Edit</button></article>)}{!worlds.length && <div className="empty-library-note">No worlds yet. Create lore, rules, locations, factions, or setting documents here.</div>}</div>{editing && <div className="modal-backdrop" onMouseDown={(e) => { if(e.currentTarget===e.target)setEditing(null); }}><section className="modal document-editor"><header><div><span className="eyebrow">World document</span><h2>{editing === "new" ? "Create a reusable world" : `Edit ${editing.name}`}</h2></div><button className="icon-button" onClick={() => setEditing(null)}>×</button></header><div className="document-form"><label>World name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tower of Babel" /></label><label>Short description<input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Setting, rules, factions, locations…" /></label><label>World canon<textarea value={content} onChange={(e) => setContent(e.target.value)} rows={18} maxLength={100000} placeholder="Everything characters should consistently know about this world…" /></label><small>{content.length.toLocaleString()} / 100,000</small>{error && <div className="form-error">{error}</div>}</div><footer>{editing !== "new" && <button className="danger-button" disabled={busy} onClick={async () => { if(!window.confirm(`Delete “${editing.name}”? It will detach from every character.`))return; setBusy(true); try { await api(`/api/worlds/${editing.id}`,{method:"DELETE"}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Delete failed"); setBusy(false); } }}>⌫ Delete</button>}<span className="footer-spacer"/><button className="secondary" onClick={() => setEditing(null)}>Cancel</button><button className="primary" disabled={busy||!name.trim()||!content.trim()} onClick={() => void save()}>{busy?"Saving…":"Save world"}</button></footer></section></div>}</section>;
+}
+
+function PersonaLibrary({ personas, onChange }: { personas: Persona[]; onChange: () => void }) {
+  const [editing,setEditing] = useState<Persona | null | "new">(null); const [name,setName] = useState(""); const [description,setDescription] = useState(""); const [avatarUrl,setAvatarUrl] = useState(""); const [accent,setAccent] = useState("#e879a9"); const [isDefault,setIsDefault] = useState(false); const [busy,setBusy] = useState(false); const [error,setError] = useState("");
+  function open(persona?: Persona) { setEditing(persona ?? "new"); setName(persona?.name ?? ""); setDescription(persona?.description ?? ""); setAvatarUrl(persona?.avatarUrl ?? ""); setAccent(persona?.accent ?? "#e879a9"); setIsDefault(persona?.isDefault ?? personas.length === 0); setError(""); }
+  async function save() { setBusy(true); setError(""); try { await api(editing === "new"?"/api/personas":`/api/personas/${editing!.id}`,{method:editing === "new"?"POST":"PATCH",body:JSON.stringify({name,description,avatarUrl,accent,isDefault})}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Could not save persona"); } finally { setBusy(false); } }
+  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Who you enter the story as</span><h1>Personas</h1><p>Create different identities, appearances, pronouns, and backgrounds, then choose one independently for every chat.</p></div><button className="primary" onClick={() => open()}>＋ New persona</button></header><div className="persona-grid">{personas.map((persona) => <button key={persona.id} className="persona-card" onClick={() => open(persona)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available for any chat"}</small><p>{compactMessagePreview(persona.description||"No profile details yet.",120)}</p></span></button>)}</div>{editing && <div className="modal-backdrop" onMouseDown={(e) => { if(e.currentTarget===e.target)setEditing(null); }}><section className="modal document-editor persona-editor"><header><div><span className="eyebrow">Persona</span><h2>{editing === "new"?"Create yourself for a story":`Edit ${editing.name}`}</h2></div><button className="icon-button" onClick={() => setEditing(null)}>×</button></header><div className="document-form"><div className="persona-image-row"><div className="persona-preview" style={{"--accent":accent} as React.CSSProperties}>{avatarUrl?<img src={avatarUrl} alt=""/>:<span>{initials(name)}</span>}</div><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{setAvatarUrl(await imageFileData(file));}catch(err){setError(err instanceof Error?err.message:"Image import failed");}finally{e.target.value="";}}}/></label><input type="color" aria-label="Persona accent" value={accent} onChange={(e)=>setAccent(e.target.value)}/></div><label>Persona name<input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Name used in chat"/></label><label>Persona description<textarea value={description} onChange={(e)=>setDescription(e.target.value)} rows={10} placeholder="Appearance, pronouns, age, personality, abilities, history, relationships, and anything characters should know…"/></label><label className="toggle-row"><span><strong>Default persona</strong><small>Automatically selected for new chats.</small></span><input type="checkbox" checked={isDefault} onChange={(e)=>setIsDefault(e.target.checked)}/></label>{error&&<div className="form-error">{error}</div>}</div><footer>{editing!=="new"&&<button className="danger-button" disabled={busy||editing.isDefault} title={editing.isDefault?"Choose another default persona first":"Delete persona"} onClick={async()=>{if(!window.confirm(`Delete persona “${editing.name}”? Existing chats will fall back to your default persona.`))return;setBusy(true);try{await api(`/api/personas/${editing.id}`,{method:"DELETE"});setEditing(null);onChange();}catch(e){setError(e instanceof Error?e.message:"Delete failed");setBusy(false);}}}>⌫ Delete</button>}<span className="footer-spacer"/><button className="secondary" onClick={()=>setEditing(null)}>Cancel</button><button className="primary" disabled={busy||!name.trim()} onClick={()=>void save()}>{busy?"Saving…":"Save persona"}</button></footer></section></div>}</section>;
+}
+
+function PersonaAvatar({ persona }: { persona: Persona }) { return <div className="persona-preview" style={{"--accent":persona.accent} as React.CSSProperties}>{persona.avatarUrl?<img src={persona.avatarUrl} alt=""/>:<span>{initials(persona.name)}</span>}</div>; }
+
+function InstructionsDrawer({ conversation, onClose, onSave }: { conversation: Conversation; onClose: () => void; onSave: (value: { instructionPresets: ChatInstructionPreset[]; customInstructions: string }) => Promise<void> }) {
+  const [presets,setPresets] = useState<ChatInstructionPreset[]>(conversation.instructionPresets); const [custom,setCustom] = useState(conversation.customInstructions); const [busy,setBusy] = useState(false);
+  const choices: { id: ChatInstructionPreset; title: string; text: string }[] = [
+    {id:"reduce_repetition",title:"Reduce repetition",text:"Avoid recycled phrases, gestures, and emotional beats."},
+    {id:"stay_focused",title:"Stay focused",text:"Keep replies centered on the latest message and immediate scene."},
+    {id:"advance_plot",title:"Advance the plot",text:"Add natural consequences, discoveries, or complications when appropriate."},
+  ];
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e)=>{if(e.currentTarget===e.target)onClose();}}><aside className="memory-drawer instruction-drawer"><header><div><span className="eyebrow">This chat only</span><h2>Instructions</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="instruction-body"><p>These directions are added beneath the character, world, persona, and continuity context for this story only.</p>{choices.map((choice)=><label key={choice.id} className={presets.includes(choice.id)?"selected":""}><input type="checkbox" checked={presets.includes(choice.id)} onChange={(e)=>setPresets(e.target.checked?[...presets,choice.id]:presets.filter((item)=>item!==choice.id))}/><span><strong>{choice.title}</strong><small>{choice.text}</small></span></label>)}<label className="custom-instruction">Custom instruction<textarea rows={7} maxLength={3000} value={custom} onChange={(e)=>setCustom(e.target.value)} placeholder="For example: Keep replies concise during dialogue-heavy scenes…"/><small>{custom.length.toLocaleString()} / 3,000</small></label></div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={async()=>{setBusy(true);await onSave({instructionPresets:presets,customInstructions:custom});setBusy(false);}}>{busy?"Saving…":"Save instructions"}</button></footer></aside></div>;
 }
 
 function SettingsDrawer({ settings, onClose, onSaved, onImported }: { settings: AppSettings; onClose: () => void; onSaved: (settings: AppSettings) => void; onImported: () => void }) {

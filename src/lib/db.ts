@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import type { AppSettings, Character, Conversation, Memory, MemoryArc, Message } from "./types";
+import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, Persona, World } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -44,6 +45,9 @@ async function schema() {
       character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       title text NOT NULL DEFAULT 'New conversation',
       summary text NOT NULL DEFAULT '',
+      persona_id uuid,
+      instruction_presets text[] NOT NULL DEFAULT '{}',
+      custom_instructions text NOT NULL DEFAULT '',
       message_count integer NOT NULL DEFAULT 0,
       last_consolidated_count integer NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now(),
@@ -118,12 +122,39 @@ async function schema() {
       memory_token_budget integer NOT NULL DEFAULT 6000,
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS personas (
+      id uuid PRIMARY KEY,
+      name text NOT NULL,
+      description text NOT NULL DEFAULT '',
+      avatar_url text NOT NULL DEFAULT '',
+      accent text NOT NULL DEFAULT '#e879a9',
+      is_default boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS personas_single_default_idx ON personas (is_default) WHERE is_default;
+    CREATE TABLE IF NOT EXISTS worlds (
+      id uuid PRIMARY KEY,
+      name text NOT NULL,
+      description text NOT NULL DEFAULT '',
+      content text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS character_worlds (
+      character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+      PRIMARY KEY (character_id, world_id)
+    );
   `);
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS profile_type text NOT NULL DEFAULT 'single'");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS cast_members jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS lorebook text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS alternate_greetings jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS source_material text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS persona_id uuid REFERENCES personas(id) ON DELETE SET NULL");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS instruction_presets text[] NOT NULL DEFAULT '{}'");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS custom_instructions text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
@@ -160,6 +191,18 @@ async function schema() {
     "INSERT INTO app_settings (id, owner_name, owner_profile, model) VALUES ('owner',$1,$2,$3) ON CONFLICT (id) DO NOTHING",
     [process.env.OWNER_NAME || "You", process.env.OWNER_PROFILE || "", process.env.DEEPSEEK_MODEL || "deepseek-v4-flash"],
   );
+  await pool().query(`
+    INSERT INTO personas (id,name,description,is_default)
+    SELECT '00000000-0000-4000-8000-000000000001'::uuid,owner_name,owner_profile,true FROM app_settings WHERE id='owner'
+    ON CONFLICT (id) DO NOTHING
+  `);
+  const legacyLorebooks = await pool().query("SELECT id,name,lorebook FROM characters WHERE lorebook<>''");
+  for (const character of legacyLorebooks.rows) {
+    const worldId = randomUUID();
+    await pool().query("INSERT INTO worlds (id,name,description,content) VALUES ($1,$2,$3,$4)", [worldId,`${character.name} world`,"Imported from the original embedded character lorebook.",character.lorebook]);
+    await pool().query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)", [character.id,worldId]);
+    await pool().query("UPDATE characters SET lorebook='' WHERE id=$1", [character.id]);
+  }
 }
 
 export async function ensureSchema() {
@@ -199,20 +242,38 @@ export function characterFromRow(row: Record<string, unknown>): Character {
     name: String(member.name || ""), role: String(member.role || ""), description: String(member.description || ""),
   })).filter((member) => member.name) : [];
   const alternateGreetings = Array.isArray(row.alternate_greetings) ? row.alternate_greetings.filter((item): item is string => typeof item === "string") : [];
+  const worldIds = textArrayFromRow(row.world_ids);
   return {
     id: String(row.id), name: String(row.name), profileType: row.profile_type === "ensemble" ? "ensemble" : "single", tagline: String(row.tagline),
     avatarUrl: String(row.avatar_url), accent: String(row.accent), backstory: String(row.backstory),
     cast, lorebook: String(row.lorebook || ""), personality: String(row.personality), scenario: String(row.scenario), greeting: String(row.greeting), alternateGreetings,
     exampleDialogue: String(row.example_dialogue), responseDirective: String(row.response_directive),
-    boundaries: String(row.boundaries), sourceMaterial: String(row.source_material || ""), nsfwEnabled: Boolean(row.nsfw_enabled),
+    boundaries: String(row.boundaries), sourceMaterial: String(row.source_material || ""), worldIds, nsfwEnabled: Boolean(row.nsfw_enabled),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
 
 export function conversationFromRow(row: Record<string, unknown>): Conversation {
+  const allowed = new Set<ChatInstructionPreset>(["reduce_repetition","stay_focused","advance_plot"]);
+  const instructionPresets = textArrayFromRow(row.instruction_presets).filter((item): item is ChatInstructionPreset => allowed.has(item as ChatInstructionPreset));
   return {
     id: String(row.id), characterId: String(row.character_id), title: String(row.title),
-    summary: String(row.summary), messageCount: Number(row.message_count),
+    summary: String(row.summary), personaId: row.persona_id ? String(row.persona_id) : null, instructionPresets, customInstructions: String(row.custom_instructions || ""), messageCount: Number(row.message_count),
+    createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+export function personaFromRow(row: Record<string, unknown>): Persona {
+  return {
+    id: String(row.id), name: String(row.name), description: String(row.description || ""), avatarUrl: String(row.avatar_url || ""),
+    accent: String(row.accent || "#e879a9"), isDefault: Boolean(row.is_default),
+    createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+export function worldFromRow(row: Record<string, unknown>): World {
+  return {
+    id: String(row.id), name: String(row.name), description: String(row.description || ""), content: String(row.content || ""),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }

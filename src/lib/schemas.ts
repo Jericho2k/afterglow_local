@@ -14,6 +14,12 @@ const accent = z.preprocess((value) => {
   return normalized;
 }, z.string().regex(/^#[0-9a-fA-F]{6}$/)).default("#e879a9");
 
+const imageSource = z.union([
+  z.literal(""),
+  z.string().url().max(1500).refine((value) => value.startsWith("https://") || value.startsWith("http://"), "Image URL must use HTTP or HTTPS"),
+  z.string().max(3_500_000).regex(/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/, "Unsupported image data"),
+]).default("");
+
 export const characterCastMemberSchema = z.object({
   name: text(120, 1),
   role: text(240).default(""),
@@ -24,10 +30,7 @@ export const characterSchema = z.object({
   name: text(120, 1),
   profileType: z.enum(["single", "ensemble"]).default("single"),
   tagline: text(300).default(""),
-  avatarUrl: z.union([
-    z.literal(""),
-    z.string().url().max(1500).refine((value) => value.startsWith("https://") || value.startsWith("http://"), "Avatar URL must use HTTP or HTTPS"),
-  ]).default(""),
+  avatarUrl: imageSource,
   accent,
   backstory: text(30000).default(""),
   cast: z.preprocess((value) => value == null ? [] : value, z.array(characterCastMemberSchema).max(50)).default([]),
@@ -40,6 +43,7 @@ export const characterSchema = z.object({
   responseDirective: text(8000).default(""),
   boundaries: text(5000).default(""),
   sourceMaterial: text(100000).default(""),
+  worldIds: z.preprocess((value) => value == null ? [] : value, z.array(z.string().uuid()).max(50)).default([]),
   nsfwEnabled: z.boolean().default(false),
 });
 
@@ -94,7 +98,24 @@ export const messageUpdateSchema = z.object({
 }).refine((value) => typeof value.content === "string" || value.variantIndex !== undefined, "Provide edited content or a variant index");
 
 export const conversationUpdateSchema = z.object({
-  title: text(120, 1),
+  title: text(120, 1).optional(),
+  personaId: z.string().uuid().nullable().optional(),
+  instructionPresets: z.array(z.enum(["reduce_repetition", "stay_focused", "advance_plot"])).max(3).optional(),
+  customInstructions: text(3000).optional(),
+}).refine((value) => Object.values(value).some((item) => item !== undefined), "Provide a conversation change");
+
+export const personaSchema = z.object({
+  name: text(100, 1),
+  description: text(6000).default(""),
+  avatarUrl: imageSource,
+  accent,
+  isDefault: z.boolean().default(false),
+});
+
+export const worldSchema = z.object({
+  name: text(120, 1),
+  description: text(500).default(""),
+  content: text(100000, 1),
 });
 
 export const settingsSchema = z.object({
@@ -114,9 +135,12 @@ export const settingsSchema = z.object({
 export const backupSchema = z.object({
   version: z.literal(1),
   settings: settingsSchema.optional(),
+  personas: z.array(z.object({ id: z.string().min(1), data: personaSchema })).max(1000).default([]),
+  worlds: z.array(z.object({ id: z.string().min(1), data: worldSchema })).max(5000).default([]),
   characters: z.array(z.object({ id: z.string().min(1), data: characterSchema })).max(1000),
   conversations: z.array(z.object({
-    id: z.string().min(1), characterId: z.string().min(1), title: text(120, 1), summary: text(12000).default(""),
+    id: z.string().min(1), characterId: z.string().min(1), title: text(120, 1), summary: text(12000).default(""), personaId: z.string().nullable().optional(),
+    instructionPresets: z.array(z.enum(["reduce_repetition", "stay_focused", "advance_plot"])).max(3).default([]), customInstructions: text(3000).default(""),
   })).max(5000),
   messages: z.array(z.object({
     conversationId: z.string().min(1), role: z.enum(["user", "assistant"]), content: text(12000, 1),

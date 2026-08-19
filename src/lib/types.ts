@@ -22,6 +22,7 @@ export type Character = {
   responseDirective: string;
   boundaries: string;
   sourceMaterial: string;
+  worldIds: string[];
   nsfwEnabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -32,10 +33,35 @@ export type Conversation = {
   characterId: string;
   title: string;
   summary: string;
+  personaId: string | null;
+  instructionPresets: ChatInstructionPreset[];
+  customInstructions: string;
   messageCount: number;
   createdAt: string;
   updatedAt: string;
 };
+
+export type Persona = {
+  id: string;
+  name: string;
+  description: string;
+  avatarUrl: string;
+  accent: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type World = {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChatInstructionPreset = "reduce_repetition" | "stay_focused" | "advance_plot";
 
 export type Message = {
   id: string;

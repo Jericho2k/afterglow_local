@@ -6,7 +6,7 @@ const character: Character = {
   id: "1", name: "Mara", profileType: "single", tagline: "Art thief", avatarUrl: "", accent: "#e879a9",
   backstory: "Mara is 31.", cast: [], lorebook: "Paris factions.", personality: "Dry wit.", scenario: "Paris.", greeting: "Hello.", alternateGreetings: [],
   exampleDialogue: "A sample.", responseDirective: "Be vivid.", boundaries: "Respect stop words.",
-  sourceMaterial: "", nsfwEnabled: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  sourceMaterial: "", worldIds: [], nsfwEnabled: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
 };
 
 describe("roleplay prompt", () => {
@@ -30,6 +30,18 @@ describe("roleplay prompt", () => {
     expect(prompt).toContain("do not sanitize");
     expect(prompt).toContain("they are not wish-fulfillment puppets");
     expect(prompt).toContain("initiate, hesitate, negotiate, refuse, stop, or leave");
+  });
+
+  it("injects only the selected persona, attached worlds, and chat instructions", () => {
+    const prompt = roleplayPrompt(character,"",[],[],{ownerName:"Fallback",ownerProfile:"",roleplayPreset:"immersive"},{
+      persona:{id:"persona",name:"Alex",description:"A private detective",avatarUrl:"",accent:"#e879a9",isDefault:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()},
+      worlds:[{id:"world",name:"Paris Underground",description:"Secret city",content:"The Glass Guild controls the tunnels.",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}],
+      instructionPresets:["reduce_repetition"], customInstructions:"Use clipped dialogue.",
+    });
+    expect(prompt).toContain("Name: Alex");
+    expect(prompt).toContain("Paris Underground");
+    expect(prompt).toContain("Actively avoid repeating");
+    expect(prompt).toContain("Use clipped dialogue.");
   });
 
   it("continues the scene without inventing a user turn", () => {

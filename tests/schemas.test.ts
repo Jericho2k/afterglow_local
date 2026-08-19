@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backupSchema, characterSchema, chatSchema, generateCharacterSchema, messageUpdateSchema, settingsSchema } from "@/lib/schemas";
+import { backupSchema, characterSchema, chatSchema, conversationUpdateSchema, generateCharacterSchema, messageUpdateSchema, personaSchema, settingsSchema, worldSchema } from "@/lib/schemas";
 
 describe("character validation", () => {
   it("applies safe defaults", () => {
@@ -11,6 +11,14 @@ describe("character validation", () => {
   it("rejects invalid avatar protocols and colors", () => {
     expect(characterSchema.safeParse({ name: "Mara", avatarUrl: "javascript:alert(1)" }).success).toBe(false);
     expect(characterSchema.safeParse({ name: "Mara", accent: "pink" }).success).toBe(false);
+  });
+
+  it("accepts bounded media uploads and reusable product documents", () => {
+    const media = "data:image/png;base64,aGVsbG8=";
+    expect(characterSchema.safeParse({ name:"Mara",avatarUrl:media }).success).toBe(true);
+    expect(personaSchema.safeParse({ name:"Alex",avatarUrl:media }).success).toBe(true);
+    expect(worldSchema.safeParse({ name:"Paris",content:"City canon" }).success).toBe(true);
+    expect(conversationUpdateSchema.safeParse({ instructionPresets:["reduce_repetition"],customInstructions:"Use short replies" }).success).toBe(true);
   });
 
   it("requires a meaningful generation concept", () => {

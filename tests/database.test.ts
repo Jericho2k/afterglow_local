@@ -32,13 +32,28 @@ describe("PostgreSQL persistence", () => {
 
   it("creates every durable application table and default settings", async () => {
     const tables = await query<{ table_name: string }>("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
-    expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","memory_arcs","usage_events","app_settings"]));
+    expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","memory_arcs","usage_events","app_settings","personas","worlds","character_worlds"]));
     const settings = await getSettings();
     expect(settings.model).toMatch(/^deepseek-/);
     expect(settings.roleplayPreset).toBe("immersive");
     expect(settings.memoryLimit).toBe(8);
     expect(settings.contextTokenBudget).toBe(12000);
     expect(settings.memoryTokenBudget).toBe(6000);
+    expect(Number((await query("SELECT COUNT(*) count FROM personas WHERE is_default=true")).rows[0].count)).toBe(1);
+  });
+
+  it("reuses worlds across characters and isolates persona instructions by conversation", async () => {
+    const firstCharacter = crypto.randomUUID(); const secondCharacter = crypto.randomUUID(); const worldId = crypto.randomUUID(); const personaId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara'),($2,'Iris')",[firstCharacter,secondCharacter]);
+    await query("INSERT INTO worlds (id,name,content) VALUES ($1,'Shared city','Paris canon')",[worldId]);
+    await query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$3),($2,$3)",[firstCharacter,secondCharacter,worldId]);
+    await query("INSERT INTO personas (id,name,description) VALUES ($1,'Alex','A private detective')",[personaId]);
+    await query("INSERT INTO conversations (id,character_id,title,persona_id,instruction_presets,custom_instructions) VALUES ($1,$2,'Case',$3,$4,'Use clipped dialogue')",[conversationId,firstCharacter,personaId,["stay_focused"]]);
+    expect(Number((await query("SELECT COUNT(*) count FROM character_worlds WHERE world_id=$1",[worldId])).rows[0].count)).toBe(2);
+    const conversation = await query<{persona_id:string;instruction_presets:string[];custom_instructions:string}>("SELECT persona_id,instruction_presets,custom_instructions FROM conversations WHERE id=$1",[conversationId]);
+    expect(String(conversation.rows[0].persona_id)).toBe(personaId);
+    expect(conversation.rows[0].instruction_presets).toEqual(["stay_focused"]);
+    expect(conversation.rows[0].custom_instructions).toBe("Use clipped dialogue");
   });
 
   it("persists a complete character conversation with cascading cleanup", async () => {

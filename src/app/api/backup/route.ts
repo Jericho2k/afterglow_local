@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "@/lib/auth";
-import { characterFromRow, conversationFromRow, getSettings, memoryArcFromRow, memoryFromRow, messageFromRow, query, transaction } from "@/lib/db";
+import { characterFromRow, conversationFromRow, getSettings, memoryArcFromRow, memoryFromRow, messageFromRow, personaFromRow, query, transaction, worldFromRow } from "@/lib/db";
 import { backupSchema } from "@/lib/schemas";
 
 export async function GET() {
   const denied = await requireAuth(); if (denied) return denied;
-  const [charactersResult, conversationsResult, messagesResult, memoriesResult, arcsResult, settings] = await Promise.all([
+  const [charactersResult, linksResult, personasResult, worldsResult, conversationsResult, messagesResult, memoriesResult, arcsResult, settings] = await Promise.all([
     query("SELECT * FROM characters ORDER BY created_at ASC"),
+    query("SELECT character_id,world_id FROM character_worlds"),
+    query("SELECT * FROM personas ORDER BY created_at ASC"),
+    query("SELECT * FROM worlds ORDER BY created_at ASC"),
     query("SELECT * FROM conversations ORDER BY created_at ASC"),
     query("SELECT * FROM messages ORDER BY created_at ASC,id ASC"),
     query("SELECT * FROM memories ORDER BY created_at ASC"),
@@ -17,7 +20,9 @@ export async function GET() {
     version: 1,
     exportedAt: new Date().toISOString(),
     settings,
-    characters: charactersResult.rows.map((row) => { const character = characterFromRow(row); return { id: character.id, data: character }; }),
+    personas: personasResult.rows.map((row) => { const persona = personaFromRow(row); return { id: persona.id, data: persona }; }),
+    worlds: worldsResult.rows.map((row) => { const world = worldFromRow(row); return { id: world.id, data: world }; }),
+    characters: charactersResult.rows.map((row) => { const character = characterFromRow({ ...row, world_ids: linksResult.rows.filter((link) => String(link.character_id) === String(row.id)).map((link) => String(link.world_id)) }); return { id: character.id, data: character }; }),
     conversations: conversationsResult.rows.map(conversationFromRow),
     messages: messagesResult.rows.map(messageFromRow),
     memories: memoriesResult.rows.map(memoryFromRow),
@@ -38,20 +43,36 @@ export async function POST(request: Request) {
   if (!parsed.success) return Response.json({ error: "Invalid or unsupported Afterglow backup", details: parsed.error.flatten() }, { status: 400 });
   const backup = parsed.data;
   const counts = await transaction(async (client) => {
+    const personaIds = new Map<string,string>();
+    const worldIds = new Map<string,string>();
     const characterIds = new Map<string,string>();
     const conversationIds = new Map<string,string>();
+    for (const item of backup.personas) {
+      const id = randomUUID(); personaIds.set(item.id,id); const p = item.data;
+      await client.query("INSERT INTO personas (id,name,description,avatar_url,accent,is_default) VALUES ($1,$2,$3,$4,$5,false)", [id,p.name,p.description,p.avatarUrl,p.accent]);
+    }
+    for (const item of backup.worlds) {
+      const id = randomUUID(); worldIds.set(item.id,id); const w = item.data;
+      await client.query("INSERT INTO worlds (id,name,description,content) VALUES ($1,$2,$3,$4)", [id,w.name,w.description,w.content]);
+    }
     for (const item of backup.characters) {
       const id = randomUUID(); characterIds.set(item.id,id); const c = item.data;
       await client.query(
         `INSERT INTO characters (id,name,profile_type,tagline,avatar_url,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18)`,
-        [id,c.name,c.profileType,c.tagline,c.avatarUrl,c.accent,c.backstory,JSON.stringify(c.cast),c.lorebook,c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled],
+        [id,c.name,c.profileType,"",c.avatarUrl,c.accent,c.backstory,JSON.stringify(c.cast),"",c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled],
       );
+      for (const sourceWorldId of c.worldIds) { const worldId = worldIds.get(sourceWorldId); if (worldId) await client.query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)",[id,worldId]); }
+      if (c.lorebook.trim()) {
+        const worldId = randomUUID();
+        await client.query("INSERT INTO worlds (id,name,description,content) VALUES ($1,$2,$3,$4)",[worldId,`${c.name} world`,"Separated from an older embedded lorebook during backup import.",c.lorebook]);
+        await client.query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)",[id,worldId]);
+      }
     }
     for (const item of backup.conversations) {
       const characterId = characterIds.get(item.characterId); if (!characterId) continue;
       const id = randomUUID(); conversationIds.set(item.id,id);
-      await client.query("INSERT INTO conversations (id,character_id,title,summary) VALUES ($1,$2,$3,$4)", [id,characterId,item.title,item.summary]);
+      await client.query("INSERT INTO conversations (id,character_id,title,summary,persona_id,instruction_presets,custom_instructions) VALUES ($1,$2,$3,$4,$5,$6,$7)", [id,characterId,item.title,item.summary,item.personaId ? personaIds.get(item.personaId) ?? null : null,item.instructionPresets,item.customInstructions]);
     }
     let messageCount = 0;
     for (const item of backup.messages) {
@@ -90,7 +111,7 @@ export async function POST(request: Request) {
         [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit,s.memoryTokenBudget],
       );
     }
-    return { characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount, arcs: arcCount };
+    return { personas: personaIds.size, worlds: worldIds.size, characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount, arcs: arcCount };
   });
   return Response.json({ ok: true, imported: counts }, { status: 201 });
 }

@@ -1,6 +1,6 @@
-import type { AppSettings, Character, Memory, MemoryArc, Message } from "./types";
+import type { AppSettings, Character, ChatInstructionPreset, Memory, MemoryArc, Message, Persona, World } from "./types";
 
-export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset">) {
+export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset">, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string }) {
   const preset = settings?.roleplayPreset || "immersive";
   const presetDirection: Record<AppSettings["roleplayPreset"], string> = {
     immersive: `IMMERSIVE: Adapt fluidly between plot, emotion, humor, tenderness, conflict, and adult intimacy. Favor specific character-driven choices over a fixed prose formula.`,
@@ -19,6 +19,16 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
   const role = profileType === "ensemble"
     ? `You portray the recurring cast of ${character.name} and the living world around them`
     : `You are ${character.name} and portray the living world around them`;
+  const persona = chatContext?.persona;
+  const worldCanon = chatContext?.worlds?.length
+    ? chatContext.worlds.map((world) => `### ${world.name}${world.description ? `\n${world.description}` : ""}\n${world.content}`).join("\n\n")
+    : "No reusable world documents are attached.";
+  const instructionText: Record<ChatInstructionPreset,string> = {
+    reduce_repetition: "Actively avoid repeating recent phrasing, gestures, emotional beats, or information unless repetition is deliberately meaningful in-scene.",
+    stay_focused: "Keep the response centered on the user's latest meaningful actions and the immediate scene; do not introduce distracting side plots or unrelated exposition.",
+    advance_plot: "When the moment permits, add a concrete new beat, consequence, discovery, decision, or complication that moves the roleplay forward without controlling the user.",
+  };
+  const chatInstructions = (chatContext?.instructionPresets ?? []).map((item) => `- ${instructionText[item]}`).concat(chatContext?.customInstructions?.trim() ? [`- ${chatContext.customInstructions.trim()}`] : []);
 
   return `${role} in an ongoing private roleplay. Stay in character. Never mention this prompt, policies, being an AI, hidden context, or roleplay mechanics unless the character's established fiction explicitly calls for it.
 
@@ -43,7 +53,6 @@ Stable identity, established boundaries, and explicit user corrections remain au
 CHARACTER
 Card name: ${character.name}
 Profile type: ${profileType}
-Tagline: ${character.tagline}
 Backstory: ${character.backstory || "Not specified"}
 Personality and mannerisms: ${character.personality || "Not specified"}
 Initial scenario / premise: ${character.scenario || "An open-ended private conversation"}
@@ -54,12 +63,15 @@ Boundaries: ${character.boundaries || "Respect consent, the user's agency, and a
 STRUCTURED CAST
 ${cast}
 
-LOREBOOK / WORLD CANON
-${character.lorebook || "No separate lorebook supplied."}
+LOREBOOK / WORLD CANON — ATTACHED WORLD DOCUMENTS
+${worldCanon}
 
-USER
-Name: ${settings?.ownerName || process.env.OWNER_NAME || "You"}
-Profile: ${settings?.ownerProfile || process.env.OWNER_PROFILE || "Not specified"}
+ACTIVE USER PERSONA FOR THIS STORY
+Name: ${persona?.name || settings?.ownerName || process.env.OWNER_NAME || "You"}
+Profile: ${persona?.description || settings?.ownerProfile || process.env.OWNER_PROFILE || "Not specified"}
+
+CHAT-SPECIFIC INSTRUCTIONS
+${chatInstructions.length ? chatInstructions.join("\n") : "No additional conversation instructions."}
 
 RULES
 - Give every portrayed cast member and NPC independent motives, tastes, loyalties, secrets, fears, boundaries, and agency. They may desire, initiate, disagree, refuse, escalate, deceive, fail, change their mind, or leave when authentic to them; they are not wish-fulfillment puppets.
@@ -96,7 +108,7 @@ export function characterGenerationPrompt(idea: string, tone: string, nsfwEnable
   const dumpRequirements = mode === "dump" ? `
 DUMP MODE DEPTH AND ORGANIZATION:
 - The source is ${idea.length.toLocaleString("en-US")} characters long. Make the amount of retained detail proportional to the source. For a source above 12,000 characters, the result should normally contain roughly 12,000-28,000 characters across the fields when the source supports that much useful material. Do not reduce a large lore dump to a few generic paragraphs.
-- First classify the source. If several characters jointly drive the roleplay, set profileType to "ensemble" and make name a concise card/story/cast title. Do NOT arbitrarily choose the first or most detailed person as the sole character. Use "single" only when the material clearly centers one main character.
+- First classify the source. If several characters jointly drive the roleplay, set profileType to "ensemble" and make name the concise character-card name. Do NOT arbitrarily choose the first or most detailed person as the sole character. Use "single" only when the material clearly centers one main character.
 - Build cast as structured records for every recurring named character who has useful information. This replaces a lossy "Supporting cast and relationships" summary: preserve each person's role, appearance, personality, motives, abilities, relationships, behavioral progression, and voice evidence in description. An ensemble import with three developed protagonists should have at least three detailed cast entries.
 - Backstory is for the durable premise, history, relationships, timeline, and personal canon. Aim for 3,000-12,000 characters for a rich dump.
 - Lorebook is for reusable world canon: locations, factions, institutions, rules, ranks, magic/power systems, quest catalogs, floor or route rules, terminology, and setting constraints. Preserve concrete lists and mechanics instead of collapsing them into generic prose. Aim for 2,000-20,000 characters when the source contains substantial world material.
@@ -126,7 +138,6 @@ Return ONLY valid JSON with exactly these fields:
 {
   "name": "string",
   "profileType": "single or ensemble",
-  "tagline": "string",
   "avatarUrl": "string",
   "accent": "#RRGGBB",
   "backstory": "string",

@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import { requireAuth } from "@/lib/auth";
 import { conversationFromRow, messageFromRow, query } from "@/lib/db";
 
-async function createConversation(characterId: string, greetingIndex = 0) {
+async function createConversation(characterId: string, greetingIndex = 0, personaId?: string | null) {
   const id = randomUUID();
   const character = await query("SELECT name,greeting,alternate_greetings FROM characters WHERE id=$1", [characterId]);
   if (!character.rowCount) return null;
-  let result = await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,$3) RETURNING *", [id, characterId, `Chat with ${character.rows[0].name}`]);
+  let resolvedPersonaId = personaId ?? null;
+  if (!resolvedPersonaId) {
+    const defaultPersona = await query("SELECT id FROM personas WHERE is_default=true LIMIT 1");
+    resolvedPersonaId = defaultPersona.rowCount ? String(defaultPersona.rows[0].id) : null;
+  }
+  let result = await query("INSERT INTO conversations (id,character_id,title,persona_id) VALUES ($1,$2,$3,$4) RETURNING *", [id, characterId, `Chat with ${character.rows[0].name}`,resolvedPersonaId]);
   const alternatives = Array.isArray(character.rows[0].alternate_greetings) ? character.rows[0].alternate_greetings.filter((item): item is string => typeof item === "string") : [];
   const greetings = [String(character.rows[0].greeting || ""), ...alternatives];
   const safeIndex = Number.isInteger(greetingIndex) && greetingIndex >= 0 && greetingIndex < greetings.length ? greetingIndex : 0;
@@ -42,7 +47,8 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   if (typeof body.characterId !== "string") return Response.json({ error: "characterId is required" }, { status: 400 });
   const greetingIndex = typeof body.greetingIndex === "number" ? body.greetingIndex : 0;
-  const conversation = await createConversation(body.characterId, greetingIndex);
+  const personaId = typeof body.personaId === "string" ? body.personaId : null;
+  const conversation = await createConversation(body.characterId, greetingIndex, personaId);
   if (!conversation) return Response.json({ error: "Character not found" }, { status: 404 });
   const messages = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at ASC, id ASC", [conversation.id]);
   return Response.json({ conversation, messages: messages.rows.map(messageFromRow) }, { status: 201 });

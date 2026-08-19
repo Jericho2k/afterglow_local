@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "@/lib/auth";
-import { characterFromRow, getSettings, messageFromRow, query } from "@/lib/db";
+import { characterFromRow, getSettings, messageFromRow, personaFromRow, query, worldFromRow } from "@/lib/db";
 import { streamCompletion, type DeepSeekUsage } from "@/lib/deepseek";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
@@ -24,7 +24,13 @@ export async function POST(request: Request) {
   const characterResult = await query("SELECT * FROM characters WHERE id=$1", [row.character_id]);
   if (!characterResult.rowCount) return Response.json({ error: "Character not found" }, { status: 404 });
   const character = characterFromRow(characterResult.rows[0]);
-  const settings = await getSettings();
+  const [settings,worldResult,personaResult] = await Promise.all([
+    getSettings(),
+    query("SELECT w.* FROM worlds w JOIN character_worlds cw ON cw.world_id=w.id WHERE cw.character_id=$1 ORDER BY w.updated_at DESC", [row.character_id]),
+    row.persona_id ? query("SELECT * FROM personas WHERE id=$1", [row.persona_id]) : query("SELECT * FROM personas WHERE is_default=true LIMIT 1"),
+  ]);
+  const worlds = worldResult.rows.map(worldFromRow);
+  const persona = personaResult.rowCount ? personaFromRow(personaResult.rows[0]) : null;
   let currentSummary = String(row.summary || "");
   // If a previous background consolidation was interrupted by a deploy or cold
   // shutdown, catch it up before building the next prompt.
@@ -59,7 +65,12 @@ export async function POST(request: Request) {
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
   const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
   const { memories, arcs } = await relevantContinuity(character.id, conversationId, recallContext, settings.memoryLimit, settings.memoryTokenBudget);
-  const system = roleplayPrompt(character, currentSummary, memories, arcs, settings);
+  const system = roleplayPrompt(character, currentSummary, memories, arcs, settings, {
+    worlds,
+    persona,
+    instructionPresets: Array.isArray(row.instruction_presets) ? row.instruction_presets : [],
+    customInstructions: String(row.custom_instructions || ""),
+  });
   const modelHistory = history.map((message) => ({ role: message.role, content: message.content }));
   if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
 
