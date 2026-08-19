@@ -1,7 +1,7 @@
 import { requireAuth } from "@/lib/auth";
 import { messageFromRow, transaction } from "@/lib/db";
 import { invalidateDerivedContinuity } from "@/lib/memory";
-import { lockMessageForMutation } from "@/lib/message-mutations";
+import { deleteMessagesFromPosition, lockMessageForMutation, truncateMessagesAfterPosition } from "@/lib/message-mutations";
 import { messageUpdateSchema } from "@/lib/schemas";
 import type { PoolClient } from "pg";
 
@@ -31,24 +31,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       if (currentMessage.role !== "assistant" || variant === undefined) return null;
       const updated = await client.query("UPDATE messages SET content=$1,selected_variant=$2 WHERE id=$3 RETURNING *", [variant,parsed.data.variantIndex,resolvedId]);
       if (!updated.rowCount) return null;
-      await client.query(
-        `DELETE FROM messages WHERE conversation_id=$1 AND (
-          created_at > $2::timestamptz OR (created_at=$2::timestamptz AND id::text > $3::text)
-        )`,
-        [row.conversation_id,row.created_at,resolvedId],
-      );
+      await truncateMessagesAfterPosition(client,String(row.conversation_id),position);
       await invalidateDerivedContinuity(client,String(row.conversation_id),position);
       return messageFromRow(updated.rows[0]);
     }
     if (typeof parsed.data.content !== "string") return null;
     if (parsed.data.truncateAfter) {
-      await client.query(
-        `DELETE FROM messages WHERE conversation_id=$1 AND (
-          created_at > $2::timestamptz
-          OR (created_at = $2::timestamptz AND id::text > $3::text)
-        )`,
-        [row.conversation_id,row.created_at,resolvedId],
-      );
+      await truncateMessagesAfterPosition(client,String(row.conversation_id),position);
     }
     const variants = currentMessage.role === "assistant" ? [...currentMessage.variants] : [];
     if (currentMessage.role === "assistant") variants[currentMessage.selectedVariant] = parsed.data.content;
@@ -68,15 +57,8 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
   const deleted = await transaction(async (client) => {
     const row = await lockMessageForMutation(client,id,locator);
     if (!row) return null;
-    const resolvedId = String(row.id);
     const position = await messagePosition(client,row);
-    await client.query(
-      `DELETE FROM messages WHERE conversation_id=$1 AND (
-        created_at > $2::timestamptz
-        OR (created_at = $2::timestamptz AND id::text >= $3::text)
-      )`,
-      [row.conversation_id,row.created_at,resolvedId],
-    );
+    await deleteMessagesFromPosition(client,String(row.conversation_id),position);
     await invalidateDerivedContinuity(client,String(row.conversation_id),position - 1);
     return row.conversation_id as string;
   });

@@ -16,3 +16,23 @@ export async function lockMessageForMutation(client: PoolClient, id: string, loc
   );
   return recovered.rows[0] ?? null;
 }
+
+export async function truncateMessagesAfterPosition(client: PoolClient, conversationId: string, position: number) {
+  return client.query(
+    `DELETE FROM messages WHERE id IN (
+       SELECT id FROM messages WHERE conversation_id=$1
+       ORDER BY created_at ASC,id ASC OFFSET $2
+     )`,
+    [conversationId, Math.max(0,position)],
+  );
+}
+
+export async function deleteMessagesFromPosition(client: PoolClient, conversationId: string, position: number) {
+  return client.query(
+    `DELETE FROM messages WHERE id IN (
+       SELECT id FROM messages WHERE conversation_id=$1
+       ORDER BY created_at ASC,id ASC OFFSET $2
+     )`,
+    [conversationId, Math.max(0,position - 1)],
+  );
+}

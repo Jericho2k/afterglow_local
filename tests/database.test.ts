@@ -3,7 +3,7 @@ import { newDb } from "pg-mem";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ensureSchema, getSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
 import { invalidateDerivedContinuity, relevantMemories } from "@/lib/memory";
-import { lockMessageForMutation } from "@/lib/message-mutations";
+import { deleteMessagesFromPosition, lockMessageForMutation, truncateMessagesAfterPosition } from "@/lib/message-mutations";
 
 beforeEach(async () => {
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
@@ -221,5 +221,21 @@ describe("PostgreSQL persistence", () => {
 
     const recovered = await transaction((client) => lockMessageForMutation(client,crypto.randomUUID(),{ conversationId,messagePosition:2 }));
     expect(String(recovered?.id)).toBe(secondId);
+  });
+
+  it("truncates by stable position without deleting the edited message", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    const ids = [crypto.randomUUID(),crypto.randomUUID(),crypto.randomUUID()];
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Truncate safely')",[conversationId,characterId]);
+    for (let index = 0; index < ids.length; index += 1) await query(
+      "INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant',$3,$4)",
+      [ids[index],conversationId,`Message ${index + 1}`,new Date(Date.UTC(2026,0,1,0,0,index)).toISOString()],
+    );
+
+    await transaction((client) => truncateMessagesAfterPosition(client,conversationId,2));
+    expect((await query<{id:string}>("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id",[conversationId])).rows.map((row) => row.id)).toEqual(ids.slice(0,2));
+    await transaction((client) => deleteMessagesFromPosition(client,conversationId,2));
+    expect((await query<{id:string}>("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id",[conversationId])).rows.map((row) => row.id)).toEqual(ids.slice(0,1));
   });
 });
