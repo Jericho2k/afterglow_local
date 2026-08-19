@@ -182,12 +182,21 @@ export default function Home() {
     if (streaming) return; setEditingMessageId(message.id); setEditDraft(message.content);
   }
 
+  async function persistedMessageAt(messagePosition: number) {
+    if (!conversation) return null;
+    const query = new URLSearchParams({ characterId: conversation.characterId, conversationId: conversation.id });
+    const data = await api<{ messages: Message[] }>(`/api/conversations?${query}`);
+    return data.messages[messagePosition - 1] ?? null;
+  }
+
   async function saveMessageEdit(message: Message, messagePosition: number) {
     const content = editDraft.trim();
     if (!content) return;
     if (content === message.content) { setEditingMessageId(null); return; }
     try {
-      await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ content, truncateAfter: true, conversationId: message.conversationId, messagePosition }) });
+      const persisted = await persistedMessageAt(messagePosition);
+      if (!persisted) throw new Error("This message is no longer in the conversation. Reload the chat and try again.");
+      await api<{ message: Message }>(`/api/messages/${persisted.id}`, { method: "PATCH", body: JSON.stringify({ content, truncateAfter: true, conversationId: persisted.conversationId, messagePosition }) });
       setEditingMessageId(null);
       if (message.role === "user") {
         if (conversation) await loadChat(conversation.characterId,conversation.id);
@@ -199,14 +208,21 @@ export default function Home() {
   async function selectVariant(message: Message, index: number, messagePosition: number) {
     if (streaming || index === message.selectedVariant || index < 0 || index >= message.variants.length) return;
     try {
-      await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ variantIndex: index, conversationId: message.conversationId, messagePosition }) });
+      const persisted = await persistedMessageAt(messagePosition);
+      if (!persisted) throw new Error("This message is no longer in the conversation. Reload the chat and try again.");
+      await api<{ message: Message }>(`/api/messages/${persisted.id}`, { method: "PATCH", body: JSON.stringify({ variantIndex: index, conversationId: persisted.conversationId, messagePosition }) });
       if (conversation) await loadChat(conversation.characterId,conversation.id);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not select that version"); }
   }
 
   async function deleteFromMessage(message: Message, messagePosition: number) {
     if (!conversation || streaming || !window.confirm("Delete this message and everything after it?")) return;
-    try { await api(`/api/messages/${message.id}`, { method: "DELETE", body: JSON.stringify({ conversationId: message.conversationId, messagePosition }) }); await loadChat(conversation.characterId, conversation.id); }
+    try {
+      const persisted = await persistedMessageAt(messagePosition);
+      if (!persisted) throw new Error("This message is no longer in the conversation. Reload the chat and try again.");
+      await api(`/api/messages/${persisted.id}`, { method: "DELETE", body: JSON.stringify({ conversationId: persisted.conversationId, messagePosition }) });
+      await loadChat(conversation.characterId, conversation.id);
+    }
     catch (e) { setError(e instanceof Error ? e.message : "Could not delete message"); }
   }
 
