@@ -4,12 +4,17 @@ export type CharacterCastMember = {
   description: string;
 };
 
+export type CharacterVisibility = "private" | "unlisted" | "public";
+
 export type Character = {
   id: string;
   name: string;
   profileType: "single" | "ensemble";
   tagline: string;
+  /** An imported card's external image URL, or a legacy inline data URI. */
   avatarUrl: string;
+  /** Supabase Storage object path. Takes precedence over avatarUrl when set. */
+  avatarPath: string;
   accent: string;
   backstory: string;
   cast: CharacterCastMember[];
@@ -23,7 +28,10 @@ export type Character = {
   boundaries: string;
   sourceMaterial: string;
   worldIds: string[];
+  visibility: CharacterVisibility;
   nsfwEnabled: boolean;
+  /** False when the caller is chatting with a character somebody else published. */
+  ownedByViewer: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -46,6 +54,7 @@ export type Persona = {
   name: string;
   description: string;
   avatarUrl: string;
+  avatarPath: string;
   accent: string;
   isDefault: boolean;
   createdAt: string;
@@ -57,6 +66,7 @@ export type World = {
   name: string;
   description: string;
   content: string;
+  visibility: CharacterVisibility;
   createdAt: string;
   updatedAt: string;
 };
@@ -104,6 +114,17 @@ export type MemoryArc = {
   startMessageCount: number;
   endMessageCount: number;
   createdAt: string;
+};
+
+export type Profile = {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarPath: string;
+  bio: string;
+  plan: "free" | "beta" | "pro";
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type AppSettings = {

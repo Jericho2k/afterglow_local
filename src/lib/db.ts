@@ -196,6 +196,59 @@ async function schema() {
     SELECT '00000000-0000-4000-8000-000000000001'::uuid,owner_name,owner_profile,true FROM app_settings WHERE id='owner'
     ON CONFLICT (id) DO NOTHING
   `);
+  // Multi-tenant columns.
+  //
+  // supabase/migrations is authoritative for a deployed database: it adds the
+  // same columns plus the auth.users foreign keys, row level security and
+  // policies. This block keeps a plain PostgreSQL (and the in-memory test
+  // database, which supports neither roles nor RLS) on the identical column
+  // set so the application's SQL is the same everywhere.
+  for (const table of ["characters","worlds","personas","conversations","messages","memories","memory_arcs","usage_events"]) {
+    await pool().query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS user_id uuid`);
+  }
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'private'");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS avatar_path text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS published_at timestamptz");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS origin_character_id uuid");
+  await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'private'");
+  await pool().query("ALTER TABLE personas ADD COLUMN IF NOT EXISTS avatar_path text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS character_snapshot jsonb");
+  await pool().query(`
+    CREATE TABLE IF NOT EXISTS profiles (
+      id uuid PRIMARY KEY,
+      username text UNIQUE,
+      display_name text NOT NULL DEFAULT '',
+      avatar_path text NOT NULL DEFAULT '',
+      bio text NOT NULL DEFAULT '',
+      plan text NOT NULL DEFAULT 'free',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id uuid PRIMARY KEY,
+      owner_name text NOT NULL DEFAULT 'You',
+      owner_profile text NOT NULL DEFAULT '',
+      model text NOT NULL DEFAULT 'deepseek-v4-flash',
+      roleplay_preset text NOT NULL DEFAULT 'immersive',
+      temperature double precision NOT NULL DEFAULT 0.95,
+      max_tokens integer NOT NULL DEFAULT 1800,
+      context_messages integer NOT NULL DEFAULT 30,
+      context_token_budget integer NOT NULL DEFAULT 12000,
+      consolidation_interval integer NOT NULL DEFAULT 10,
+      memory_limit integer NOT NULL DEFAULT 8,
+      memory_token_budget integer NOT NULL DEFAULT 6000,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+  // One default persona per account rather than per installation.
+  await pool().query("DROP INDEX IF EXISTS personas_single_default_idx");
+  await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS personas_user_default_idx ON personas (user_id) WHERE is_default");
+  await pool().query("CREATE INDEX IF NOT EXISTS characters_user_idx ON characters (user_id, updated_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS conversations_user_idx ON conversations (user_id, updated_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS memories_user_idx ON memories (user_id, character_id)");
+  await pool().query("CREATE INDEX IF NOT EXISTS usage_events_user_idx ON usage_events (user_id, created_at DESC)");
+
   const legacyLorebooks = await pool().query("SELECT id,name,lorebook FROM characters WHERE lorebook<>''");
   for (const character of legacyLorebooks.rows) {
     const worldId = randomUUID();
@@ -237,7 +290,88 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
   }
 }
 
-export function characterFromRow(row: Record<string, unknown>): Character {
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// pg-mem, which backs the schema and memory-engine unit tests, implements
+// neither roles nor set_config. Probed once per pool so a real deployment can
+// refuse to run without policy enforcement while the in-memory suite still
+// exercises the same SQL.
+let rlsSessionSupported: boolean | null = null;
+
+export function resetUserSessionSupportForTesting() {
+  if (process.env.NODE_ENV !== "test") throw new Error("Session support reset is test-only");
+  rlsSessionSupported = null;
+}
+
+async function probeUserSessionSupport() {
+  const client = await pool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL ROLE authenticated");
+    await client.query("SELECT set_config('request.jwt.claims','{}',true)");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await client.query("ROLLBACK").catch(() => undefined);
+    client.release();
+  }
+}
+
+async function userSessionSupported() {
+  if (rlsSessionSupported === null) rlsSessionSupported = await probeUserSessionSupport();
+  if (!rlsSessionSupported && process.env.NODE_ENV !== "test") {
+    throw new Error(
+      "This database cannot assume the authenticated role, so row level security would not be enforced. Apply supabase/migrations before serving traffic.",
+    );
+  }
+  return rlsSessionSupported;
+}
+
+/**
+ * Runs a unit of work as the given account.
+ *
+ * The pool authenticates as a privileged database role, so every statement
+ * would otherwise bypass row level security. Assuming the `authenticated` role
+ * and publishing the caller's id as `request.jwt.claims` makes `auth.uid()`
+ * resolve exactly as it does through PostgREST, which turns the policies in
+ * supabase/migrations into the real enforcement layer rather than a second
+ * opinion on top of application checks.
+ *
+ * Both settings are transaction-scoped (SET LOCAL), so a connection returned to
+ * the pool never carries one account's identity into the next request.
+ */
+export async function asUser<T>(userId: string, fn: (client: PoolClient) => Promise<T>) {
+  if (!uuidPattern.test(userId)) throw new Error("A database session requires a valid account id");
+  await ensureSchema();
+  const enforced = await userSessionSupported();
+  const client = await pool().connect();
+  try {
+    await client.query("BEGIN");
+    if (enforced) {
+      await client.query("SET LOCAL ROLE authenticated");
+      await client.query("SELECT set_config('request.jwt.claims', $1, true)", [
+        JSON.stringify({ sub: userId, role: "authenticated" }),
+      ]);
+    }
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Single user-scoped statement. Shorthand for the common one-query case. */
+export async function userQuery<T extends QueryResultRow>(userId: string, text: string, values: unknown[] = []) {
+  return asUser(userId, (client) => client.query<T>(text, values));
+}
+
+export function characterFromRow(row: Record<string, unknown>, viewerId?: string): Character {
+  const ownedByViewer = viewerId ? String(row.user_id ?? "") === viewerId : true;
   const cast = Array.isArray(row.cast_members) ? row.cast_members.filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === "object").map((member) => ({
     name: String(member.name || ""), role: String(member.role || ""), description: String(member.description || ""),
   })).filter((member) => member.name) : [];
@@ -245,10 +379,17 @@ export function characterFromRow(row: Record<string, unknown>): Character {
   const worldIds = textArrayFromRow(row.world_ids);
   return {
     id: String(row.id), name: String(row.name), profileType: row.profile_type === "ensemble" ? "ensemble" : "single", tagline: String(row.tagline),
-    avatarUrl: String(row.avatar_url), accent: String(row.accent), backstory: String(row.backstory),
+    avatarUrl: String(row.avatar_url), avatarPath: String(row.avatar_path || ""), accent: String(row.accent), backstory: String(row.backstory),
     cast, lorebook: String(row.lorebook || ""), personality: String(row.personality), scenario: String(row.scenario), greeting: String(row.greeting), alternateGreetings,
     exampleDialogue: String(row.example_dialogue), responseDirective: String(row.response_directive),
-    boundaries: String(row.boundaries), sourceMaterial: String(row.source_material || ""), worldIds, nsfwEnabled: Boolean(row.nsfw_enabled),
+    boundaries: String(row.boundaries),
+    // The original import paste is the creator's working material and often
+    // holds private notes. Publishing a character shares the card, not that.
+    sourceMaterial: ownedByViewer ? String(row.source_material || "") : "",
+    worldIds,
+    visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as Character["visibility"],
+    nsfwEnabled: Boolean(row.nsfw_enabled),
+    ownedByViewer,
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
@@ -266,7 +407,7 @@ export function conversationFromRow(row: Record<string, unknown>): Conversation 
 export function personaFromRow(row: Record<string, unknown>): Persona {
   return {
     id: String(row.id), name: String(row.name), description: String(row.description || ""), avatarUrl: String(row.avatar_url || ""),
-    accent: String(row.accent || "#e879a9"), isDefault: Boolean(row.is_default),
+    avatarPath: String(row.avatar_path || ""), accent: String(row.accent || "#e879a9"), isDefault: Boolean(row.is_default),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
@@ -274,6 +415,7 @@ export function personaFromRow(row: Record<string, unknown>): Persona {
 export function worldFromRow(row: Record<string, unknown>): World {
   return {
     id: String(row.id), name: String(row.name), description: String(row.description || ""), content: String(row.content || ""),
+    visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as World["visibility"],
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
@@ -327,7 +469,32 @@ export function settingsFromRow(row: Record<string, unknown>): AppSettings {
   };
 }
 
-export async function getSettings() {
+/** Server-managed defaults. Never user-writable; used to seed new accounts. */
+export async function getDefaultSettings() {
   const result = await query("SELECT * FROM app_settings WHERE id='owner'");
   return settingsFromRow(result.rows[0]);
+}
+
+/**
+ * The calling account's settings, creating the row on first read so an account
+ * that predates the settings table still resolves.
+ */
+export async function getUserSettings(client: PoolClient, userId: string) {
+  const existing = await client.query("SELECT * FROM user_settings WHERE user_id=$1", [userId]);
+  if (existing.rowCount) return settingsFromRow(existing.rows[0]);
+  const created = await client.query(
+    "INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO UPDATE SET user_id=EXCLUDED.user_id RETURNING *",
+    [userId],
+  );
+  return settingsFromRow(created.rows[0]);
+}
+
+export function profileFromRow(row: Record<string, unknown>) {
+  const plan = String(row.plan || "free");
+  return {
+    id: String(row.id), username: String(row.username || ""), displayName: String(row.display_name || ""),
+    avatarPath: String(row.avatar_path || ""), bio: String(row.bio || ""),
+    plan: (["free","beta","pro"].includes(plan) ? plan : "free") as "free" | "beta" | "pro",
+    createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
 }

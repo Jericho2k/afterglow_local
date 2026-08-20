@@ -4,8 +4,9 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const missing = ["DATABASE_URL", "DEEPSEEK_API_KEY", "APP_PASSWORD", "SESSION_SECRET"].filter((name) => !process.env[name]);
-    if (process.env.NODE_ENV === "production" && (missing.length || (process.env.SESSION_SECRET?.length ?? 0) < 32 || (process.env.APP_PASSWORD?.length ?? 0) < 12)) {
+    const required = ["DATABASE_URL", "DEEPSEEK_API_KEY", "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"];
+    const missing = required.filter((name) => !process.env[name]);
+    if (process.env.NODE_ENV === "production" && missing.length) {
       return Response.json({ ok: false, configured: false, missing }, { status: 503 });
     }
     if (process.env.DATABASE_URL) await pool().query("SELECT 1");

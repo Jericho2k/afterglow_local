@@ -1,33 +1,48 @@
 import { randomUUID } from "node:crypto";
-import { requireAuth } from "@/lib/auth";
-import { characterFromRow, conversationFromRow, getSettings, memoryArcFromRow, memoryFromRow, messageFromRow, personaFromRow, query, transaction, worldFromRow } from "@/lib/db";
+import { asUser, characterFromRow, conversationFromRow, getUserSettings, memoryArcFromRow, memoryFromRow, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
 import { backupSchema } from "@/lib/schemas";
+import { currentAccount, unauthorized } from "@/lib/session";
 
+/**
+ * Exports only what the calling account owns.
+ *
+ * Every statement filters on user_id, and the whole export runs inside the
+ * account's own database session, so a published character somebody else
+ * created is never swept into a backup along with their private chats.
+ */
 export async function GET() {
-  const denied = await requireAuth(); if (denied) return denied;
-  const [charactersResult, linksResult, personasResult, worldsResult, conversationsResult, messagesResult, memoriesResult, arcsResult, settings] = await Promise.all([
-    query("SELECT * FROM characters ORDER BY created_at ASC"),
-    query("SELECT character_id,world_id FROM character_worlds"),
-    query("SELECT * FROM personas ORDER BY created_at ASC"),
-    query("SELECT * FROM worlds ORDER BY created_at ASC"),
-    query("SELECT * FROM conversations ORDER BY created_at ASC"),
-    query("SELECT * FROM messages ORDER BY created_at ASC,id ASC"),
-    query("SELECT * FROM memories ORDER BY created_at ASC"),
-    query("SELECT * FROM memory_arcs ORDER BY created_at ASC"),
-    getSettings(),
-  ]);
-  const payload = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    settings,
-    personas: personasResult.rows.map((row) => { const persona = personaFromRow(row); return { id: persona.id, data: persona }; }),
-    worlds: worldsResult.rows.map((row) => { const world = worldFromRow(row); return { id: world.id, data: world }; }),
-    characters: charactersResult.rows.map((row) => { const character = characterFromRow({ ...row, world_ids: linksResult.rows.filter((link) => String(link.character_id) === String(row.id)).map((link) => String(link.world_id)) }); return { id: character.id, data: character }; }),
-    conversations: conversationsResult.rows.map(conversationFromRow),
-    messages: messagesResult.rows.map(messageFromRow),
-    memories: memoriesResult.rows.map(memoryFromRow),
-    arcs: arcsResult.rows.map(memoryArcFromRow),
-  };
+  const account = await currentAccount();
+  if (!account) return unauthorized();
+
+  const payload = await asUser(account.id, async (client) => {
+    const [charactersResult, linksResult, personasResult, worldsResult, conversationsResult, messagesResult, memoriesResult, arcsResult, settings] = await Promise.all([
+      client.query("SELECT * FROM characters WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
+      client.query("SELECT cw.character_id,cw.world_id FROM character_worlds cw JOIN characters c ON c.id=cw.character_id AND c.user_id=$1", [account.id]),
+      client.query("SELECT * FROM personas WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
+      client.query("SELECT * FROM worlds WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
+      client.query("SELECT * FROM conversations WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
+      client.query("SELECT * FROM messages WHERE user_id=$1 ORDER BY created_at ASC,id ASC", [account.id]),
+      client.query("SELECT * FROM memories WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
+      client.query("SELECT * FROM memory_arcs WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
+      getUserSettings(client, account.id),
+    ]);
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      settings,
+      personas: personasResult.rows.map((row) => { const persona = personaFromRow(row); return { id: persona.id, data: persona }; }),
+      worlds: worldsResult.rows.map((row) => { const world = worldFromRow(row); return { id: world.id, data: world }; }),
+      characters: charactersResult.rows.map((row) => {
+        const character = characterFromRow({ ...row, world_ids: linksResult.rows.filter((link) => String(link.character_id) === String(row.id)).map((link) => String(link.world_id)) }, account.id);
+        return { id: character.id, data: character };
+      }),
+      conversations: conversationsResult.rows.map(conversationFromRow),
+      messages: messagesResult.rows.map(messageFromRow),
+      memories: memoriesResult.rows.map(memoryFromRow),
+      arcs: arcsResult.rows.map(memoryArcFromRow),
+    };
+  });
+
   return new Response(JSON.stringify(payload, null, 2), {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
@@ -37,60 +52,91 @@ export async function GET() {
   });
 }
 
+/**
+ * Imports a backup into the calling account.
+ *
+ * Identifiers inside the uploaded file are treated purely as internal
+ * cross-references: every row is written with a freshly generated id and the
+ * authenticated account as its owner. A backup that names another user's id,
+ * or claims a character it does not contain, cannot attach anything to them.
+ */
 export async function POST(request: Request) {
-  const denied = await requireAuth(); if (denied) return denied;
+  const account = await currentAccount();
+  if (!account) return unauthorized();
   const parsed = backupSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Invalid or unsupported Afterglow backup", details: parsed.error.flatten() }, { status: 400 });
   const backup = parsed.data;
-  const counts = await transaction(async (client) => {
+
+  const counts = await asUser(account.id, async (client) => {
     const personaIds = new Map<string,string>();
     const worldIds = new Map<string,string>();
     const characterIds = new Map<string,string>();
     const conversationIds = new Map<string,string>();
+
     for (const item of backup.personas) {
       const id = randomUUID(); personaIds.set(item.id,id); const p = item.data;
-      await client.query("INSERT INTO personas (id,name,description,avatar_url,accent,is_default) VALUES ($1,$2,$3,$4,$5,false)", [id,p.name,p.description,p.avatarUrl,p.accent]);
+      await client.query(
+        "INSERT INTO personas (id,user_id,name,description,avatar_url,avatar_path,accent,is_default) VALUES ($1,$2,$3,$4,$5,$6,$7,false)",
+        [id,account.id,p.name,p.description,p.avatarUrl,p.avatarPath ?? "",p.accent],
+      );
     }
     for (const item of backup.worlds) {
       const id = randomUUID(); worldIds.set(item.id,id); const w = item.data;
-      await client.query("INSERT INTO worlds (id,name,description,content) VALUES ($1,$2,$3,$4)", [id,w.name,w.description,w.content]);
+      await client.query(
+        "INSERT INTO worlds (id,user_id,name,description,content,visibility) VALUES ($1,$2,$3,$4,$5,'private')",
+        [id,account.id,w.name,w.description,w.content],
+      );
     }
     for (const item of backup.characters) {
       const id = randomUUID(); characterIds.set(item.id,id); const c = item.data;
+      // Imported characters land private regardless of what the file claimed.
+      // Publishing is a deliberate act in the owner's own library.
       await client.query(
-        `INSERT INTO characters (id,name,profile_type,tagline,avatar_url,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18)`,
-        [id,c.name,c.profileType,"",c.avatarUrl,c.accent,c.backstory,JSON.stringify(c.cast),"",c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled],
+        `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility)
+         VALUES ($1,$2,$3,$4,'',$5,$6,$7,$8,$9::jsonb,'',$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18,'private')`,
+        [id,account.id,c.name,c.profileType,c.avatarUrl,c.avatarPath ?? "",c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled],
       );
-      for (const sourceWorldId of c.worldIds) { const worldId = worldIds.get(sourceWorldId); if (worldId) await client.query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)",[id,worldId]); }
+      for (const sourceWorldId of c.worldIds) {
+        const worldId = worldIds.get(sourceWorldId);
+        if (worldId) await client.query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)",[id,worldId]);
+      }
       if (c.lorebook.trim()) {
         const worldId = randomUUID();
-        await client.query("INSERT INTO worlds (id,name,description,content) VALUES ($1,$2,$3,$4)",[worldId,`${c.name} world`,"Separated from an older embedded lorebook during backup import.",c.lorebook]);
+        await client.query(
+          "INSERT INTO worlds (id,user_id,name,description,content,visibility) VALUES ($1,$2,$3,$4,$5,'private')",
+          [worldId,account.id,`${c.name} world`,"Separated from an older embedded lorebook during backup import.",c.lorebook],
+        );
         await client.query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)",[id,worldId]);
       }
     }
     for (const item of backup.conversations) {
       const characterId = characterIds.get(item.characterId); if (!characterId) continue;
       const id = randomUUID(); conversationIds.set(item.id,id);
-      await client.query("INSERT INTO conversations (id,character_id,title,summary,persona_id,instruction_presets,custom_instructions) VALUES ($1,$2,$3,$4,$5,$6,$7)", [id,characterId,item.title,item.summary,item.personaId ? personaIds.get(item.personaId) ?? null : null,item.instructionPresets,item.customInstructions]);
+      await client.query(
+        "INSERT INTO conversations (id,character_id,user_id,title,summary,persona_id,instruction_presets,custom_instructions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        [id,characterId,account.id,item.title,item.summary,item.personaId ? personaIds.get(item.personaId) ?? null : null,item.instructionPresets,item.customInstructions],
+      );
     }
     let messageCount = 0;
     for (const item of backup.messages) {
       const conversationId = conversationIds.get(item.conversationId); if (!conversationId) continue;
       await client.query(
-        "INSERT INTO messages (id,conversation_id,role,content,variants,selected_variant,created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,COALESCE($7::timestamptz,now()))",
-        [randomUUID(),conversationId,item.role,item.content,JSON.stringify(item.variants),Math.min(item.selectedVariant,Math.max(0,item.variants.length - 1)),item.createdAt ?? null],
+        "INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,COALESCE($8::timestamptz,now()))",
+        [randomUUID(),conversationId,account.id,item.role,item.content,JSON.stringify(item.variants),Math.min(item.selectedVariant,Math.max(0,item.variants.length - 1)),item.createdAt ?? null],
       );
       messageCount += 1;
     }
-    await client.query(`UPDATE conversations c SET message_count=(SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) WHERE c.id = ANY($1::uuid[])`, [[...conversationIds.values()]]);
+    await client.query(
+      `UPDATE conversations c SET message_count=(SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) WHERE c.id = ANY($1::uuid[]) AND c.user_id=$2`,
+      [[...conversationIds.values()], account.id],
+    );
     let memoryCount = 0;
     for (const item of backup.memories) {
       const characterId = characterIds.get(item.characterId); if (!characterId) continue;
       const conversationId = item.conversationId ? conversationIds.get(item.conversationId) ?? null : null;
       await client.query(
-        "INSERT INTO memories (id,character_id,conversation_id,content,kind,importance,keywords,pinned,status,resolution,resolved_at,source_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $9='resolved' THEN now() ELSE NULL END,$11)",
-        [randomUUID(),characterId,conversationId,item.content,item.kind,item.importance,item.keywords,item.pinned,item.status,item.resolution,item.sourceMessageCount],
+        "INSERT INTO memories (id,character_id,conversation_id,user_id,content,kind,importance,keywords,pinned,status,resolution,resolved_at,source_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $10='resolved' THEN now() ELSE NULL END,$12)",
+        [randomUUID(),characterId,conversationId,account.id,item.content,item.kind,item.importance,item.keywords,item.pinned,item.status,item.resolution,item.sourceMessageCount],
       );
       memoryCount += 1;
     }
@@ -98,20 +144,22 @@ export async function POST(request: Request) {
     for (const item of backup.arcs) {
       const conversationId = conversationIds.get(item.conversationId); if (!conversationId) continue;
       await client.query(
-        "INSERT INTO memory_arcs (id,conversation_id,summary,keywords,start_message_count,end_message_count) VALUES ($1,$2,$3,$4,$5,$6)",
-        [randomUUID(),conversationId,item.summary,item.keywords,item.startMessageCount,item.endMessageCount],
+        "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [randomUUID(),conversationId,account.id,item.summary,item.keywords,item.startMessageCount,item.endMessageCount],
       );
       arcCount += 1;
     }
     if (backup.settings) {
       const s = backup.settings;
+      await getUserSettings(client, account.id);
       await client.query(
-        `UPDATE app_settings SET owner_name=$1,owner_profile=$2,model=$3,roleplay_preset=$4,temperature=$5,max_tokens=$6,
-         context_messages=$7,context_token_budget=$8,consolidation_interval=$9,memory_limit=$10,memory_token_budget=$11,updated_at=now() WHERE id='owner'`,
-        [s.ownerName,s.ownerProfile,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit,s.memoryTokenBudget],
+        `UPDATE user_settings SET owner_name=$1,owner_profile=$2,roleplay_preset=$3,temperature=$4,max_tokens=$5,
+         context_messages=$6,context_token_budget=$7,consolidation_interval=$8,memory_limit=$9,memory_token_budget=$10,updated_at=now() WHERE user_id=$11`,
+        [s.ownerName,s.ownerProfile,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit,s.memoryTokenBudget,account.id],
       );
     }
     return { personas: personaIds.size, worlds: worldIds.size, characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount, arcs: arcCount };
   });
+
   return Response.json({ ok: true, imported: counts }, { status: 201 });
 }

@@ -1,9 +1,11 @@
 import type { Pool } from "pg";
 import { newDb } from "pg-mem";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ensureSchema, getSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
+import { ensureSchema, getDefaultSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
 import { invalidateDerivedContinuity, relevantMemories } from "@/lib/memory";
 import { deleteMessagesFromPosition, lockMessageForMutation, persistedMessagePosition, truncateMessagesAfterPosition } from "@/lib/message-mutations";
+
+const ownerId = "11111111-1111-4111-8111-111111111111";
 
 beforeEach(async () => {
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
@@ -34,7 +36,7 @@ describe("PostgreSQL persistence", () => {
   it("creates every durable application table and default settings", async () => {
     const tables = await query<{ table_name: string }>("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
     expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","memory_arcs","usage_events","app_settings","personas","worlds","character_worlds"]));
-    const settings = await getSettings();
+    const settings = await getDefaultSettings();
     expect(settings.model).toMatch(/^deepseek-/);
     expect(settings.roleplayPreset).toBe("immersive");
     expect(settings.memoryLimit).toBe(8);
@@ -163,15 +165,15 @@ describe("PostgreSQL persistence", () => {
       [crypto.randomUUID(),characterId,firstChatId,["restaurant"]],
     );
     await query(
-      "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords) VALUES ($1,$2,$3,'This story began at the train station.',5,$4)",
-      [crypto.randomUUID(),characterId,secondChatId,["station"]],
+      "INSERT INTO memories (id,character_id,conversation_id,user_id,content,importance,keywords) VALUES ($1,$2,$3,$5,'This story began at the train station.',5,$4)",
+      [crypto.randomUUID(),characterId,secondChatId,["station"],ownerId],
     );
     await query(
-      "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords) VALUES ($1,$2,NULL,'Mara always drinks black coffee.',5,$3)",
-      [crypto.randomUUID(),characterId,["coffee"]],
+      "INSERT INTO memories (id,character_id,conversation_id,user_id,content,importance,keywords) VALUES ($1,$2,NULL,$4,'Mara always drinks black coffee.',5,$3)",
+      [crypto.randomUUID(),characterId,["coffee"],ownerId],
     );
 
-    const recalled = await relevantMemories(characterId,secondChatId,"restaurant station coffee",8);
+    const recalled = await transaction((client) => relevantMemories(client,ownerId,characterId,secondChatId,"restaurant station coffee",8));
     expect(recalled.map((memory) => memory.content)).toEqual(expect.arrayContaining([
       "This story began at the train station.",
       "Mara always drinks black coffee.",
@@ -184,14 +186,14 @@ describe("PostgreSQL persistence", () => {
     await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
     await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Long story')",[conversationId,characterId]);
     await query(
-      "INSERT INTO memories (id,character_id,conversation_id,content,importance,keywords,created_at) VALUES ($1,$2,$3,'They hid the obsidian locket beneath the pier.',5,$4,$5)",
-      [crypto.randomUUID(),characterId,conversationId,["obsidian locket"],"2020-01-01T00:00:00Z"],
+      "INSERT INTO memories (id,character_id,conversation_id,user_id,content,importance,keywords,created_at) VALUES ($1,$2,$3,$6,'They hid the obsidian locket beneath the pier.',5,$4,$5)",
+      [crypto.randomUUID(),characterId,conversationId,["obsidian locket"],"2020-01-01T00:00:00Z",ownerId],
     );
     for (let index = 0; index < 305; index += 1) await query(
-      "INSERT INTO memories (id,character_id,conversation_id,content,importance,created_at) VALUES ($1,$2,$3,$4,1,$5)",
-      [crypto.randomUUID(),characterId,conversationId,`Routine detail ${index}`,new Date(Date.UTC(2026,0,1,index)).toISOString()],
+      "INSERT INTO memories (id,character_id,conversation_id,user_id,content,importance,created_at) VALUES ($1,$2,$3,$6,$4,1,$5)",
+      [crypto.randomUUID(),characterId,conversationId,`Routine detail ${index}`,new Date(Date.UTC(2026,0,1,index)).toISOString(),ownerId],
     );
-    const recalled = await relevantMemories(characterId,conversationId,"Where is the obsidian locket?",8,2000);
+    const recalled = await transaction((client) => relevantMemories(client,ownerId,characterId,conversationId,"Where is the obsidian locket?",8,2000));
     expect(recalled.map((memory) => memory.content)).toContain("They hid the obsidian locket beneath the pier.");
   });
 
@@ -241,7 +243,11 @@ describe("PostgreSQL persistence", () => {
 
   it("calculates message position entirely from persisted timestamps", async () => {
     const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
-    const ids = [crypto.randomUUID(),crypto.randomUUID()];
+    // Fixed, ascending ids rather than random ones. The two rows differ only
+    // below the millisecond, which the in-memory database truncates away, so a
+    // random pair would leave the id tiebreak to decide the order and the
+    // assertion would pass or fail by chance.
+    const ids = ["aaaaaaaa-0000-4000-8000-000000000001","bbbbbbbb-0000-4000-8000-000000000002"];
     await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
     await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Precise position')",[conversationId,characterId]);
     await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant','First','2026-01-01T00:00:00.123456Z')",[ids[0],conversationId]);

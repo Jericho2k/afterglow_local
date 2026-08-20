@@ -1,70 +1,106 @@
 import { randomUUID } from "node:crypto";
-import { requireAuth } from "@/lib/auth";
-import { characterFromRow, getSettings, messageFromRow, personaFromRow, query, worldFromRow } from "@/lib/db";
+import { conversationCharacter, ownedConversation } from "@/lib/access";
+import { asUser, getUserSettings, messageFromRow, personaFromRow, userQuery, worldFromRow } from "@/lib/db";
 import { streamCompletion, type DeepSeekUsage } from "@/lib/deepseek";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
 import { recallText, selectRecentMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
+import { currentAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
 
 export const maxDuration = 120;
 
 export async function POST(request: Request) {
-  const denied = await requireAuth(); if (denied) return denied;
-  const limited = checkRateLimit(`chat:${clientIp(request)}`, 60, 60_000); if (limited) return limited;
+  // Authorisation happens before anything is written and, critically, before
+  // any paid model call: an unauthenticated or unauthorised request must never
+  // reach DeepSeek.
+  const account = await currentAccount();
+  if (!account) return unauthorized();
+  const limited = checkRateLimit(`chat:${account.id}`, 60, 60_000); if (limited) return limited;
+  const ipLimited = checkRateLimit(`chat-ip:${clientIp(request)}`, 120, 60_000); if (ipLimited) return ipLimited;
   const parsed = chatSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Invalid message" }, { status: 400 });
   const { conversationId, content, action } = parsed.data;
+  if (action === "send" && !content) return Response.json({ error: "Message cannot be empty" }, { status: 400 });
 
-  const conversationResult = await query("SELECT * FROM conversations WHERE id=$1", [conversationId]);
-  if (!conversationResult.rowCount) return Response.json({ error: "Conversation not found" }, { status: 404 });
-  const row = conversationResult.rows[0];
-  const characterResult = await query("SELECT * FROM characters WHERE id=$1", [row.character_id]);
-  if (!characterResult.rowCount) return Response.json({ error: "Character not found" }, { status: 404 });
-  const character = characterFromRow(characterResult.rows[0]);
-  const [settings,worldResult,personaResult] = await Promise.all([
-    getSettings(),
-    query("SELECT w.* FROM worlds w JOIN character_worlds cw ON cw.world_id=w.id WHERE cw.character_id=$1 ORDER BY w.updated_at DESC", [row.character_id]),
-    row.persona_id ? query("SELECT * FROM personas WHERE id=$1", [row.persona_id]) : query("SELECT * FROM personas WHERE is_default=true LIMIT 1"),
-  ]);
-  const worlds = worldResult.rows.map(worldFromRow);
-  const persona = personaResult.rowCount ? personaFromRow(personaResult.rows[0]) : null;
-  let currentSummary = String(row.summary || "");
+  // Phase one: resolve and validate everything the prompt needs, inside a
+  // single account-scoped transaction.
+  const prepared = await asUser(account.id, async (client) => {
+    const row = await ownedConversation(client, account.id, conversationId);
+    if (!row) return { error: "Conversation not found" as const };
+    const { character, owned } = await conversationCharacter(client, account.id, row);
+    if (!character) return { error: "Character not found" as const };
+
+    const settings = await getUserSettings(client, account.id);
+    // Worlds only apply to the caller's own characters. A published character
+    // carries its lore in the frozen snapshot instead, so a creator cannot
+    // reach into a stranger's prompt by editing an attached world.
+    const worldResult = owned
+      ? await client.query(
+        "SELECT w.* FROM worlds w JOIN character_worlds cw ON cw.world_id=w.id WHERE cw.character_id=$1 AND w.user_id=$2 ORDER BY w.updated_at DESC",
+        [row.character_id, account.id],
+      )
+      : { rows: [] as Array<Record<string, unknown>> };
+    const personaResult = row.persona_id
+      ? await client.query("SELECT * FROM personas WHERE id=$1 AND user_id=$2", [row.persona_id, account.id])
+      : await client.query("SELECT * FROM personas WHERE user_id=$1 AND is_default=true LIMIT 1", [account.id]);
+
+    return {
+      row,
+      character,
+      settings,
+      worlds: worldResult.rows.map(worldFromRow),
+      persona: personaResult.rows[0] ? personaFromRow(personaResult.rows[0]) : null,
+    };
+  });
+  if ("error" in prepared) return Response.json({ error: prepared.error }, { status: 404 });
+  const { row, character, settings, worlds, persona } = prepared;
+
   // If a previous background consolidation was interrupted by a deploy or cold
   // shutdown, catch it up before building the next prompt.
-  const caughtUp = await maybeConsolidate(conversationId).catch((error) => {
+  let currentSummary = String(row.summary || "");
+  const caughtUp = await maybeConsolidate(account.id, conversationId).catch((error) => {
     console.error("Pre-reply memory consolidation failed", error); return false;
   });
   if (caughtUp) {
-    const refreshed = await query("SELECT summary FROM conversations WHERE id=$1", [conversationId]);
+    const refreshed = await userQuery(account.id, "SELECT summary FROM conversations WHERE id=$1 AND user_id=$2", [conversationId, account.id]);
     currentSummary = String(refreshed.rows[0]?.summary || currentSummary);
   }
-  let regenerateTarget: ReturnType<typeof messageFromRow> | null = null;
-  let userMessageId: string | null = null;
 
-  if (action === "send" && !content) return Response.json({ error: "Message cannot be empty" }, { status: 400 });
-  if (action === "send") {
-    userMessageId = parsed.data.userMessageId ?? randomUUID();
-    await query("INSERT INTO messages (id,conversation_id,role,content) VALUES ($1,$2,'user',$3)", [userMessageId,conversationId,content]);
-    await query(
-      `UPDATE conversations SET message_count=message_count+1,updated_at=now(),
-       title=CASE WHEN message_count <= 1 AND title LIKE 'Chat with %' THEN left($2,120) ELSE title END WHERE id=$1`,
-      [conversationId, content.replace(/\s+/g, " ")],
+  const staged = await asUser(account.id, async (client) => {
+    let regenerateTarget: ReturnType<typeof messageFromRow> | null = null;
+    let userMessageId: string | null = null;
+
+    if (action === "send") {
+      userMessageId = parsed.data.userMessageId ?? randomUUID();
+      await client.query("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'user',$4)", [userMessageId, conversationId, account.id, content]);
+      await client.query(
+        `UPDATE conversations SET message_count=message_count+1,updated_at=now(),
+         title=CASE WHEN message_count <= 1 AND title LIKE 'Chat with %' THEN left($2,120) ELSE title END WHERE id=$1 AND user_id=$3`,
+        [conversationId, content.replace(/\s+/g, " "), account.id],
+      );
+    } else if (action === "regenerate") {
+      const last = await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1", [conversationId, account.id]);
+      if (last.rows[0]?.role === "assistant") regenerateTarget = messageFromRow(last.rows[0]);
+    }
+
+    const historyResult = await client.query(
+      "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT $3",
+      [conversationId, account.id, settings.contextMessages],
     );
-  } else if (action === "regenerate") {
-    const last = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1", [conversationId]);
-    if (last.rows[0]?.role === "assistant") regenerateTarget = messageFromRow(last.rows[0]);
-  }
+    const availableHistory = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
+    const history = selectRecentMessages(availableHistory, settings.contextMessages, settings.contextTokenBudget);
+    const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
+    const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
+    const { memories, arcs } = await relevantContinuity(client, account.id, row.character_id, conversationId, recallContext, settings.memoryLimit, settings.memoryTokenBudget);
+    return { regenerateTarget, userMessageId, history, lastUserInput, memories, arcs };
+  });
 
-  const historyResult = await query("SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2", [conversationId, settings.contextMessages]);
-  const availableHistory = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
-  const history = selectRecentMessages(availableHistory, settings.contextMessages, settings.contextTokenBudget);
-  const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
+  const { regenerateTarget, userMessageId, history, lastUserInput, memories, arcs } = staged;
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
-  const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
-  const { memories, arcs } = await relevantContinuity(character.id, conversationId, recallContext, settings.memoryLimit, settings.memoryTokenBudget);
+
   const system = roleplayPrompt(character, currentSummary, memories, arcs, settings, {
     worlds,
     persona,
@@ -118,17 +154,21 @@ export async function POST(request: Request) {
         let selectedVariant: number;
         if (regenerateTarget) {
           variants = [...regenerateTarget.variants,assistant]; selectedVariant = variants.length - 1;
-          await query("UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[] WHERE id=$6", [assistant,JSON.stringify(variants),selectedVariant,memories.map((memory) => memory.id),arcs.map((arc) => arc.id),assistantId]);
-          await query("UPDATE conversations SET updated_at=now() WHERE id=$1", [conversationId]);
+          await asUser(account.id, async (client) => {
+            await client.query("UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[] WHERE id=$6 AND user_id=$7", [assistant,JSON.stringify(variants),selectedVariant,memories.map((memory) => memory.id),arcs.map((arc) => arc.id),assistantId,account.id]);
+            await client.query("UPDATE conversations SET updated_at=now() WHERE id=$1 AND user_id=$2", [conversationId,account.id]);
+          });
         } else {
           variants = [assistant]; selectedVariant = 0;
-          await query("INSERT INTO messages (id,conversation_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids) VALUES ($1,$2,'assistant',$3,$4::jsonb,0,$5::uuid[],$6::uuid[])", [assistantId,conversationId,assistant,JSON.stringify(variants),memories.map((memory) => memory.id),arcs.map((arc) => arc.id)]);
-          await query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1", [conversationId]);
+          await asUser(account.id, async (client) => {
+            await client.query("INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids) VALUES ($1,$2,$3,'assistant',$4,$5::jsonb,0,$6::uuid[],$7::uuid[])", [assistantId,conversationId,account.id,assistant,JSON.stringify(variants),memories.map((memory) => memory.id),arcs.map((arc) => arc.id)]);
+            await client.query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1 AND user_id=$2", [conversationId,account.id]);
+          });
         }
-        if (usage) await recordUsageEvent({ conversationId, model: settings.model, kind: action === "send" ? "chat" : action, usage });
+        if (usage) await recordUsageEvent({ userId: account.id, conversationId, model: settings.model, kind: action === "send" ? "chat" : action, usage });
         send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, memoriesUsed: memories.map((memory) => memory.id), arcsUsed: arcs.map((arc) => arc.id), usage });
         controller.close();
-        if (!regenerateTarget) void maybeConsolidate(conversationId).catch((error) => console.error("Memory consolidation failed", error));
+        if (!regenerateTarget) void maybeConsolidate(account.id, conversationId).catch((error) => console.error("Memory consolidation failed", error));
       } catch (error) {
         send({ type: "error", error: error instanceof Error ? error.message : "Stream failed" });
         controller.close();

@@ -1,25 +1,28 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, Persona, UsageResponse, World } from "@/lib/types";
+import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, Persona, Profile, UsageResponse, World } from "@/lib/types";
 import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
+import { supabaseBrowser } from "@/lib/supabase/client";
+import { avatarObjectPath, avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 
-type CharacterDraft = Omit<Character, "id" | "createdAt" | "updatedAt">;
+type CharacterDraft = Omit<Character, "id" | "createdAt" | "updatedAt" | "ownedByViewer">;
 type WorldWithCount = World & { characterCount?: number };
 type AppView = "home" | "chats" | "worlds" | "profile" | "likes";
 
 const blankCharacter: CharacterDraft = {
-  name: "", profileType: "single", tagline: "", avatarUrl: "", accent: "#e879a9", backstory: "", cast: [], lorebook: "", personality: "", scenario: "",
-  greeting: "", alternateGreetings: [], exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "", worldIds: [], nsfwEnabled: false,
+  name: "", profileType: "single", tagline: "", avatarUrl: "", avatarPath: "", accent: "#e879a9", backstory: "", cast: [], lorebook: "", personality: "", scenario: "",
+  greeting: "", alternateGreetings: [], exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "", worldIds: [], visibility: "private", nsfwEnabled: false,
 };
 
 function characterDraft(character?: Character | null): CharacterDraft {
   if (!character) return { ...blankCharacter, cast: [], alternateGreetings: [], worldIds: [] };
   return {
-    name: character.name, profileType: character.profileType, tagline: character.tagline, avatarUrl: character.avatarUrl, accent: character.accent,
+    name: character.name, profileType: character.profileType, tagline: character.tagline, avatarUrl: character.avatarUrl, avatarPath: character.avatarPath, accent: character.accent,
     backstory: character.backstory, cast: character.cast.map((member) => ({ ...member })), lorebook: character.lorebook, personality: character.personality,
     scenario: character.scenario, greeting: character.greeting, alternateGreetings: [...character.alternateGreetings], exampleDialogue: character.exampleDialogue,
-    responseDirective: character.responseDirective, boundaries: character.boundaries, sourceMaterial: character.sourceMaterial, worldIds: [...character.worldIds], nsfwEnabled: character.nsfwEnabled,
+    responseDirective: character.responseDirective, boundaries: character.boundaries, sourceMaterial: character.sourceMaterial, worldIds: [...character.worldIds],
+    visibility: character.visibility, nsfwEnabled: character.nsfwEnabled,
   };
 }
 
@@ -40,14 +43,28 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 function initials(name: string) { return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
 function time(value: string) { return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value)); }
 function memoriesUrl(characterId: string, conversationId?: string | null) { const params = new URLSearchParams({ characterId }); if (conversationId) params.set("conversationId",conversationId); return `/api/memories?${params}`; }
-async function imageFileData(file: File) {
+/**
+ * Uploads an avatar to Supabase Storage and returns its object path.
+ *
+ * The path is scoped by account id, which is what the storage policies check,
+ * so the browser cannot write into another account's folder even though it
+ * performs the upload directly.
+ */
+async function uploadAvatar(file: File, bucket: string) {
   if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type)) throw new Error("Choose a PNG, JPEG, WebP, or GIF image.");
-  if (file.size > 2_400_000) throw new Error("Image files must be smaller than 2.4 MB for database storage.");
-  return await new Promise<string>((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("Could not read that image")); reader.readAsDataURL(file); });
+  if (file.size > 5_000_000) throw new Error("Images must be smaller than 5 MB.");
+  const supabase = supabaseBrowser();
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData.user) throw new Error("Sign in before uploading an image");
+  const path = avatarObjectPath(userData.user.id, file.name);
+  const { error } = await supabase.storage.from(bucket).upload(path, file, { cacheControl: "3600", upsert: false, contentType: file.type });
+  if (error) throw new Error(error.message);
+  return path;
 }
 
 export default function Home() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [ageAccepted, setAgeAccepted] = useState<boolean | null>(null);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -70,6 +87,7 @@ export default function Home() {
   const [composerToolsOpen, setComposerToolsOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [models, setModels] = useState<string[]>([]);
   const [editing, setEditing] = useState<Character | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [recallMessage, setRecallMessage] = useState<Message | null>(null);
@@ -111,9 +129,15 @@ export default function Home() {
 
   useEffect(() => {
     setAgeAccepted(localStorage.getItem("afterglow_age_verified") === "yes");
-    api<{ authenticated: boolean }>("/api/session").then((data) => setAuthenticated(data.authenticated)).catch(() => setAuthenticated(false));
+    const loadSession = () => api<{ authenticated: boolean; profile: Profile | null }>("/api/session")
+      .then((data) => { setAuthenticated(data.authenticated); setProfile(data.profile); })
+      .catch(() => { setAuthenticated(false); setProfile(null); });
+    void loadSession();
+    // Sign-in and sign-out happen in the browser client, so mirror its state.
+    const { data: listener } = supabaseBrowser().auth.onAuthStateChange(() => { void loadSession(); });
+    return () => listener.subscription.unsubscribe();
   }, []);
-  useEffect(() => { if (authenticated) { void loadCharacters(); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings }>("/api/settings").then((data) => setSettings(data.settings)).catch(() => undefined); } }, [authenticated, loadCharacters, loadLibraries]);
+  useEffect(() => { if (authenticated) { void loadCharacters(); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings; models: string[] }>("/api/settings").then((data) => { setSettings(data.settings); setModels(data.models ?? []); }).catch(() => undefined); } }, [authenticated, loadCharacters, loadLibraries]);
   useEffect(() => {
     if (!selectedId || !authenticated) { setConversation(null); setConversations([]); setMessages([]); setMemories([]); setMemoryArcs([]); return; }
     setError("");
@@ -273,7 +297,7 @@ export default function Home() {
 
   if (ageAccepted === null || authenticated === null) return <div className="splash"><Logo /><div className="pulse" /></div>;
   if (!ageAccepted) return <AgeGate onAccept={() => { localStorage.setItem("afterglow_age_verified", "yes"); setAgeAccepted(true); }} />;
-  if (!authenticated) return <Login onSuccess={() => setAuthenticated(true)} />;
+  if (!authenticated) return <AuthGate />;
 
   return (
     <main className="app-shell">
@@ -299,7 +323,7 @@ export default function Home() {
             </div>
           ))}
         </div>
-        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{activePersona?.name || "Private profile"}</strong><small>{activePersona ? "Active chat persona" : "Your database, your API key"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Lock app" title="Lock app" onClick={async () => { await api("/api/auth", { method: "DELETE" }); setSidebarOpen(false); setAuthenticated(false); }}>◇ Lock</button></div></div>
+        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}>◇ Sign out</button></div></div>
       </aside>
       {activeView !== "chats" && <button className="global-mobile-menu" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>☰</button>}
 
@@ -353,7 +377,7 @@ export default function Home() {
       {studioOpen && <CharacterStudio character={editing} worlds={worlds} startSection={studioStartSection} onOpenWorldLibrary={() => { setStudioOpen(false); setEditing(null); setActiveView("worlds"); }} onLibrariesChanged={() => void loadLibraries()} onClose={() => { setStudioOpen(false); setEditing(null); }} onSaved={async (character) => { setStudioOpen(false); setEditing(null); await Promise.all([loadCharacters(),loadLibraries()]); setSelectedId(character.id); setActiveView("chats"); }} onDeleted={async () => { setStudioOpen(false); setEditing(null); await loadCharacters(); }} />}
       {memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); setMemoryArcs(data.arcs); }} />}
       {historyOpen && selected && <ConversationDrawer character={selected} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setHistoryOpen(false)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={async (id) => { await loadChat(selected.id,id); setHistoryOpen(false); }} onChange={() => void loadChat(selected.id)} />}
-      {settingsOpen && <SettingsDrawer settings={settings} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings(value); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings }>("/api/settings"); setSettings(data.settings); }} />}
+      {settingsOpen && <SettingsDrawer settings={settings} models={models} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings(value); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings }>("/api/settings"); setSettings(data.settings); }} />}
       {recallMessage && <RecallDrawer message={recallMessage} memories={memories} arcs={memoryArcs} onClose={() => setRecallMessage(null)} />}
       {instructionsOpen && conversation && <InstructionsDrawer conversation={conversation} onClose={() => setInstructionsOpen(false)} onSave={async (changes) => { await updateConversationContext(changes); setInstructionsOpen(false); }} />}
     </main>
@@ -363,12 +387,57 @@ export default function Home() {
 function Logo() { return <div className="logo"><span className="logo-mark">A</span><span>Afterglow</span></div>; }
 
 function Avatar({ character, large = false }: { character: Character; large?: boolean }) {
-  return <div className={`avatar ${large ? "large" : ""}`} style={{ "--accent": character.accent } as React.CSSProperties}>{character.avatarUrl ? <img src={character.avatarUrl} alt="" /> : <span>{initials(character.name)}</span>}</div>;
+  const source = avatarSource(characterAvatarBucket, character.avatarPath, character.avatarUrl);
+  return <div className={`avatar ${large ? "large" : ""}`} style={{ "--accent": character.accent } as React.CSSProperties}>{source ? <img src={source} alt="" /> : <span>{initials(character.name)}</span>}</div>;
 }
 
-function Login({ onSuccess }: { onSuccess: () => void }) {
-  const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
-  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">◇</div><span className="eyebrow">Private space</span><h1>Welcome back.</h1><p>Enter the password configured for your Afterglow instance.</p><form onSubmit={async (e) => { e.preventDefault(); setBusy(true); setError(""); try { await api("/api/auth", { method: "POST", body: JSON.stringify({ password }) }); onSuccess(); } catch (err) { setError(err instanceof Error ? err.message : "Login failed"); } finally { setBusy(false); } }}><input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} placeholder="App password" /><button className="primary" disabled={busy || !password}>{busy ? "Unlocking…" : "Unlock Afterglow"}</button>{error && <small className="form-error">{error}</small>}</form></div></main>;
+/**
+ * Email/password sign-in and sign-up backed by Supabase Auth.
+ *
+ * The browser only ever holds the publishable anon key; the session cookies it
+ * sets are what the server revalidates on every request.
+ */
+function AuthGate() {
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [displayName, setDisplayName] = useState("");
+  const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault(); setBusy(true); setError(""); setNotice("");
+    try {
+      const supabase = supabaseBrowser();
+      if (mode === "signup") {
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email, password, options: { data: { display_name: displayName.trim() || email.split("@")[0] } },
+        });
+        if (signUpError) throw signUpError;
+        // Projects with email confirmation enabled return no session yet.
+        if (!data.session) setNotice("Check your inbox to confirm the address, then sign in.");
+      } else {
+        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+        if (signInError) throw signInError;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not sign in");
+    } finally { setBusy(false); }
+  }
+
+  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">◇</div>
+    <span className="eyebrow">{mode === "signup" ? "Create an account" : "Welcome back"}</span>
+    <h1>{mode === "signup" ? "Begin your story." : "Sign in."}</h1>
+    <p>{mode === "signup" ? "Your characters, chats, and memories stay private to your account." : "Your library is waiting exactly where you left it."}</p>
+    <form onSubmit={submit}>
+      {mode === "signup" && <input autoComplete="nickname" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Display name" />}
+      <input type="email" autoComplete="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email address" />
+      <input type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" />
+      <button className="primary" disabled={busy || !email || password.length < 8}>{busy ? "One moment…" : mode === "signup" ? "Create account" : "Sign in"}</button>
+      {error && <small className="form-error">{error}</small>}
+      {notice && <small className="success-note">{notice}</small>}
+    </form>
+    <button className="text-button auth-switch" onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); setNotice(""); }}>
+      {mode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}
+    </button>
+  </div></main>;
 }
 
 function AgeGate({ onAccept }: { onAccept: () => void }) {
@@ -386,7 +455,7 @@ function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, 
     setBusy(true); setError("");
     try {
       const data = await api<{ character: CharacterDraft }>("/api/characters/generate", { method: "POST", body: JSON.stringify({ idea, mode: generatorMode, tone, nsfwEnabled: form.nsfwEnabled }) });
-      setForm(characterDraft({ ...data.character, id: "draft", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+      setForm(characterDraft({ ...data.character, id: "draft", ownedByViewer: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
       setGenerated(true); setSection(data.character.profileType === "ensemble" ? "definition" : "identity");
     } catch (e) { setError(e instanceof Error ? e.message : "Generation failed"); } finally { setBusy(false); }
   }
@@ -398,7 +467,7 @@ function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, 
         const created = await api<{ world: World }>("/api/worlds", { method: "POST", body: JSON.stringify({ name: `${form.name.trim()} world`, description: "World material separated automatically from the character import.", content: form.lorebook.trim() }) });
         worldIds = [...new Set([...worldIds,created.world.id])]; onLibrariesChanged();
       }
-      const payload = characterDraft({ ...form, tagline: "", lorebook: "", worldIds, id: character?.id || "draft", createdAt: character?.createdAt || new Date().toISOString(), updatedAt: character?.updatedAt || new Date().toISOString() });
+      const payload = characterDraft({ ...form, tagline: "", lorebook: "", worldIds, id: character?.id || "draft", ownedByViewer: true, createdAt: character?.createdAt || new Date().toISOString(), updatedAt: character?.updatedAt || new Date().toISOString() });
       const data = await api<{ character: Character }>(character ? `/api/characters/${character.id}` : "/api/characters", { method: character ? "PATCH" : "POST", body: JSON.stringify(payload) });
       onSaved(data.character);
     } catch (e) { setError(e instanceof Error ? e.message : "Save failed"); } finally { setBusy(false); }
@@ -412,7 +481,7 @@ function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, 
   }
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><section className="studio modal"><header><div><span className="eyebrow">{character ? "Character details" : "Character studio"}</span><h2>{character ? `View or edit ${character.name}` : "Bring someone to life"}</h2></div><button className="icon-button" onClick={onClose}>×</button></header>
     {!character && <div className="generator"><div className="generator-tabs"><button className={generatorMode === "idea" ? "active" : ""} onClick={() => setGeneratorMode("idea")}>Quick idea</button><button className={generatorMode === "dump" ? "active" : ""} onClick={() => setGeneratorMode("dump")}>Paste everything</button></div><div><label>{generatorMode === "dump" ? "Dump all your character material" : "Start with an idea"}<small>{generatorMode === "dump" ? "Paste up to 100,000 characters. Afterglow detects multiple-character cards, separates reusable world material, creates opening options, and keeps the untouched source for review." : "Describe one character or a complete cast/story concept."}</small></label><textarea maxLength={100000} value={idea} onChange={(e) => setIdea(e.target.value)} placeholder={generatorMode === "dump" ? "Paste the complete card, descriptions, dialogue, scenarios, lorebooks, rules, and notes here…" : "A sharp-witted art thief in her thirties who meets me at a rain-soaked Paris café…"} rows={generatorMode === "dump" ? 12 : 3} /></div><div className="generator-row"><select value={tone} onChange={(e) => setTone(e.target.value)}><option value="dramatic">Dramatic</option><option value="romantic">Romantic</option><option value="playful">Playful</option><option value="adventurous">Adventurous</option><option value="comforting">Comforting</option><option value="custom">Preserve supplied tone</option></select><span className="character-count">{idea.length.toLocaleString()} / 100,000</span><button className="magic-button" disabled={busy || idea.trim().length < 8} onClick={() => void generate()}>✦ {busy ? (generatorMode === "dump" ? "Mapping characters & worlds…" : "Dreaming…") : (generatorMode === "dump" ? "Import and organize" : "Generate profile")}</button></div></div>}
-    <div className="character-card-preview"><Avatar character={{ ...form, id: "preview", createdAt: "", updatedAt: "" }} large /><div><span className="eyebrow">{form.profileType === "ensemble" ? "Multiple characters" : "Character card"}</span><strong>{form.name || "Untitled character"}</strong><p>{form.profileType === "ensemble" ? `${form.cast.length} recurring characters` : "Single-character roleplay"}</p><div><span>{form.cast.length} cast</span><span>{openings.filter(Boolean).length} openings</span><span>{form.worldIds.length + (form.lorebook.trim() ? 1 : 0)} worlds</span></div></div></div>
+    <div className="character-card-preview"><Avatar character={{ ...form, id: "preview", ownedByViewer: true, createdAt: "", updatedAt: "" }} large /><div><span className="eyebrow">{form.profileType === "ensemble" ? "Multiple characters" : "Character card"}</span><strong>{form.name || "Untitled character"}</strong><p>{form.profileType === "ensemble" ? `${form.cast.length} recurring characters` : "Single-character roleplay"}</p><div><span>{form.cast.length} cast</span><span>{openings.filter(Boolean).length} openings</span><span>{form.worldIds.length + (form.lorebook.trim() ? 1 : 0)} worlds</span></div></div></div>
     {generated && <div className="import-summary"><strong>Import mapped without discarding the source.</strong><span>{form.profileType === "ensemble" ? "Multiple characters detected" : "Single character detected"} · {form.cast.length} cast entries · {openings.filter(Boolean).length} openings · {form.sourceMaterial.length.toLocaleString()} source characters retained</span></div>}
     <nav className="studio-sections"><button className={section === "identity" ? "active" : ""} onClick={() => setSection("identity")}>General</button><button className={section === "definition" ? "active" : ""} onClick={() => setSection("definition")}>Definition</button><button className={section === "world" ? "active" : ""} onClick={() => setSection("world")}>World & openings</button></nav>
     <div className="form-grid">
@@ -420,8 +489,9 @@ function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, 
       {section === "identity" && <>
         <label>Card type<select value={form.profileType} onChange={(e) => field("profileType", e.target.value as CharacterDraft["profileType"])}><option value="single">Single character</option><option value="ensemble">Multiple characters</option></select></label><label>Accent<input type="color" value={form.accent} onChange={(e) => field("accent", e.target.value)} /></label>
         <label className="wide">Character name<input value={form.name} onChange={(e) => field("name", e.target.value)} placeholder={form.profileType === "ensemble" ? "The Wayfarers · Tower of Babel" : "Character name"} /></label>
-        <div className="avatar-source wide"><div><strong>Character image</strong><small>Upload from your media library or use a direct image link.</small></div><div className="avatar-source-actions"><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (e) => { const file=e.target.files?.[0]; if(!file) return; try { field("avatarUrl",await imageFileData(file)); } catch(err) { setError(err instanceof Error ? err.message : "Image import failed"); } finally { e.target.value=""; } }} /></label>{form.avatarUrl && <button className="secondary" onClick={() => field("avatarUrl","")}>Remove</button>}</div><input aria-label="Character image URL" value={form.avatarUrl.startsWith("data:") ? "" : form.avatarUrl} onChange={(e) => field("avatarUrl", e.target.value)} placeholder="https://… (optional)" /></div>
+        <div className="avatar-source wide"><div><strong>Character image</strong><small>Upload from your media library or use a direct image link.</small></div><div className="avatar-source-actions"><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (e) => { const file=e.target.files?.[0]; if(!file) return; try { field("avatarPath",await uploadAvatar(file,characterAvatarBucket)); } catch(err) { setError(err instanceof Error ? err.message : "Image upload failed"); } finally { e.target.value=""; } }} /></label>{(form.avatarPath || form.avatarUrl) && <button className="secondary" onClick={() => { field("avatarPath",""); field("avatarUrl",""); }}>Remove</button>}</div><input aria-label="Character image URL" value={form.avatarUrl.startsWith("data:") ? "" : form.avatarUrl} onChange={(e) => field("avatarUrl", e.target.value)} placeholder="https://… (optional)" /></div>
         <label className="toggle-row wide"><span><strong>Adult mode</strong><small>Allows consensual explicit roleplay between fictional adults.</small></span><input type="checkbox" checked={form.nsfwEnabled} onChange={(e) => field("nsfwEnabled", e.target.checked)} /></label>
+        <label className="toggle-row wide"><span><strong>Who can see this character</strong><small>Your chats, memories, and story stay private either way. Publishing shares only the character card.</small></span><select aria-label="Character visibility" value={form.visibility} onChange={(e) => field("visibility", e.target.value as CharacterDraft["visibility"])}><option value="private">Private — only me</option><option value="unlisted">Unlisted — anyone with the link</option><option value="public">Public — listed for others</option></select></label>
       </>}
       {section === "definition" && <>
         <label className="wide">Backstory & durable premise<textarea value={form.backstory} onChange={(e) => field("backstory", e.target.value)} rows={fieldRows(form.backstory, 7)} placeholder="History, relationships, formative events, timeline…" /></label>
@@ -480,13 +550,13 @@ function WorldLibrary({ worlds, onChange }: { worlds: WorldWithCount[]; onChange
 }
 
 function PersonaLibrary({ personas, onChange }: { personas: Persona[]; onChange: () => void }) {
-  const [editing,setEditing] = useState<Persona | null | "new">(null); const [name,setName] = useState(""); const [description,setDescription] = useState(""); const [avatarUrl,setAvatarUrl] = useState(""); const [accent,setAccent] = useState("#e879a9"); const [isDefault,setIsDefault] = useState(false); const [busy,setBusy] = useState(false); const [error,setError] = useState("");
-  function open(persona?: Persona) { setEditing(persona ?? "new"); setName(persona?.name ?? ""); setDescription(persona?.description ?? ""); setAvatarUrl(persona?.avatarUrl ?? ""); setAccent(persona?.accent ?? "#e879a9"); setIsDefault(persona?.isDefault ?? personas.length === 0); setError(""); }
-  async function save() { setBusy(true); setError(""); try { await api(editing === "new"?"/api/personas":`/api/personas/${editing!.id}`,{method:editing === "new"?"POST":"PATCH",body:JSON.stringify({name,description,avatarUrl,accent,isDefault})}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Could not save persona"); } finally { setBusy(false); } }
-  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Who you enter the story as</span><h1>Personas</h1><p>Create different identities, appearances, pronouns, and backgrounds, then choose one independently for every chat.</p></div><button className="primary" onClick={() => open()}>＋ New persona</button></header><div className="persona-grid">{personas.map((persona) => <button key={persona.id} className="persona-card" onClick={() => open(persona)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available for any chat"}</small><p>{compactMessagePreview(persona.description||"No profile details yet.",120)}</p></span></button>)}</div>{editing && <div className="modal-backdrop" onMouseDown={(e) => { if(e.currentTarget===e.target)setEditing(null); }}><section className="modal document-editor persona-editor"><header><div><span className="eyebrow">Persona</span><h2>{editing === "new"?"Create yourself for a story":`Edit ${editing.name}`}</h2></div><button className="icon-button" onClick={() => setEditing(null)}>×</button></header><div className="document-form"><div className="persona-image-row"><div className="persona-preview" style={{"--accent":accent} as React.CSSProperties}>{avatarUrl?<img src={avatarUrl} alt=""/>:<span>{initials(name)}</span>}</div><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{setAvatarUrl(await imageFileData(file));}catch(err){setError(err instanceof Error?err.message:"Image import failed");}finally{e.target.value="";}}}/></label><input type="color" aria-label="Persona accent" value={accent} onChange={(e)=>setAccent(e.target.value)}/></div><label>Persona name<input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Name used in chat"/></label><label>Persona description<textarea value={description} onChange={(e)=>setDescription(e.target.value)} rows={10} placeholder="Appearance, pronouns, age, personality, abilities, history, relationships, and anything characters should know…"/></label><label className="toggle-row"><span><strong>Default persona</strong><small>Automatically selected for new chats.</small></span><input type="checkbox" checked={isDefault} onChange={(e)=>setIsDefault(e.target.checked)}/></label>{error&&<div className="form-error">{error}</div>}</div><footer>{editing!=="new"&&<button className="danger-button" disabled={busy||editing.isDefault} title={editing.isDefault?"Choose another default persona first":"Delete persona"} onClick={async()=>{if(!window.confirm(`Delete persona “${editing.name}”? Existing chats will fall back to your default persona.`))return;setBusy(true);try{await api(`/api/personas/${editing.id}`,{method:"DELETE"});setEditing(null);onChange();}catch(e){setError(e instanceof Error?e.message:"Delete failed");setBusy(false);}}}>⌫ Delete</button>}<span className="footer-spacer"/><button className="secondary" onClick={()=>setEditing(null)}>Cancel</button><button className="primary" disabled={busy||!name.trim()} onClick={()=>void save()}>{busy?"Saving…":"Save persona"}</button></footer></section></div>}</section>;
+  const [editing,setEditing] = useState<Persona | null | "new">(null); const [name,setName] = useState(""); const [description,setDescription] = useState(""); const [avatarUrl,setAvatarUrl] = useState(""); const [avatarPath,setAvatarPath] = useState(""); const [accent,setAccent] = useState("#e879a9"); const [isDefault,setIsDefault] = useState(false); const [busy,setBusy] = useState(false); const [error,setError] = useState("");
+  function open(persona?: Persona) { setEditing(persona ?? "new"); setName(persona?.name ?? ""); setDescription(persona?.description ?? ""); setAvatarUrl(persona?.avatarUrl ?? ""); setAvatarPath(persona?.avatarPath ?? ""); setAccent(persona?.accent ?? "#e879a9"); setIsDefault(persona?.isDefault ?? personas.length === 0); setError(""); }
+  async function save() { setBusy(true); setError(""); try { await api(editing === "new"?"/api/personas":`/api/personas/${editing!.id}`,{method:editing === "new"?"POST":"PATCH",body:JSON.stringify({name,description,avatarUrl,avatarPath,accent,isDefault})}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Could not save persona"); } finally { setBusy(false); } }
+  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Who you enter the story as</span><h1>Personas</h1><p>Create different identities, appearances, pronouns, and backgrounds, then choose one independently for every chat.</p></div><button className="primary" onClick={() => open()}>＋ New persona</button></header><div className="persona-grid">{personas.map((persona) => <button key={persona.id} className="persona-card" onClick={() => open(persona)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available for any chat"}</small><p>{compactMessagePreview(persona.description||"No profile details yet.",120)}</p></span></button>)}</div>{editing && <div className="modal-backdrop" onMouseDown={(e) => { if(e.currentTarget===e.target)setEditing(null); }}><section className="modal document-editor persona-editor"><header><div><span className="eyebrow">Persona</span><h2>{editing === "new"?"Create yourself for a story":`Edit ${editing.name}`}</h2></div><button className="icon-button" onClick={() => setEditing(null)}>×</button></header><div className="document-form"><div className="persona-image-row"><div className="persona-preview" style={{"--accent":accent} as React.CSSProperties}>{avatarUrl?<img src={avatarUrl} alt=""/>:<span>{initials(name)}</span>}</div><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{setAvatarPath(await uploadAvatar(file,profileAvatarBucket));}catch(err){setError(err instanceof Error?err.message:"Image upload failed");}finally{e.target.value="";}}}/></label><input type="color" aria-label="Persona accent" value={accent} onChange={(e)=>setAccent(e.target.value)}/></div><label>Persona name<input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Name used in chat"/></label><label>Persona description<textarea value={description} onChange={(e)=>setDescription(e.target.value)} rows={10} placeholder="Appearance, pronouns, age, personality, abilities, history, relationships, and anything characters should know…"/></label><label className="toggle-row"><span><strong>Default persona</strong><small>Automatically selected for new chats.</small></span><input type="checkbox" checked={isDefault} onChange={(e)=>setIsDefault(e.target.checked)}/></label>{error&&<div className="form-error">{error}</div>}</div><footer>{editing!=="new"&&<button className="danger-button" disabled={busy||editing.isDefault} title={editing.isDefault?"Choose another default persona first":"Delete persona"} onClick={async()=>{if(!window.confirm(`Delete persona “${editing.name}”? Existing chats will fall back to your default persona.`))return;setBusy(true);try{await api(`/api/personas/${editing.id}`,{method:"DELETE"});setEditing(null);onChange();}catch(e){setError(e instanceof Error?e.message:"Delete failed");setBusy(false);}}}>⌫ Delete</button>}<span className="footer-spacer"/><button className="secondary" onClick={()=>setEditing(null)}>Cancel</button><button className="primary" disabled={busy||!name.trim()} onClick={()=>void save()}>{busy?"Saving…":"Save persona"}</button></footer></section></div>}</section>;
 }
 
-function PersonaAvatar({ persona }: { persona: Persona }) { return <div className="persona-preview" style={{"--accent":persona.accent} as React.CSSProperties}>{persona.avatarUrl?<img src={persona.avatarUrl} alt=""/>:<span>{initials(persona.name)}</span>}</div>; }
+function PersonaAvatar({ persona }: { persona: Persona }) { const source = avatarSource(profileAvatarBucket, persona.avatarPath, persona.avatarUrl); return <div className="persona-preview" style={{"--accent":persona.accent} as React.CSSProperties}>{source?<img src={source} alt=""/>:<span>{initials(persona.name)}</span>}</div>; }
 
 function InstructionsDrawer({ conversation, onClose, onSave }: { conversation: Conversation; onClose: () => void; onSave: (value: { instructionPresets: ChatInstructionPreset[]; customInstructions: string }) => Promise<void> }) {
   const [presets,setPresets] = useState<ChatInstructionPreset[]>(conversation.instructionPresets); const [custom,setCustom] = useState(conversation.customInstructions); const [busy,setBusy] = useState(false);
@@ -498,7 +568,7 @@ function InstructionsDrawer({ conversation, onClose, onSave }: { conversation: C
   return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e)=>{if(e.currentTarget===e.target)onClose();}}><aside className="memory-drawer instruction-drawer"><header><div><span className="eyebrow">This chat only</span><h2>Instructions</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="instruction-body"><p>These directions are added beneath the character, world, persona, and continuity context for this story only.</p>{choices.map((choice)=><label key={choice.id} className={presets.includes(choice.id)?"selected":""}><input type="checkbox" checked={presets.includes(choice.id)} onChange={(e)=>setPresets(e.target.checked?[...presets,choice.id]:presets.filter((item)=>item!==choice.id))}/><span><strong>{choice.title}</strong><small>{choice.text}</small></span></label>)}<label className="custom-instruction">Custom instruction<textarea rows={7} maxLength={3000} value={custom} onChange={(e)=>setCustom(e.target.value)} placeholder="For example: Keep replies concise during dialogue-heavy scenes…"/><small>{custom.length.toLocaleString()} / 3,000</small></label></div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={async()=>{setBusy(true);await onSave({instructionPresets:presets,customInstructions:custom});setBusy(false);}}>{busy?"Saving…":"Save instructions"}</button></footer></aside></div>;
 }
 
-function SettingsDrawer({ settings, onClose, onSaved, onImported }: { settings: AppSettings; onClose: () => void; onSaved: (settings: AppSettings) => void; onImported: () => void }) {
+function SettingsDrawer({ settings, models, onClose, onSaved, onImported }: { settings: AppSettings; models: string[]; onClose: () => void; onSaved: (settings: AppSettings) => void; onImported: () => void }) {
   const [form,setForm] = useState(settings); const [usage,setUsage] = useState<UsageResponse | null>(null); const [busy,setBusy] = useState(false); const [error,setError] = useState(""); const [notice,setNotice] = useState("");
   useEffect(() => { api<UsageResponse>("/api/usage").then(setUsage).catch(() => undefined); }, []);
   const number = (value: number) => new Intl.NumberFormat(undefined,{notation:"compact",maximumFractionDigits:1}).format(value);
@@ -509,7 +579,7 @@ function SettingsDrawer({ settings, onClose, onSaved, onImported }: { settings: 
     <header><div><span className="eyebrow">Instance settings</span><h2>Make it yours</h2></div><button className="icon-button" onClick={onClose}>×</button></header>
     <div className="settings-body">
       <section><span className="eyebrow">Your identity</span><label>Your name<input value={form.ownerName} onChange={(e) => setForm({...form,ownerName:e.target.value})} /></label><label>Profile the characters should know<textarea rows={4} value={form.ownerProfile} onChange={(e) => setForm({...form,ownerProfile:e.target.value})} placeholder="Preferences, appearance, pronouns, relationship context…" /></label></section>
-      <section><span className="eyebrow">Model & response</span><label>DeepSeek model<input list="models" value={form.model} onChange={(e) => setForm({...form,model:e.target.value})} /><datalist id="models"><option value="deepseek-v4-flash" /><option value="deepseek-v4-pro" /></datalist></label><label>Roleplay preset<select value={form.roleplayPreset} onChange={(e) => setForm({...form,roleplayPreset:e.target.value as AppSettings["roleplayPreset"]})}><option value="immersive">Immersive — adaptive all-rounder</option><option value="raw">Raw adult — direct and autonomous</option><option value="cinematic">Cinematic — atmospheric and dramatic</option><option value="deliberate">Deliberate — logical and complex</option></select></label><p className="setting-note">Raw Adult is the least sanitized when a character&apos;s Adult mode is enabled. Deliberate uses DeepSeek thinking mode; temperature is ignored by the provider in that preset.</p><div className="settings-pair"><label>Creativity <input type="number" min="0" max="2" step="0.05" value={form.temperature} onChange={(e) => setForm({...form,temperature:Number(e.target.value)})} /></label><label>Max reply tokens <input type="number" min="256" max="8000" step="128" value={form.maxTokens} onChange={(e) => setForm({...form,maxTokens:Number(e.target.value)})} /></label></div></section>
+      <section><span className="eyebrow">Model & response</span><label>DeepSeek model<select value={form.model} onChange={(e) => setForm({...form,model:e.target.value})}>{(models.length ? models : [form.model]).map((name) => <option key={name} value={name}>{name}</option>)}</select></label><label>Roleplay preset<select value={form.roleplayPreset} onChange={(e) => setForm({...form,roleplayPreset:e.target.value as AppSettings["roleplayPreset"]})}><option value="immersive">Immersive — adaptive all-rounder</option><option value="raw">Raw adult — direct and autonomous</option><option value="cinematic">Cinematic — atmospheric and dramatic</option><option value="deliberate">Deliberate — logical and complex</option></select></label><p className="setting-note">Raw Adult is the least sanitized when a character&apos;s Adult mode is enabled. Deliberate uses DeepSeek thinking mode; temperature is ignored by the provider in that preset.</p><div className="settings-pair"><label>Creativity <input type="number" min="0" max="2" step="0.05" value={form.temperature} onChange={(e) => setForm({...form,temperature:Number(e.target.value)})} /></label><label>Max reply tokens <input type="number" min="256" max="8000" step="128" value={form.maxTokens} onChange={(e) => setForm({...form,maxTokens:Number(e.target.value)})} /></label></div></section>
       <section><span className="eyebrow">Memory tuning</span><div className="settings-pair"><label>Recent messages <input type="number" min="8" max="100" value={form.contextMessages} onChange={(e) => setForm({...form,contextMessages:Number(e.target.value)})} /></label><label>Recent context tokens <input type="number" min="4000" max="100000" step="1000" value={form.contextTokenBudget} onChange={(e) => setForm({...form,contextTokenBudget:Number(e.target.value)})} /></label><label>Relevant event slots <input type="number" min="1" max="20" value={form.memoryLimit} onChange={(e) => setForm({...form,memoryLimit:Number(e.target.value)})} /></label><label>Memory context tokens <input type="number" min="1000" max="30000" step="500" value={form.memoryTokenBudget} onChange={(e) => setForm({...form,memoryTokenBudget:Number(e.target.value)})} /></label><label>Consolidate every N messages <input type="number" min="6" max="50" value={form.consolidationInterval} onChange={(e) => setForm({...form,consolidationInterval:Number(e.target.value)})} /></label></div><p className="setting-note">The permanent archive has no reply-count cap. The token budget controls how much is recalled at once; active promises, boundaries, and unresolved loops get protected priority. Only journal entries marked “All chats” cross story boundaries.</p></section>
       {usage && <section><span className="eyebrow">Complete usage & cost ledger</span><div className="usage-grid"><div><strong>{number(usage.usage.requests)}</strong><small>API calls</small></div><div><strong>{number(usage.usage.promptTokens)}</strong><small>input tokens</small></div><div><strong>{number(usage.usage.completionTokens)}</strong><small>output tokens</small></div><div><strong>{number(usage.usage.cacheHitTokens)}</strong><small>cached input</small></div><div><strong>{usd(usage.usage.estimatedCostUsd)}</strong><small>estimated cost</small></div></div><div className="usage-breakdown">{usage.byType.map((item) => <div key={item.key}><span><strong>{usageLabels[item.key] ?? item.key}</strong><small>{item.requests} calls · {number(item.promptTokens + item.completionTokens)} tokens</small></span><b>{usd(item.estimatedCostUsd)}</b></div>)}</div><div className="usage-models">{usage.byModel.map((item) => <span key={item.key}>{item.key}: <strong>{usd(item.estimatedCostUsd)}</strong></span>)}</div><p className="setting-note">Includes replies, regenerate, continue, memory consolidation/Refresh now, and character generation/import. Estimates use exact provider-reported cache-hit, cache-miss, and output tokens with DeepSeek prices checked {usage.pricingAsOf}; previously recorded chat events were backfilled.</p></section>}
       <section><span className="eyebrow">Backup & portability</span><div className="data-actions"><a className="secondary" href="/api/backup" download>↓ Export JSON backup</a><label className="secondary file-button">↑ Import backup<input type="file" accept="application/json,.json" onChange={async (e) => { const file=e.target.files?.[0]; if(!file) return; if(!window.confirm("Import this backup as additional characters and chats?")) return; setBusy(true); setError(""); try { const result=await api<{imported:Record<string,number>}>("/api/backup",{method:"POST",body:await file.text()}); setNotice(`Imported ${result.imported.characters} characters and ${result.imported.messages} messages.`); await onImported(); } catch(err) { setError(err instanceof Error?err.message:"Import failed"); } finally { setBusy(false); e.target.value=""; } }} /></label></div><p className="setting-note">Backups include profiles, chats, memories, and these settings—never passwords or API keys.</p></section>
