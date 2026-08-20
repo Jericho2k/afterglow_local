@@ -33,7 +33,7 @@ describe("PostgreSQL persistence", () => {
     expect(tables.rows.map((row) => row.table_name)).toContain("memory_arcs");
   });
 
-  it("creates every durable application table and default settings", async () => {
+  it("creates every durable application table and defaults without ownerless user data", async () => {
     const tables = await query<{ table_name: string }>("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
     expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","memory_arcs","usage_events","app_settings","personas","worlds","character_worlds"]));
     const settings = await getDefaultSettings();
@@ -43,7 +43,9 @@ describe("PostgreSQL persistence", () => {
     expect(settings.memoryLimit).toBe(8);
     expect(settings.contextTokenBudget).toBe(12000);
     expect(settings.memoryTokenBudget).toBe(6000);
-    expect(Number((await query("SELECT COUNT(*) count FROM personas WHERE is_default=true")).rows[0].count)).toBe(1);
+    // Personas belong to authenticated accounts; schema startup must never
+    // recreate the obsolete installation-wide persona without a user_id.
+    expect(Number((await query("SELECT COUNT(*) count FROM personas")).rows[0].count)).toBe(0);
   });
 
   it("reuses worlds across characters and isolates persona instructions by conversation", async () => {

@@ -224,11 +224,13 @@ async function schema() {
     "INSERT INTO app_settings (id, owner_name, owner_profile, model) VALUES ('owner',$1,$2,$3) ON CONFLICT (id) DO NOTHING",
     [process.env.OWNER_NAME || "You", process.env.OWNER_PROFILE || "", process.env.DEEPSEEK_MODEL || "deepseek-v4-flash"],
   );
-  await pool().query(`
-    INSERT INTO personas (id,name,description,is_default)
-    SELECT '00000000-0000-4000-8000-000000000001'::uuid,owner_name,owner_profile,true FROM app_settings WHERE id='owner'
-    ON CONFLICT (id) DO NOTHING
-  `);
+  // Do not seed the old installation-wide persona here. Personas are now
+  // account-owned resources and production correctly requires user_id. An
+  // ownerless INSERT fails before ON CONFLICT can discard the fixed legacy id,
+  // which used to make every cold start fail once the multi-tenant migration
+  // had made personas.user_id NOT NULL. Existing legacy rows are assigned to
+  // their owner by scripts/migrate-legacy-owner.mjs; new personas are created
+  // only through the authenticated API.
   // Multi-tenant columns.
   //
   // supabase/migrations is authoritative for a deployed database: it adds the
@@ -286,10 +288,16 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_user_idx ON character_likes (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_reports_user_idx ON character_reports (user_id, created_at DESC)");
 
-  const legacyLorebooks = await pool().query("SELECT id,name,lorebook FROM characters WHERE lorebook<>''");
+  const legacyLorebooks = await pool().query("SELECT id,name,lorebook,user_id FROM characters WHERE lorebook<>''");
   for (const character of legacyLorebooks.rows) {
     const worldId = randomUUID();
-    await pool().query("INSERT INTO worlds (id,name,description,content) VALUES ($1,$2,$3,$4)", [worldId,`${character.name} world`,"Imported from the original embedded character lorebook.",character.lorebook]);
+    // Preserve ownership while converting the old embedded lorebook. This
+    // remains compatible with a plain legacy PostgreSQL database, where
+    // user_id is nullable, while satisfying the production NOT NULL/RLS model.
+    await pool().query(
+      "INSERT INTO worlds (id,user_id,name,description,content,visibility) VALUES ($1,$2,$3,$4,$5,'private')",
+      [worldId,character.user_id ?? null,`${character.name} world`,"Imported from the original embedded character lorebook.",character.lorebook],
+    );
     await pool().query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)", [character.id,worldId]);
     await pool().query("UPDATE characters SET lorebook='' WHERE id=$1", [character.id]);
   }
