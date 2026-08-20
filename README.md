@@ -87,6 +87,8 @@ No part of the application uses the service-role key. Ordinary reads and writes 
 1. Push this repository to a **private** GitHub repository.
 2. Create a project from it on your host (the included `Dockerfile` and `railway.toml` target Railway; `/api/health` is the health check).
 3. Set `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `DEEPSEEK_API_KEY`.
+
+   The two `NEXT_PUBLIC_*` values are inlined into the browser bundle while the image is built, not read when the container starts, so they must be present **before** the build runs. The Dockerfile declares them as build arguments and Railway passes service variables to the build automatically; on another host, pass them with `--build-arg`. Adding them to an already-built deployment has no effect until it is rebuilt, and the app now says so on its front page rather than failing silently.
 4. Optionally set `ALLOWED_MODELS`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL`.
 5. Deploy, then open the domain, complete the adult age gate, and create an account.
 

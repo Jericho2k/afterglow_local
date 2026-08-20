@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, Persona, Profile, UsageResponse, World } from "@/lib/types";
 import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
-import { supabaseBrowser } from "@/lib/supabase/client";
+import { supabaseBrowser, supabaseBrowserConfigured } from "@/lib/supabase/client";
 import { avatarObjectPath, avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 
 type CharacterDraft = Omit<Character, "id" | "createdAt" | "updatedAt" | "ownedByViewer">;
@@ -129,6 +129,7 @@ export default function Home() {
 
   useEffect(() => {
     setAgeAccepted(localStorage.getItem("afterglow_age_verified") === "yes");
+    if (!supabaseBrowserConfigured()) { setAuthenticated(false); return; }
     const loadSession = () => api<{ authenticated: boolean; profile: Profile | null }>("/api/session")
       .then((data) => { setAuthenticated(data.authenticated); setProfile(data.profile); })
       .catch(() => { setAuthenticated(false); setProfile(null); });
@@ -297,6 +298,7 @@ export default function Home() {
 
   if (ageAccepted === null || authenticated === null) return <div className="splash"><Logo /><div className="pulse" /></div>;
   if (!ageAccepted) return <AgeGate onAccept={() => { localStorage.setItem("afterglow_age_verified", "yes"); setAgeAccepted(true); }} />;
+  if (!supabaseBrowserConfigured()) return <ConfigNotice />;
   if (!authenticated) return <AuthGate />;
 
   return (
@@ -389,6 +391,22 @@ function Logo() { return <div className="logo"><span className="logo-mark">A</sp
 function Avatar({ character, large = false }: { character: Character; large?: boolean }) {
   const source = avatarSource(characterAvatarBucket, character.avatarPath, character.avatarUrl);
   return <div className={`avatar ${large ? "large" : ""}`} style={{ "--accent": character.accent } as React.CSSProperties}>{source ? <img src={source} alt="" /> : <span>{initials(character.name)}</span>}</div>;
+}
+
+/**
+ * Shown when the browser bundle was built without the Supabase settings.
+ *
+ * This is a build-time misconfiguration rather than a runtime one, so it is
+ * worth naming precisely: the server can be perfectly configured while the
+ * browser has nothing, and the symptom is otherwise a blank page.
+ */
+function ConfigNotice() {
+  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">◇</div>
+    <span className="eyebrow">Configuration needed</span>
+    <h1>Almost there.</h1>
+    <p>This build has no Supabase settings baked into it, so sign-in cannot load.</p>
+    <p className="config-hint"><code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> are read while the app is built, not when it starts. Set them on the service and <strong>redeploy</strong> — adding them without rebuilding will not fix this.</p>
+  </div></main>;
 }
 
 /**
