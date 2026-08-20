@@ -30,10 +30,13 @@ const knownModels: ModelDefinition[] = [
 ];
 
 const engines: RoleplayEngineDefinition[] = [
-  { id: "immersive", label: "Afterglow Immersive", description: "Adaptive story, emotion, intimacy, and character initiative.", thinking: false },
-  { id: "raw", label: "Afterglow Raw", description: "Direct adult prose and autonomous, character-led desire when Adult mode is on.", thinking: false },
-  { id: "cinematic", label: "Afterglow Cinematic", description: "Atmospheric, dramatic prose with selective sensory detail.", thinking: false },
-  { id: "deliberate", label: "Afterglow Deliberate", description: "Careful causality, strategy, spatial logic, and long-running consequences.", thinking: true },
+  { id: "immersive", label: "Afterglow Immersive", description: "The balanced default: fluid story, emotion, intimacy, humor, and character initiative without forcing one tone.", thinking: false, adult: true, tags: ["balanced", "story", "romance"] },
+  { id: "raw", label: "Afterglow Unbound", description: "Unapologetically direct adult roleplay with character-led desire, explicit language, emotional messiness, and real consequences.", thinking: false, adult: true, tags: ["explicit", "intense", "character agency"] },
+  { id: "kink_aware", label: "Afterglow Kink-Aware", description: "Keeps power dynamics, roles, preferences, limits, pacing, and negotiated boundaries coherent instead of reducing kink to generic sex.", thinking: false, adult: true, tags: ["kink", "power dynamics", "boundaries"] },
+  { id: "multi_clarity", label: "Afterglow Multi-Clarity", description: "Built for casts and group scenes: distinct voices, identities, positions, motives, relationships, and parallel reactions without character blending.", thinking: false, adult: true, tags: ["multiple characters", "group scenes", "clarity"] },
+  { id: "slow_burn", label: "Afterglow Slow Burn", description: "Prioritizes earned tension, subtext, gradual trust, longing, and relationship progression without rushing every scene toward sex.", thinking: false, adult: true, tags: ["slow burn", "tension", "romance"] },
+  { id: "cinematic", label: "Afterglow Cinematic", description: "Atmospheric, dramatic prose with selective sensory detail, strong scene framing, and novel-like momentum.", thinking: false, adult: true, tags: ["atmosphere", "prose", "drama"] },
+  { id: "deliberate", label: "Afterglow Deliberate", description: "Careful causality, strategy, spatial logic, plans, and long-running consequences for complex plots.", thinking: true, adult: true, tags: ["logic", "strategy", "complex plots"] },
 ];
 
 function safeId(value: string) {
@@ -93,6 +96,9 @@ export function enginePrompt(engineId: RoleplayEngineId) {
   const prompts: Record<RoleplayEngineId, string> = {
     immersive: "IMMERSIVE: Adapt fluidly between plot, emotion, humor, tenderness, conflict, and adult intimacy. Favor specific character-driven choices over a fixed prose formula.",
     raw: "RAW ADULT: When Adult mode is enabled and the scene becomes sexual, use direct, concrete, uninhibited language rather than euphemisms, coy summaries, or fade-to-black. Keep desire messy and character-specific. Explicitness must emerge from the characters and context, never from automatic compliance.",
+    kink_aware: "KINK-AWARE: When Adult mode is enabled, portray kink and power exchange with specific, character-consistent desires, roles, rituals, limits, negotiation, aftercare preferences, and evolving trust. Preserve the difference between fantasy, consent, reluctance, refusal, and a hard stop. Do not flatten every dynamic into generic dominance or generic sex.",
+    multi_clarity: "MULTI-CLARITY: Treat every recurring character as a separate mind. Maintain distinct names, voices, bodies, locations, knowledge, motives, relationships, boundaries, and reactions. In group and adult scenes, make speaker/action ownership unambiguous and never blend identities, anatomy, or perspective. Give the cast room to react without turning the reply into a roll call.",
+    slow_burn: "SLOW BURN: Build attraction and intimacy through earned tension, subtext, hesitation, small choices, changing trust, and cumulative relationship development. Do not rush emotional milestones or turn every charged moment immediately sexual; when escalation finally happens, let it feel consequential and specific.",
     cinematic: "CINEMATIC: Build atmosphere through selective sensory detail, setting, subtext, body language, and dramatic pacing. Make the scene feel larger than the immediate exchange without burying dialogue beneath description.",
     deliberate: "DELIBERATE: Track causality, plans, spatial details, competing motives, and long-running consequences carefully. Let characters think strategically while remaining emotionally alive and fully in character.",
   };

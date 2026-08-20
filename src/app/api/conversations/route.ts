@@ -36,11 +36,14 @@ async function createConversation(client: PoolClient, userId: string, characterI
     [id, characterId, userId, `Chat with ${character.name}`, resolvedPersonaId, owned ? null : JSON.stringify(characterSnapshot(character)),settings.providerId,settings.model,settings.roleplayPreset],
   );
 
-  const greetings = [character.greeting, ...character.alternateGreetings];
+  const greetings = [character.greeting, ...character.alternateGreetings].map((item) => String(item || "").trim()).filter(Boolean);
   const safeIndex = Number.isInteger(greetingIndex) && greetingIndex >= 0 && greetingIndex < greetings.length ? greetingIndex : 0;
-  const greeting = String(greetings[safeIndex] || "").trim();
+  const greeting = greetings[safeIndex] || "";
   if (greeting) {
-    await client.query("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'assistant',$4)", [randomUUID(), id, userId, greeting]);
+    await client.query(
+      "INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant) VALUES ($1,$2,$3,'assistant',$4,$5::jsonb,$6)",
+      [randomUUID(), id, userId, greeting, JSON.stringify(greetings), safeIndex],
+    );
     result = await client.query("UPDATE conversations SET message_count=1 WHERE id=$1 AND user_id=$2 RETURNING *", [id, userId]);
   }
   return conversationFromRow(result.rows[0]);
@@ -52,6 +55,13 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const characterId = url.searchParams.get("characterId");
   const requestedId = url.searchParams.get("conversationId");
+  if (url.searchParams.get("scope") === "all") {
+    const result = await asUser(account.id, (client) => client.query(
+      "SELECT * FROM conversations WHERE user_id=$1 ORDER BY updated_at DESC,created_at DESC",
+      [account.id],
+    ));
+    return Response.json({ conversations: result.rows.map(conversationFromRow) });
+  }
   if (!characterId) return Response.json({ error: "characterId is required" }, { status: 400 });
 
   const payload = await asUser(account.id, async (client) => {

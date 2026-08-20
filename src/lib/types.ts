@@ -136,7 +136,8 @@ export type Profile = {
 
 export type CharacterReportReason = "underage" | "nonconsensual" | "real_person" | "stolen" | "harassment" | "other";
 
-export type RoleplayEngineId = "immersive" | "raw" | "cinematic" | "deliberate";
+export const roleplayEngineIds = ["immersive", "raw", "kink_aware", "multi_clarity", "slow_burn", "cinematic", "deliberate"] as const;
+export type RoleplayEngineId = typeof roleplayEngineIds[number];
 
 export type ProviderDefinition = {
   id: string;
@@ -156,6 +157,8 @@ export type RoleplayEngineDefinition = {
   label: string;
   description: string;
   thinking: boolean;
+  adult: boolean;
+  tags: string[];
 };
 
 export type ModelCatalog = {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { roleplayEngineIds } from "./types";
 
 const text = (max: number, min = 0) => z.preprocess(
   (value) => value == null ? "" : typeof value === "string" ? value : String(value),
@@ -118,7 +119,7 @@ export const conversationUpdateSchema = z.object({
   personaId: z.string().uuid().nullable().optional(),
   providerId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).optional(),
   modelId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).optional(),
-  rpEngineId: z.enum(["immersive", "raw", "cinematic", "deliberate"]).optional(),
+  rpEngineId: z.enum(roleplayEngineIds).optional(),
   instructionPresets: z.array(z.enum(["reduce_repetition", "stay_focused", "advance_plot"])).max(3).optional(),
   customInstructions: text(3000).optional(),
 }).refine((value) => Object.values(value).some((item) => item !== undefined), "Provide a conversation change");
@@ -162,7 +163,7 @@ export const settingsSchema = z.object({
   ownerProfile: text(5000).default(""),
   providerId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek"),
   model: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek-v4-flash"),
-  roleplayPreset: z.enum(["immersive", "raw", "cinematic", "deliberate"]).default("immersive"),
+  roleplayPreset: z.enum(roleplayEngineIds).default("immersive"),
   temperature: z.number().min(0).max(2).default(0.95),
   maxTokens: z.number().int().min(256).max(8000).default(1800),
   contextMessages: z.number().int().min(8).max(100).default(30),
@@ -181,7 +182,7 @@ export const backupSchema = z.object({
   conversations: z.array(z.object({
     id: z.string().min(1), characterId: z.string().min(1), title: text(120, 1), summary: text(12000).default(""), personaId: z.string().nullable().optional(),
     providerId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek"), modelId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek-v4-flash"),
-    rpEngineId: z.enum(["immersive", "raw", "cinematic", "deliberate"]).default("immersive"),
+    rpEngineId: z.enum(roleplayEngineIds).default("immersive"),
     instructionPresets: z.array(z.enum(["reduce_repetition", "stay_focused", "advance_plot"])).max(3).default([]), customInstructions: text(3000).default(""),
   })).max(5000),
   messages: z.array(z.object({

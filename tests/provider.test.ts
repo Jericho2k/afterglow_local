@@ -15,6 +15,8 @@ describe("inference catalog", () => {
     expect(resolveModel("deepseek", "deepseek-v4-flash")?.providerId).toBe("deepseek");
     expect(resolveModel("unknown", "deepseek-v4-flash")).toBeNull();
     expect(resolveEngine("cinematic")?.thinking).toBe(false);
+    expect(resolveEngine("kink_aware")).toMatchObject({ adult: true, tags: expect.arrayContaining(["kink"]) });
+    expect(resolveEngine("multi_clarity")?.description).toContain("distinct voices");
   });
 
   it("uses a deployment-owned engine default", () => {

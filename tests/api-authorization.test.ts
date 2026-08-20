@@ -92,6 +92,16 @@ describe("unauthenticated access", () => {
 });
 
 describe("cross-account access", () => {
+  it("lists only the caller's complete chat index", async () => {
+    account = { id: bob, email: null };
+    const bobView = await (await conversations.GET(new Request("http://test/api/conversations?scope=all"))).json();
+    expect(bobView.conversations).toEqual([]);
+
+    account = { id: alice, email: null };
+    const aliceView = await (await conversations.GET(new Request("http://test/api/conversations?scope=all"))).json();
+    expect(aliceView.conversations.map((item: { id: string }) => item.id)).toContain(aliceConversation);
+  });
+
   it("rejects a conversation id belonging to another account before spending tokens", async () => {
     account = { id: bob, email: "bob@example.com" };
     const response = await chat.POST(post("http://test/api/chat", { conversationId: aliceConversation, content: "hi", action: "send" }));
@@ -148,6 +158,15 @@ describe("cross-account access", () => {
 });
 
 describe("public characters", () => {
+  it("stores every opening as an instantly selectable first-message variant", async () => {
+    await query("UPDATE characters SET greeting='Opening one',alternate_greetings=$2::jsonb WHERE id=$1", [alicePublic, JSON.stringify(["Opening two","Opening three"])]);
+    account = { id: bob, email: null };
+    const response = await conversations.POST(post("http://test/api/conversations", { characterId: alicePublic }));
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.messages[0]).toMatchObject({ content: "Opening one", variants: ["Opening one","Opening two","Opening three"], selectedVariant: 0 });
+  });
+
   it("lets another account start a chat that stays private", async () => {
     account = { id: bob, email: null };
     const response = await conversations.POST(post("http://test/api/conversations", { characterId: alicePublic }));

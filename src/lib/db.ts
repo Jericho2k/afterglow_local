@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, Persona, World } from "./types";
+import { roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type Memory, type MemoryArc, type Message, type Persona, type World } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -448,7 +448,7 @@ export function conversationFromRow(row: Record<string, unknown>): Conversation 
     id: String(row.id), characterId: String(row.character_id), title: String(row.title),
     summary: String(row.summary), personaId: row.persona_id ? String(row.persona_id) : null,
     providerId: String(row.provider_id || "deepseek"), modelId: String(row.model_id || "deepseek-v4-flash"),
-    rpEngineId: (["immersive","raw","cinematic","deliberate"].includes(String(row.rp_engine_id)) ? String(row.rp_engine_id) : "immersive") as Conversation["rpEngineId"],
+    rpEngineId: (roleplayEngineIds.includes(String(row.rp_engine_id) as Conversation["rpEngineId"]) ? String(row.rp_engine_id) : "immersive") as Conversation["rpEngineId"],
     instructionPresets, customInstructions: String(row.custom_instructions || ""), messageCount: Number(row.message_count),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
@@ -509,7 +509,7 @@ export function memoryArcFromRow(row: Record<string, unknown>): MemoryArc {
 
 export function settingsFromRow(row: Record<string, unknown>): AppSettings {
   const storedPreset = String(row.roleplay_preset || "immersive");
-  const roleplayPreset: AppSettings["roleplayPreset"] = ["immersive","raw","cinematic","deliberate"].includes(storedPreset)
+  const roleplayPreset: AppSettings["roleplayPreset"] = roleplayEngineIds.includes(storedPreset as AppSettings["roleplayPreset"])
     ? storedPreset as AppSettings["roleplayPreset"] : "immersive";
   return {
     ownerName: String(row.owner_name), ownerProfile: String(row.owner_profile), providerId: String(row.provider_id || "deepseek"), model: String(row.model),
