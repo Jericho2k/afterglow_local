@@ -1,6 +1,7 @@
 import { ownedConversation, ownedPersona } from "@/lib/access";
 import { asUser, conversationFromRow } from "@/lib/db";
 import { conversationUpdateSchema } from "@/lib/schemas";
+import { resolveEngine, resolveModel } from "@/lib/provider";
 import { currentAccount, unauthorized } from "@/lib/session";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -22,13 +23,20 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       personaId = value.personaId ? (await ownedPersona(client, account.id, value.personaId))?.id ?? null : null;
     }
 
+    const providerId = value.providerId ?? String(current.provider_id || "deepseek");
+    const modelId = value.modelId ?? String(current.model_id || "deepseek-v4-flash");
+    const rpEngineId = value.rpEngineId ?? String(current.rp_engine_id || "immersive");
+    if (!resolveModel(providerId, modelId)) return { inferenceError: "That provider/model combination is unavailable" };
+    if (!resolveEngine(rpEngineId)) return { inferenceError: "That roleplay engine is unavailable" };
+
     const result = await client.query(
-      "UPDATE conversations SET title=$1,persona_id=$2,instruction_presets=$3,custom_instructions=$4,updated_at=now() WHERE id=$5 AND user_id=$6 RETURNING *",
-      [value.title ?? current.title, personaId, value.instructionPresets ?? current.instruction_presets, value.customInstructions ?? current.custom_instructions, id, account.id],
+      "UPDATE conversations SET title=$1,persona_id=$2,provider_id=$3,model_id=$4,rp_engine_id=$5,instruction_presets=$6,custom_instructions=$7,updated_at=now() WHERE id=$8 AND user_id=$9 RETURNING *",
+      [value.title ?? current.title, personaId, providerId, modelId, rpEngineId, value.instructionPresets ?? current.instruction_presets, value.customInstructions ?? current.custom_instructions, id, account.id],
     );
     return result.rows[0] ?? null;
   });
 
+  if (row && "inferenceError" in row) return Response.json({ error: row.inferenceError }, { status: 403 });
   if (!row) return Response.json({ error: "Conversation not found" }, { status: 404 });
   return Response.json({ conversation: conversationFromRow(row) });
 }

@@ -113,8 +113,8 @@ export async function POST(request: Request) {
       const characterId = characterIds.get(item.characterId); if (!characterId) continue;
       const id = randomUUID(); conversationIds.set(item.id,id);
       await client.query(
-        "INSERT INTO conversations (id,character_id,user_id,title,summary,persona_id,instruction_presets,custom_instructions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-        [id,characterId,account.id,item.title,item.summary,item.personaId ? personaIds.get(item.personaId) ?? null : null,item.instructionPresets,item.customInstructions],
+        "INSERT INTO conversations (id,character_id,user_id,title,summary,persona_id,provider_id,model_id,rp_engine_id,instruction_presets,custom_instructions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+        [id,characterId,account.id,item.title,item.summary,item.personaId ? personaIds.get(item.personaId) ?? null : null,item.providerId,item.modelId,item.rpEngineId,item.instructionPresets,item.customInstructions],
       );
     }
     let messageCount = 0;
@@ -153,9 +153,9 @@ export async function POST(request: Request) {
       const s = backup.settings;
       await getUserSettings(client, account.id);
       await client.query(
-        `UPDATE user_settings SET owner_name=$1,owner_profile=$2,roleplay_preset=$3,temperature=$4,max_tokens=$5,
-         context_messages=$6,context_token_budget=$7,consolidation_interval=$8,memory_limit=$9,memory_token_budget=$10,updated_at=now() WHERE user_id=$11`,
-        [s.ownerName,s.ownerProfile,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit,s.memoryTokenBudget,account.id],
+        `UPDATE user_settings SET owner_name=$1,owner_profile=$2,provider_id=$3,model=$4,roleplay_preset=$5,temperature=$6,max_tokens=$7,
+         context_messages=$8,context_token_budget=$9,consolidation_interval=$10,memory_limit=$11,memory_token_budget=$12,updated_at=now() WHERE user_id=$13`,
+        [s.ownerName,s.ownerProfile,s.providerId,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit,s.memoryTokenBudget,account.id],
       );
     }
     return { personas: personaIds.size, worlds: worldIds.size, characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount, arcs: arcCount };

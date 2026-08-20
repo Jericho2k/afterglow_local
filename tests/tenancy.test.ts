@@ -92,6 +92,29 @@ describeTenancy("multi-tenant isolation", () => {
     expect(await visibleCount(pool, bob, "profiles", "id=$1", [bob])).toBe(1);
   });
 
+  it("publishes only creator profiles that explicitly choose a username", async () => {
+    const creator = "44444444-4444-4444-8444-444444444444";
+    await createAccount(pool, creator, "creator@example.com");
+    expect(await visibleCount(pool, bob, "profiles", "id=$1", [creator])).toBe(0);
+    await asAccount(pool, creator, (run) => run("UPDATE profiles SET username='public_creator' WHERE id=$1", [creator]));
+    expect(await visibleCount(pool, bob, "profiles", "id=$1", [creator])).toBe(1);
+  });
+
+  it("isolates favorites while maintaining a public aggregate count", async () => {
+    await asAccount(pool, bob, (run) => run("INSERT INTO character_likes (user_id,character_id) VALUES ($1,$2)", [bob,alicePublicCharacter]));
+    expect(await visibleCount(pool, bob, "character_likes", "character_id=$1", [alicePublicCharacter])).toBe(1);
+    expect(await visibleCount(pool, alice, "character_likes", "character_id=$1", [alicePublicCharacter])).toBe(0);
+    const count = await asAccount(pool, alice, async (run) => Number((await run("SELECT like_count FROM characters WHERE id=$1",[alicePublicCharacter])).rows[0].like_count));
+    expect(count).toBe(1);
+  });
+
+  it("keeps moderation reports visible only to the reporter", async () => {
+    const report = "45454545-4545-4545-8545-454545454545";
+    await asAccount(pool, bob, (run) => run("INSERT INTO character_reports (id,user_id,character_id,reason,character_name) VALUES ($1,$2,$3,'other','Alice Public')",[report,bob,alicePublicCharacter]));
+    expect(await visibleCount(pool, bob, "character_reports", "id=$1",[report])).toBe(1);
+    expect(await visibleCount(pool, alice, "character_reports", "id=$1",[report])).toBe(0);
+  });
+
   it("keeps per-account settings separate", async () => {
     expect(await visibleCount(pool, bob, "user_settings", "user_id=$1", [alice])).toBe(0);
     expect(await visibleCount(pool, bob, "user_settings", "user_id=$1", [bob])).toBe(1);

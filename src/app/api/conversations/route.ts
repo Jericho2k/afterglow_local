@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { characterSnapshot, ownedPersona, readableCharacter } from "@/lib/access";
-import { asUser, characterFromRow, conversationFromRow, messageFromRow } from "@/lib/db";
+import { asUser, characterFromRow, conversationFromRow, getUserSettings, messageFromRow } from "@/lib/db";
 import { currentAccount, unauthorized } from "@/lib/session";
 
 /**
@@ -30,9 +30,10 @@ async function createConversation(client: PoolClient, userId: string, characterI
   }
 
   const id = randomUUID();
+  const settings = await getUserSettings(client, userId);
   let result = await client.query(
-    "INSERT INTO conversations (id,character_id,user_id,title,persona_id,character_snapshot) VALUES ($1,$2,$3,$4,$5,$6::jsonb) RETURNING *",
-    [id, characterId, userId, `Chat with ${character.name}`, resolvedPersonaId, owned ? null : JSON.stringify(characterSnapshot(character))],
+    "INSERT INTO conversations (id,character_id,user_id,title,persona_id,character_snapshot,provider_id,model_id,rp_engine_id) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9) RETURNING *",
+    [id, characterId, userId, `Chat with ${character.name}`, resolvedPersonaId, owned ? null : JSON.stringify(characterSnapshot(character)),settings.providerId,settings.model,settings.roleplayPreset],
   );
 
   const greetings = [character.greeting, ...character.alternateGreetings];

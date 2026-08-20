@@ -26,9 +26,12 @@ export async function GET() {
   if (!account) return unauthorized();
 
   const payload = await asUser(account.id, async (client) => {
-    const [result, models, types, today, replies] = await Promise.all([
+    const [result, models, providers, engines, funding, types, today, replies, userMessages] = await Promise.all([
       client.query(`SELECT ${aggregate} FROM usage_events WHERE user_id=$1`, [account.id]),
       client.query(`SELECT model, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY model ORDER BY requests DESC`, [account.id]),
+      client.query(`SELECT provider_id, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY provider_id ORDER BY requests DESC`, [account.id]),
+      client.query(`SELECT rp_engine_id, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY rp_engine_id ORDER BY requests DESC`, [account.id]),
+      client.query(`SELECT funding_source, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY funding_source ORDER BY requests DESC`, [account.id]),
       client.query(`SELECT usage_type, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY usage_type ORDER BY requests DESC`, [account.id]),
       client.query(`SELECT ${aggregate} FROM usage_events WHERE user_id=$1 AND created_at >= date_trunc('day', now())`, [account.id]),
       // Volume the quota work will meter against: replies produced today.
@@ -37,12 +40,18 @@ export async function GET() {
          WHERE user_id=$1 AND role='assistant' AND created_at >= date_trunc('day', now())`,
         [account.id],
       ),
+      client.query("SELECT COUNT(*)::int count FROM messages WHERE user_id=$1 AND role='user'", [account.id]),
     ]);
     return {
       usage: usage(result.rows[0]),
       today: usage(today.rows[0]),
       repliesToday: Number(replies.rows[0].count),
+      userMessages: Number(userMessages.rows[0].count),
+      costPer100UserMessages: Number(userMessages.rows[0].count) ? Number(result.rows[0].estimated_cost_usd) * 100 / Number(userMessages.rows[0].count) : 0,
       byModel: models.rows.map((item) => ({ key: String(item.model), ...usage(item) })),
+      byProvider: providers.rows.map((item) => ({ key: String(item.provider_id), ...usage(item) })),
+      byEngine: engines.rows.map((item) => ({ key: String(item.rp_engine_id), ...usage(item) })),
+      byFunding: funding.rows.map((item) => ({ key: String(item.funding_source), ...usage(item) })),
       byType: types.rows.map((item) => ({ key: String(item.usage_type), ...usage(item) })),
       pricingAsOf,
     };

@@ -153,11 +153,14 @@ describe("public characters", () => {
     const response = await conversations.POST(post("http://test/api/conversations", { characterId: alicePublic }));
     expect(response.status).toBe(201);
     const body = await response.json();
+    expect(body.conversation).toMatchObject({ providerId:"deepseek",modelId:"deepseek-v4-flash",rpEngineId:"immersive" });
 
     const owner = await query("SELECT user_id, character_snapshot FROM conversations WHERE id=$1", [body.conversation.id]);
     expect(String(owner.rows[0].user_id)).toBe(bob);
     // Somebody else's character is frozen at the definition the chat started from.
     expect(owner.rows[0].character_snapshot).toBeTruthy();
+    const recentCharacters = await (await characters.GET(new Request("http://test/api/characters?scope=chats"))).json();
+    expect(recentCharacters.characters.some((item: {id:string;ownedByViewer:boolean})=>item.id===alicePublic&&!item.ownedByViewer)).toBe(true);
 
     account = { id: alice, email: null };
     const aliceView = await conversations.GET(new Request(`http://test/api/conversations?characterId=${alicePublic}`));

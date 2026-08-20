@@ -38,6 +38,7 @@ describe("PostgreSQL persistence", () => {
     expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","memory_arcs","usage_events","app_settings","personas","worlds","character_worlds"]));
     const settings = await getDefaultSettings();
     expect(settings.model).toMatch(/^deepseek-/);
+    expect(settings.providerId).toBe("deepseek");
     expect(settings.roleplayPreset).toBe("immersive");
     expect(settings.memoryLimit).toBe(8);
     expect(settings.contextTokenBudget).toBe(12000);
@@ -57,6 +58,17 @@ describe("PostgreSQL persistence", () => {
     expect(String(conversation.rows[0].persona_id)).toBe(personaId);
     expect(conversation.rows[0].instruction_presets).toEqual(["stay_focused"]);
     expect(conversation.rows[0].custom_instructions).toBe("Use clipped dialogue");
+  });
+
+  it("persists a conversation writer independently from continuity", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title,provider_id,model_id,rp_engine_id,summary) VALUES ($1,$2,'Writer switch','deepseek','deepseek-v4-pro','cinematic','Existing continuity')",[conversationId,characterId]);
+    await query("UPDATE conversations SET model_id='deepseek-v4-flash',rp_engine_id='raw' WHERE id=$1",[conversationId]);
+    const result = await query<Record<string,unknown>>("SELECT * FROM conversations WHERE id=$1",[conversationId]);
+    expect(result.rows[0].summary).toBe("Existing continuity");
+    expect(result.rows[0].model_id).toBe("deepseek-v4-flash");
+    expect(result.rows[0].rp_engine_id).toBe("raw");
   });
 
   it("persists a complete character conversation with cascading cleanup", async () => {

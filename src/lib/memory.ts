@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { completionWithUsage, parseJson } from "./deepseek";
+import { completionWithUsage, parseJson } from "./llm";
 import { asUser, getUserSettings } from "./db";
 import { consolidationPrompt } from "./prompts";
 import type { Memory, MemoryArc, Message } from "./types";
@@ -200,11 +200,14 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
     const { settings, conversation, messageCount, delta, messages, activeCommitments } = prepared;
     const previousCount = Number(conversation.last_consolidated_count || 0);
 
-    const response = await completionWithUsage([
+    const providerId = String(conversation.provider_id || settings.providerId);
+    const modelId = String(conversation.model_id || settings.model);
+    const rpEngineId = String(conversation.rp_engine_id || settings.roleplayPreset);
+    const response = await completionWithUsage({ providerId, modelId }, [
       { role: "system", content: "You are a precise continuity editor and episodic-memory curator. Output JSON only." },
       { role: "user", content: consolidationPrompt(String(conversation.summary), messages, settings.ownerName, activeCommitments) },
-    ], { json: true, maxTokens: 3600, temperature: 0.2, model: settings.model });
-    if (response.usage) await recordUsageEvent({ userId, conversationId, model: settings.model, kind: "memory_consolidation", usage: response.usage });
+    ], { json: true, maxTokens: 3600, temperature: 0.2 });
+    if (response.usage) await recordUsageEvent({ userId, conversationId, providerId, model: modelId, rpEngineId, kind: "memory_consolidation", usage: response.usage });
     const data = parseJson<Consolidation>(response.content);
     if (!data.summary) return false;
 

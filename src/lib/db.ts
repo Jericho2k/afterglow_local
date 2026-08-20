@@ -37,6 +37,7 @@ async function schema() {
       boundaries text NOT NULL DEFAULT '',
       source_material text NOT NULL DEFAULT '',
       nsfw_enabled boolean NOT NULL DEFAULT false,
+      like_count integer NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
@@ -46,6 +47,9 @@ async function schema() {
       title text NOT NULL DEFAULT 'New conversation',
       summary text NOT NULL DEFAULT '',
       persona_id uuid,
+      provider_id text NOT NULL DEFAULT 'deepseek',
+      model_id text NOT NULL DEFAULT 'deepseek-v4-flash',
+      rp_engine_id text NOT NULL DEFAULT 'immersive',
       instruction_presets text[] NOT NULL DEFAULT '{}',
       custom_instructions text NOT NULL DEFAULT '',
       message_count integer NOT NULL DEFAULT 0,
@@ -98,6 +102,9 @@ async function schema() {
       id uuid PRIMARY KEY,
       conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,
       model text NOT NULL,
+      provider_id text NOT NULL DEFAULT 'deepseek',
+      rp_engine_id text NOT NULL DEFAULT 'immersive',
+      funding_source text NOT NULL DEFAULT 'afterglow',
       usage_type text NOT NULL DEFAULT 'chat',
       prompt_tokens integer NOT NULL DEFAULT 0,
       completion_tokens integer NOT NULL DEFAULT 0,
@@ -111,6 +118,7 @@ async function schema() {
       id text PRIMARY KEY,
       owner_name text NOT NULL DEFAULT 'You',
       owner_profile text NOT NULL DEFAULT '',
+      provider_id text NOT NULL DEFAULT 'deepseek',
       model text NOT NULL DEFAULT 'deepseek-v4-flash',
       roleplay_preset text NOT NULL DEFAULT 'immersive',
       temperature double precision NOT NULL DEFAULT 0.95,
@@ -146,13 +154,34 @@ async function schema() {
       world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
       PRIMARY KEY (character_id, world_id)
     );
+    CREATE TABLE IF NOT EXISTS character_likes (
+      user_id uuid NOT NULL,
+      character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, character_id)
+    );
+    CREATE TABLE IF NOT EXISTS character_reports (
+      id uuid PRIMARY KEY,
+      user_id uuid NOT NULL,
+      character_id uuid REFERENCES characters(id) ON DELETE SET NULL,
+      reason text NOT NULL,
+      details text NOT NULL DEFAULT '',
+      character_name text NOT NULL DEFAULT '',
+      status text NOT NULL DEFAULT 'pending',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
   `);
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS profile_type text NOT NULL DEFAULT 'single'");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS cast_members jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS lorebook text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS alternate_greetings jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS source_material text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS like_count integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS persona_id uuid REFERENCES personas(id) ON DELETE SET NULL");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS model_id text NOT NULL DEFAULT 'deepseek-v4-flash'");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS rp_engine_id text NOT NULL DEFAULT 'immersive'");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS instruction_presets text[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS custom_instructions text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
@@ -168,6 +197,9 @@ async function schema() {
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_message_count integer NOT NULL DEFAULT 0");
   await pool().query("CREATE INDEX IF NOT EXISTS memories_conversation_status_idx ON memories(conversation_id, status, kind)");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS usage_type text NOT NULL DEFAULT 'chat'");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS rp_engine_id text NOT NULL DEFAULT 'immersive'");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS funding_source text NOT NULL DEFAULT 'afterglow'");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS estimated_cost_usd numeric(20,10)");
   await pool().query(`
     UPDATE usage_events SET estimated_cost_usd = CASE model
@@ -185,6 +217,7 @@ async function schema() {
     WHERE estimated_cost_usd IS NULL
   `);
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS roleplay_preset text NOT NULL DEFAULT 'immersive'");
+  await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS context_token_budget integer NOT NULL DEFAULT 12000");
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS memory_token_budget integer NOT NULL DEFAULT 6000");
   await pool().query(
@@ -228,6 +261,7 @@ async function schema() {
       user_id uuid PRIMARY KEY,
       owner_name text NOT NULL DEFAULT 'You',
       owner_profile text NOT NULL DEFAULT '',
+      provider_id text NOT NULL DEFAULT 'deepseek',
       model text NOT NULL DEFAULT 'deepseek-v4-flash',
       roleplay_preset text NOT NULL DEFAULT 'immersive',
       temperature double precision NOT NULL DEFAULT 0.95,
@@ -241,6 +275,7 @@ async function schema() {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
+  await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
   // One default persona per account rather than per installation.
   await pool().query("DROP INDEX IF EXISTS personas_single_default_idx");
   await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS personas_user_default_idx ON personas (user_id) WHERE is_default");
@@ -248,6 +283,8 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS conversations_user_idx ON conversations (user_id, updated_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS memories_user_idx ON memories (user_id, character_id)");
   await pool().query("CREATE INDEX IF NOT EXISTS usage_events_user_idx ON usage_events (user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS character_likes_user_idx ON character_likes (user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS character_reports_user_idx ON character_reports (user_id, created_at DESC)");
 
   const legacyLorebooks = await pool().query("SELECT id,name,lorebook FROM characters WHERE lorebook<>''");
   for (const character of legacyLorebooks.rows) {
@@ -389,6 +426,8 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
     worldIds,
     visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as Character["visibility"],
     nsfwEnabled: Boolean(row.nsfw_enabled),
+    likeCount: Number(row.like_count || 0), likedByViewer: Boolean(row.liked_by_viewer),
+    creator: row.creator_id ? { id: String(row.creator_id), username: String(row.creator_username || ""), displayName: String(row.creator_display_name || ""), avatarPath: String(row.creator_avatar_path || "") } : null,
     ownedByViewer,
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
@@ -399,7 +438,10 @@ export function conversationFromRow(row: Record<string, unknown>): Conversation 
   const instructionPresets = textArrayFromRow(row.instruction_presets).filter((item): item is ChatInstructionPreset => allowed.has(item as ChatInstructionPreset));
   return {
     id: String(row.id), characterId: String(row.character_id), title: String(row.title),
-    summary: String(row.summary), personaId: row.persona_id ? String(row.persona_id) : null, instructionPresets, customInstructions: String(row.custom_instructions || ""), messageCount: Number(row.message_count),
+    summary: String(row.summary), personaId: row.persona_id ? String(row.persona_id) : null,
+    providerId: String(row.provider_id || "deepseek"), modelId: String(row.model_id || "deepseek-v4-flash"),
+    rpEngineId: (["immersive","raw","cinematic","deliberate"].includes(String(row.rp_engine_id)) ? String(row.rp_engine_id) : "immersive") as Conversation["rpEngineId"],
+    instructionPresets, customInstructions: String(row.custom_instructions || ""), messageCount: Number(row.message_count),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
@@ -462,7 +504,7 @@ export function settingsFromRow(row: Record<string, unknown>): AppSettings {
   const roleplayPreset: AppSettings["roleplayPreset"] = ["immersive","raw","cinematic","deliberate"].includes(storedPreset)
     ? storedPreset as AppSettings["roleplayPreset"] : "immersive";
   return {
-    ownerName: String(row.owner_name), ownerProfile: String(row.owner_profile), model: String(row.model),
+    ownerName: String(row.owner_name), ownerProfile: String(row.owner_profile), providerId: String(row.provider_id || "deepseek"), model: String(row.model),
     roleplayPreset,
     temperature: Number(row.temperature), maxTokens: Number(row.max_tokens), contextMessages: Number(row.context_messages), contextTokenBudget: Number(row.context_token_budget || 12000),
     consolidationInterval: Number(row.consolidation_interval), memoryLimit: Number(row.memory_limit), memoryTokenBudget: Number(row.memory_token_budget || 6000),

@@ -19,6 +19,7 @@ describe("character validation", () => {
     expect(personaSchema.safeParse({ name:"Alex",avatarUrl:media }).success).toBe(true);
     expect(worldSchema.safeParse({ name:"Paris",content:"City canon" }).success).toBe(true);
     expect(conversationUpdateSchema.safeParse({ instructionPresets:["reduce_repetition"],customInstructions:"Use short replies" }).success).toBe(true);
+    expect(conversationUpdateSchema.safeParse({ providerId:"deepseek",modelId:"deepseek-v4-pro",rpEngineId:"cinematic" }).success).toBe(true);
   });
 
   it("requires a meaningful generation concept", () => {

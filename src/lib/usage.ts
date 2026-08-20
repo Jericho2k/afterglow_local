@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { userQuery } from "./db";
-import type { DeepSeekUsage } from "./deepseek";
+import type { LLMUsage } from "./llm";
 
 export type UsageKind = "chat" | "regenerate" | "continue" | "memory_consolidation" | "character_generation";
 
@@ -13,7 +13,7 @@ export const modelPricing: Record<string, { cacheHit: number; cacheMiss: number;
   "deepseek-v4-pro": { cacheHit: 0.003625, cacheMiss: 0.435, output: 0.87 },
 };
 
-export function normalizedUsage(usage: DeepSeekUsage) {
+export function normalizedUsage(usage: LLMUsage) {
   const promptTokens = Math.max(0, Number(usage.prompt_tokens) || 0);
   const completionTokens = Math.max(0, Number(usage.completion_tokens) || 0);
   const cacheHitTokens = Math.max(0, Number(usage.prompt_cache_hit_tokens) || 0);
@@ -24,7 +24,7 @@ export function normalizedUsage(usage: DeepSeekUsage) {
   return { promptTokens, completionTokens, cacheHitTokens, cacheMissTokens };
 }
 
-export function estimateUsageCostUsd(model: string, usage: DeepSeekUsage) {
+export function estimateUsageCostUsd(model: string, usage: LLMUsage) {
   const pricing = modelPricing[model];
   if (!pricing) return null;
   const normalized = normalizedUsage(usage);
@@ -40,14 +40,14 @@ export function estimateUsageCostUsd(model: string, usage: DeepSeekUsage) {
  * caused it. Every paid call routes through here, so per-account cost, token
  * and volume reporting is a single grouped query away.
  */
-export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; model: string; kind: UsageKind; usage: DeepSeekUsage }) {
+export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; providerId?: string; model: string; rpEngineId?: string; fundingSource?: "afterglow" | "byok" | "self_hosted"; kind: UsageKind; usage: LLMUsage }) {
   const usage = normalizedUsage(input.usage);
   const cost = estimateUsageCostUsd(input.model, input.usage);
   await userQuery(
     input.userId,
     `INSERT INTO usage_events
-      (id,conversation_id,user_id,model,usage_type,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,estimated_cost_usd)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-    [randomUUID(),input.conversationId ?? null,input.userId,input.model,input.kind,usage.promptTokens,usage.completionTokens,usage.cacheHitTokens,usage.cacheMissTokens,cost],
+      (id,conversation_id,user_id,provider_id,model,rp_engine_id,funding_source,usage_type,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,estimated_cost_usd)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [randomUUID(),input.conversationId ?? null,input.userId,input.providerId ?? "deepseek",input.model,input.rpEngineId ?? "immersive",input.fundingSource ?? "afterglow",input.kind,usage.promptTokens,usage.completionTokens,usage.cacheHitTokens,usage.cacheMissTokens,cost],
   );
 }

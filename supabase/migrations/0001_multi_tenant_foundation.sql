@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
   user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   owner_name text NOT NULL DEFAULT 'You',
   owner_profile text NOT NULL DEFAULT '',
+  provider_id text NOT NULL DEFAULT 'deepseek',
   model text NOT NULL DEFAULT 'deepseek-v4-flash',
   roleplay_preset text NOT NULL DEFAULT 'immersive',
   temperature double precision NOT NULL DEFAULT 0.95,
@@ -85,6 +86,8 @@ CREATE TABLE IF NOT EXISTS user_settings (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek';
 
 -- ---------------------------------------------------------------------------
 -- Ownership columns

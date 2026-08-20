@@ -30,6 +30,9 @@ export type Character = {
   worldIds: string[];
   visibility: CharacterVisibility;
   nsfwEnabled: boolean;
+  likeCount?: number;
+  likedByViewer?: boolean;
+  creator?: { id: string; username: string; displayName: string; avatarPath: string } | null;
   /** False when the caller is chatting with a character somebody else published. */
   ownedByViewer: boolean;
   createdAt: string;
@@ -42,6 +45,10 @@ export type Conversation = {
   title: string;
   summary: string;
   personaId: string | null;
+  /** The inference writer for this story. Continuity remains owned by Afterglow. */
+  providerId: string;
+  modelId: string;
+  rpEngineId: RoleplayEngineId;
   instructionPresets: ChatInstructionPreset[];
   customInstructions: string;
   messageCount: number;
@@ -127,11 +134,43 @@ export type Profile = {
   updatedAt: string;
 };
 
+export type CharacterReportReason = "underage" | "nonconsensual" | "real_person" | "stolen" | "harassment" | "other";
+
+export type RoleplayEngineId = "immersive" | "raw" | "cinematic" | "deliberate";
+
+export type ProviderDefinition = {
+  id: string;
+  label: string;
+};
+
+export type ModelDefinition = {
+  id: string;
+  providerId: string;
+  label: string;
+  description: string;
+  supportsThinking: boolean;
+};
+
+export type RoleplayEngineDefinition = {
+  id: RoleplayEngineId;
+  label: string;
+  description: string;
+  thinking: boolean;
+};
+
+export type ModelCatalog = {
+  providers: ProviderDefinition[];
+  models: ModelDefinition[];
+  engines: RoleplayEngineDefinition[];
+};
+
 export type AppSettings = {
   ownerName: string;
   ownerProfile: string;
+  /** Defaults for newly created conversations; existing stories keep theirs. */
+  providerId: string;
   model: string;
-  roleplayPreset: "immersive" | "raw" | "cinematic" | "deliberate";
+  roleplayPreset: RoleplayEngineId;
   temperature: number;
   maxTokens: number;
   contextMessages: number;
@@ -154,7 +193,14 @@ export type UsageBreakdown = UsageSummary & { key: string };
 
 export type UsageResponse = {
   usage: UsageSummary;
+  today?: UsageSummary;
+  repliesToday?: number;
+  userMessages?: number;
+  costPer100UserMessages?: number;
   byModel: UsageBreakdown[];
+  byProvider: UsageBreakdown[];
+  byEngine: UsageBreakdown[];
+  byFunding: UsageBreakdown[];
   byType: UsageBreakdown[];
   pricingAsOf: string;
 };

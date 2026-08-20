@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { asUser, characterFromRow } from "@/lib/db";
 import { characterSchema, characterValidationMessage } from "@/lib/schemas";
 import { currentAccount, unauthorized } from "@/lib/session";
+import { characterFromSnapshot } from "@/lib/access";
 
 export async function GET(request: Request) {
   const account = await currentAccount();
@@ -9,11 +10,32 @@ export async function GET(request: Request) {
   const scope = new URL(request.url).searchParams.get("scope");
 
   const characters = await asUser(account.id, async (client) => {
+    if (scope === "chats") {
+      const conversations = await client.query(
+        "SELECT character_id,character_snapshot FROM conversations WHERE user_id=$1 ORDER BY updated_at DESC",
+        [account.id],
+      );
+      const seen = new Set<string>();
+      const ordered = conversations.rows.filter((row) => { const id=String(row.character_id); if(seen.has(id))return false; seen.add(id); return true; });
+      const ids = ordered.map((row) => String(row.character_id));
+      const live = ids.length ? await client.query("SELECT * FROM characters WHERE id = ANY($1::uuid[])",[ids]) : {rows:[] as Array<Record<string,unknown>>};
+      const liveById = new Map(live.rows.map((row)=>[String(row.id),row]));
+      return ordered.map((conversation) => {
+        const id=String(conversation.character_id); const snapshot=conversation.character_snapshot;
+        if(snapshot&&typeof snapshot==="object")return characterFromSnapshot(snapshot as Record<string,unknown>,id);
+        const row=liveById.get(id); return row?characterFromRow({...row,world_ids:[]},account.id):null;
+      }).filter((item): item is NonNullable<typeof item>=>Boolean(item));
+    }
     // "published" is the seam the discovery feed will grow from. It never
     // returns anything the creator kept private, and it is not the default.
     const result = scope === "published"
       ? await client.query(
-        "SELECT * FROM characters WHERE visibility='public' AND user_id<>$1 ORDER BY published_at DESC NULLS LAST, updated_at DESC LIMIT 60",
+        `SELECT c.*,p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
+           (mine.character_id IS NOT NULL) liked_by_viewer
+         FROM characters c LEFT JOIN profiles p ON p.id=c.user_id
+         LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$1
+         WHERE c.visibility='public' AND c.user_id<>$1
+         ORDER BY c.published_at DESC NULLS LAST,c.like_count DESC,c.updated_at DESC LIMIT 60`,
         [account.id],
       )
       : await client.query("SELECT * FROM characters WHERE user_id=$1 ORDER BY updated_at DESC", [account.id]);

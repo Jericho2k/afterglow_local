@@ -9,7 +9,8 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 - AI-assisted character creation from a short concept
 - Detailed backstory, personality, scenario, greeting, example voice, response directive, and boundaries
 - Optional avatar URL and per-character visual accent
-- Streaming DeepSeek roleplay with switchable Flash/Pro models and response controls
+- Provider/model/RP-engine catalog with conversation-level switching; changing the writer never resets Afterglow continuity
+- Streaming DeepSeek roleplay through a provider adapter ready for future OpenRouter/direct/self-hosted adapters
 - Regenerate the latest reply, edit any message, or rewind the story from any point
 - Multiple named chats per character and chat breaks that preserve long-term memory
 - Three-layer continuity:
@@ -22,16 +23,17 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 - Supabase Auth accounts with email/password sign-up, sign-in, and persistent sessions
 - Per-account ownership of every character, world, persona, chat, message, and memory, enforced by PostgreSQL row level security
 - Character visibility model (private / unlisted / public) ready for a creator marketplace, with chats and memories that stay private even when the character is published
+- Public discovery, opt-in creator profiles, private per-user likes, and a moderation-report queue
 - Supabase Storage for profile and character images, scoped to the owning account
 - Complete JSON export/import for profiles, chats, memories, and settings
 - Request throttling, server-only API key, PostgreSQL persistence, local token-usage ledger, and Railway health check
 - Responsive desktop/mobile UI
 
-Image generation, voice/video calling, public character discovery, and group chat are not part of this release. They fit the architecture but each requires an additional provider and product pass; DeepSeek's chat endpoint itself does not provide those media capabilities.
+Image generation, voice/video calling, and group chat are not part of this release. They fit the architecture but each requires an additional provider and product pass; DeepSeek's chat endpoint itself does not provide those media capabilities.
 
 ## Run locally
 
-Requirements: Node.js 20+, PostgreSQL 15+, and a Supabase project.
+Requirements: Node.js 22+, PostgreSQL 15+, and a Supabase project.
 
 ```bash
 npm install
@@ -49,6 +51,8 @@ Run the files in `supabase/migrations` in order, either through the Supabase SQL
 psql "$DATABASE_URL" -f supabase/migrations/0000_baseline.sql
 psql "$DATABASE_URL" -f supabase/migrations/0001_multi_tenant_foundation.sql
 psql "$DATABASE_URL" -f supabase/migrations/0002_storage.sql
+psql "$DATABASE_URL" -f supabase/migrations/0003_conversation_inference.sql
+psql "$DATABASE_URL" -f supabase/migrations/0004_product_social.sql
 ```
 
 Every file is idempotent, so re-running them is safe. `0002_storage.sql` touches the `storage` schema and only applies to Supabase.
@@ -75,7 +79,7 @@ The first run is a dry run that reports what it would claim and rolls back. Char
 1. Create a Supabase project.
 2. On the project creation screen, under **Security**, turn **Enable Data API** off and **Enable automatic RLS** on. Afterglow talks to PostgreSQL directly and uses Supabase only for Auth and Storage, so PostgREST is unused surface; automatic RLS is a free safety net for any table added later. Both are reversible in Project Settings.
 3. Apply `supabase/migrations/0000_baseline.sql` and `0001_multi_tenant_foundation.sql`. The migration grants its own schema and table privileges, so it does not depend on the project's "automatically expose new tables" default.
-4. Apply `supabase/migrations/0002_storage.sql`, which creates the `profile-avatars` and `character-avatars` buckets and their policies.
+4. Apply `supabase/migrations/0002_storage.sql`, which creates the `profile-avatars` and `character-avatars` buckets and their policies, then apply `0003_conversation_inference.sql` and `0004_product_social.sql`.
 5. In **Authentication → Providers**, keep Email enabled. Decide whether to require email confirmation; the sign-up screen handles both.
 6. In **Authentication → URL Configuration**, add your deployed origin to the redirect allow list.
 7. Copy `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY` into your host's environment.
@@ -92,7 +96,7 @@ No part of the application uses the service-role key. Ordinary reads and writes 
 4. Optionally set `ALLOWED_MODELS`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL`.
 5. Deploy, then open the domain, complete the adult age gate, and create an account.
 
-The default model is `deepseek-v4-flash`, matching the current official DeepSeek Chat Completions API. After first launch, model and response controls live in **Settings & data**. `DEEPSEEK_MODEL` sets the initial database default. Check the [official model documentation](https://api-docs.deepseek.com/api/create-chat-completion/) before changing names because provider model IDs evolve.
+The default provider, model, and RP engine apply only when a new conversation starts. Existing conversations retain all three and can switch them from chat tools without changing the transcript, rolling state, memories, arcs, character, world, or persona. `DEFAULT_LLM_PROVIDER`, `DEEPSEEK_MODEL`, and `DEFAULT_RP_ENGINE` set the deployment defaults. Check the provider's official model documentation before changing IDs because model names evolve.
 
 Railway's official deployment pattern is a Next.js service plus a referenced PostgreSQL `DATABASE_URL`; see [Deploy a Next.js app with Postgres](https://docs.railway.com/guides/nextjs).
 
@@ -147,7 +151,7 @@ Without `TEST_DATABASE_URL` those tests skip and everything else still runs. CI 
 - Supabase Auth for accounts, Supabase Storage for images
 - PostgreSQL through `pg`, with idempotent schema initialization and versioned migrations under `supabase/migrations`
 - Row level security as the enforcement layer: each request runs in a transaction that assumes the `authenticated` role and publishes the caller's id as `request.jwt.claims`, so `auth.uid()` resolves for hand-written SQL exactly as it would through PostgREST
-- DeepSeek's OpenAI-compatible `/chat/completions` endpoint with NDJSON streaming to the browser
+- Provider-adapter inference with DeepSeek's OpenAI-compatible `/chat/completions` endpoint today and NDJSON streaming to the browser
 - Zod validation at every write endpoint
 - Docker standalone build for Railway
 

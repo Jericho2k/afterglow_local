@@ -116,6 +116,9 @@ export const messageUpdateSchema = z.object({
 export const conversationUpdateSchema = z.object({
   title: text(120, 1).optional(),
   personaId: z.string().uuid().nullable().optional(),
+  providerId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).optional(),
+  modelId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).optional(),
+  rpEngineId: z.enum(["immersive", "raw", "cinematic", "deliberate"]).optional(),
   instructionPresets: z.array(z.enum(["reduce_repetition", "stay_focused", "advance_plot"])).max(3).optional(),
   customInstructions: text(3000).optional(),
 }).refine((value) => Object.values(value).some((item) => item !== undefined), "Provide a conversation change");
@@ -139,6 +142,14 @@ export const profileSchema = z.object({
   avatarPath: storagePath,
 });
 
+export const characterLikeSchema = z.object({ characterId: z.string().uuid() });
+
+export const characterReportSchema = z.object({
+  characterId: z.string().uuid(),
+  reason: z.enum(["underage", "nonconsensual", "real_person", "stolen", "harassment", "other"]),
+  details: text(3000).default(""),
+});
+
 export const worldSchema = z.object({
   name: text(120, 1),
   description: text(500).default(""),
@@ -149,6 +160,7 @@ export const worldSchema = z.object({
 export const settingsSchema = z.object({
   ownerName: text(80, 1).default("You"),
   ownerProfile: text(5000).default(""),
+  providerId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek"),
   model: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek-v4-flash"),
   roleplayPreset: z.enum(["immersive", "raw", "cinematic", "deliberate"]).default("immersive"),
   temperature: z.number().min(0).max(2).default(0.95),
@@ -168,6 +180,8 @@ export const backupSchema = z.object({
   characters: z.array(z.object({ id: z.string().min(1), data: characterSchema })).max(1000),
   conversations: z.array(z.object({
     id: z.string().min(1), characterId: z.string().min(1), title: text(120, 1), summary: text(12000).default(""), personaId: z.string().nullable().optional(),
+    providerId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek"), modelId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek-v4-flash"),
+    rpEngineId: z.enum(["immersive", "raw", "cinematic", "deliberate"]).default("immersive"),
     instructionPresets: z.array(z.enum(["reduce_repetition", "stay_focused", "advance_plot"])).max(3).default([]), customInstructions: text(3000).default(""),
   })).max(5000),
   messages: z.array(z.object({

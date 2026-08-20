@@ -1,24 +1,100 @@
-/**
- * Server-side provider configuration.
- *
- * Model entitlements live here rather than in the per-user settings table so a
- * user can never select a model the deployment does not want to pay for. The
- * API key itself is read only inside the server-side DeepSeek client and is
- * never exposed to the browser.
- */
+import type { ModelCatalog, ModelDefinition, ProviderDefinition, RoleplayEngineDefinition, RoleplayEngineId } from "./types";
 
-const fallbackModels = ["deepseek-v4-flash", "deepseek-v4-pro"];
+/**
+ * Deployment-owned inference catalog.
+ *
+ * Provider, base model, and roleplay engine are deliberately separate. A
+ * conversation stores all three, while Afterglow continues to own the
+ * transcript and continuity state. Adding another provider therefore means
+ * registering an adapter and model definitions, not rewriting the chat route.
+ */
+const providers: ProviderDefinition[] = [
+  { id: "deepseek", label: "DeepSeek" },
+];
+
+const knownModels: ModelDefinition[] = [
+  {
+    id: "deepseek-v4-flash",
+    providerId: "deepseek",
+    label: "DeepSeek V4 Flash",
+    description: "Fast, economical roleplay for everyday conversations.",
+    supportsThinking: true,
+  },
+  {
+    id: "deepseek-v4-pro",
+    providerId: "deepseek",
+    label: "DeepSeek V4 Pro",
+    description: "Higher-detail writing and stronger handling of complex scenes.",
+    supportsThinking: true,
+  },
+];
+
+const engines: RoleplayEngineDefinition[] = [
+  { id: "immersive", label: "Afterglow Immersive", description: "Adaptive story, emotion, intimacy, and character initiative.", thinking: false },
+  { id: "raw", label: "Afterglow Raw", description: "Direct adult prose and autonomous, character-led desire when Adult mode is on.", thinking: false },
+  { id: "cinematic", label: "Afterglow Cinematic", description: "Atmospheric, dramatic prose with selective sensory detail.", thinking: false },
+  { id: "deliberate", label: "Afterglow Deliberate", description: "Careful causality, strategy, spatial logic, and long-running consequences.", thinking: true },
+];
+
+function safeId(value: string) {
+  return /^[a-zA-Z0-9._-]{1,100}$/.test(value);
+}
 
 export function allowedModels() {
-  const configured = (process.env.ALLOWED_MODELS || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item) => /^[a-zA-Z0-9._-]{1,100}$/.test(item));
-  return configured.length ? configured : fallbackModels;
+  const configured = (process.env.ALLOWED_MODELS || "").split(",").map((item) => item.trim()).filter(safeId);
+  return configured.length ? configured : knownModels.map((item) => item.id);
+}
+
+export function availableModels(): ModelDefinition[] {
+  return allowedModels().map((id) => knownModels.find((item) => item.id === id) ?? {
+    id,
+    providerId: "deepseek",
+    label: id,
+    description: "Deployment-configured DeepSeek-compatible model.",
+    supportsThinking: true,
+  });
+}
+
+export function availableCatalog(): ModelCatalog {
+  const models = availableModels();
+  return {
+    providers: providers.filter((provider) => models.some((model) => model.providerId === provider.id)),
+    models,
+    engines,
+  };
+}
+
+export function defaultProvider() {
+  const configured = process.env.DEFAULT_LLM_PROVIDER?.trim();
+  if (configured && availableModels().some((model) => model.providerId === configured)) return configured;
+  return availableModels()[0]?.providerId ?? "deepseek";
 }
 
 export function defaultModel() {
   const configured = process.env.DEEPSEEK_MODEL?.trim();
   if (configured && allowedModels().includes(configured)) return configured;
   return allowedModels()[0];
+}
+
+export function defaultEngine(): RoleplayEngineId {
+  const configured = process.env.DEFAULT_RP_ENGINE?.trim();
+  return engines.some((engine) => engine.id === configured) ? configured as RoleplayEngineId : "immersive";
+}
+
+export function resolveModel(providerId: string, modelId: string) {
+  return availableModels().find((model) => model.id === modelId && model.providerId === providerId) ?? null;
+}
+
+export function resolveEngine(engineId: string) {
+  return engines.find((engine) => engine.id === engineId) ?? null;
+}
+
+export function enginePrompt(engineId: RoleplayEngineId) {
+  const prompts: Record<RoleplayEngineId, string> = {
+    immersive: "IMMERSIVE: Adapt fluidly between plot, emotion, humor, tenderness, conflict, and adult intimacy. Favor specific character-driven choices over a fixed prose formula.",
+    raw: "RAW ADULT: When Adult mode is enabled and the scene becomes sexual, use direct, concrete, uninhibited language rather than euphemisms, coy summaries, or fade-to-black. Keep desire messy and character-specific. Explicitness must emerge from the characters and context, never from automatic compliance.",
+    cinematic: "CINEMATIC: Build atmosphere through selective sensory detail, setting, subtext, body language, and dramatic pacing. Make the scene feel larger than the immediate exchange without burying dialogue beneath description.",
+    deliberate: "DELIBERATE: Track causality, plans, spatial details, competing motives, and long-running consequences carefully. Let characters think strategically while remaining emotionally alive and fully in character.",
+  };
+  return prompts[engineId];
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { conversationCharacter, ownedConversation } from "@/lib/access";
 import { asUser, getUserSettings, messageFromRow, personaFromRow, userQuery, worldFromRow } from "@/lib/db";
-import { streamCompletion, type DeepSeekUsage } from "@/lib/deepseek";
+import { streamCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
 import { recallText, selectRecentMessages } from "@/lib/context";
@@ -9,6 +9,8 @@ import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { currentAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
+import { resolveEngine, resolveModel } from "@/lib/provider";
+import type { AppSettings } from "@/lib/types";
 
 export const maxDuration = 120;
 
@@ -57,6 +59,14 @@ export async function POST(request: Request) {
   });
   if ("error" in prepared) return Response.json({ error: prepared.error }, { status: 404 });
   const { row, character, settings, worlds, persona } = prepared;
+  const selection = {
+    providerId: String(row.provider_id || settings.providerId),
+    modelId: String(row.model_id || settings.model),
+  };
+  const engineId = String(row.rp_engine_id || settings.roleplayPreset) as AppSettings["roleplayPreset"];
+  const modelDefinition = resolveModel(selection.providerId, selection.modelId);
+  const engineDefinition = resolveEngine(engineId);
+  if (!modelDefinition || !engineDefinition) return Response.json({ error: "This chat's model or roleplay engine is no longer available. Choose another one in chat tools." }, { status: 409 });
 
   // If a previous background consolidation was interrupted by a deploy or cold
   // shutdown, catch it up before building the next prompt.
@@ -101,7 +111,7 @@ export async function POST(request: Request) {
   const { regenerateTarget, userMessageId, history, lastUserInput, memories, arcs } = staged;
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
 
-  const system = roleplayPrompt(character, currentSummary, memories, arcs, settings, {
+  const system = roleplayPrompt(character, currentSummary, memories, arcs, { ...settings, roleplayPreset: engineId }, {
     worlds,
     persona,
     instructionPresets: Array.isArray(row.instruction_presets) ? row.instruction_presets : [],
@@ -112,10 +122,10 @@ export async function POST(request: Request) {
 
   let upstream: ReadableStream<Uint8Array>;
   try {
-    upstream = await streamCompletion([
+    upstream = await streamCompletion(selection, [
       { role: "system", content: system },
       ...modelHistory,
-    ], { signal: request.signal, model: settings.model, maxTokens: settings.maxTokens, temperature: settings.temperature, thinking: settings.roleplayPreset === "deliberate" });
+    ], { signal: request.signal, maxTokens: settings.maxTokens, temperature: settings.temperature, thinking: engineDefinition.thinking && modelDefinition.supportsThinking });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Model request failed" }, { status: 502 });
   }
@@ -128,7 +138,7 @@ export async function POST(request: Request) {
       const reader = upstream.getReader();
       let buffer = "";
       let assistant = "";
-      let usage: DeepSeekUsage | null = null;
+      let usage: LLMUsage | null = null;
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       try {
         while (true) {
@@ -165,7 +175,7 @@ export async function POST(request: Request) {
             await client.query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1 AND user_id=$2", [conversationId,account.id]);
           });
         }
-        if (usage) await recordUsageEvent({ userId: account.id, conversationId, model: settings.model, kind: action === "send" ? "chat" : action, usage });
+        if (usage) await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, rpEngineId: engineId, kind: action === "send" ? "chat" : action, usage });
         send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, memoriesUsed: memories.map((memory) => memory.id), arcsUsed: arcs.map((arc) => arc.id), usage });
         controller.close();
         if (!regenerateTarget) void maybeConsolidate(account.id, conversationId).catch((error) => console.error("Memory consolidation failed", error));
