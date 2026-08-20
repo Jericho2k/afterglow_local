@@ -31,5 +31,8 @@ DO $$ BEGIN CREATE ROLE anon NOLOGIN NOINHERIT; EXCEPTION WHEN duplicate_object 
 DO $$ BEGIN CREATE ROLE authenticated NOLOGIN NOINHERIT; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+-- Deliberately NOT granting USAGE on the public schema here: the migration is
+-- responsible for that, and the isolation suite should fail if it stops doing
+-- it. Supabase projects created with "automatically expose new tables" off
+-- behave the same way.
 GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;

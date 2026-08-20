@@ -73,13 +73,14 @@ The first run is a dry run that reports what it would claim and rolls back. Char
 ## Supabase setup
 
 1. Create a Supabase project.
-2. Apply `supabase/migrations/0000_baseline.sql` and `0001_multi_tenant_foundation.sql`.
-3. Apply `supabase/migrations/0002_storage.sql`, which creates the `profile-avatars` and `character-avatars` buckets and their policies.
-4. In **Authentication → Providers**, keep Email enabled. Decide whether to require email confirmation; the sign-up screen handles both.
-5. In **Authentication → URL Configuration**, add your deployed origin to the redirect allow list.
-6. Copy `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY` into your host's environment.
+2. On the project creation screen, under **Security**, turn **Enable Data API** off and **Enable automatic RLS** on. Afterglow talks to PostgreSQL directly and uses Supabase only for Auth and Storage, so PostgREST is unused surface; automatic RLS is a free safety net for any table added later. Both are reversible in Project Settings.
+3. Apply `supabase/migrations/0000_baseline.sql` and `0001_multi_tenant_foundation.sql`. The migration grants its own schema and table privileges, so it does not depend on the project's "automatically expose new tables" default.
+4. Apply `supabase/migrations/0002_storage.sql`, which creates the `profile-avatars` and `character-avatars` buckets and their policies.
+5. In **Authentication → Providers**, keep Email enabled. Decide whether to require email confirmation; the sign-up screen handles both.
+6. In **Authentication → URL Configuration**, add your deployed origin to the redirect allow list.
+7. Copy `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY` into your host's environment.
 
-Only the legacy migration script needs `SUPABASE_SERVICE_ROLE_KEY`. Application requests never use it: ordinary reads and writes run as the signed-in account so row level security applies.
+No part of the application uses the service-role key. Ordinary reads and writes run as the signed-in account so row level security applies, and the legacy migration script connects with `DATABASE_URL` directly.
 
 ## Deploy
 
@@ -116,7 +117,7 @@ Adult mode permits consensual explicit fictional roleplay between adults. The sy
 - Never commit `.env` or `.env.local`; both are ignored.
 - Rotate any API key pasted into chat or another third-party interface before production use.
 - Use Railway's secret variables and database backups.
-- Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser; it bypasses row level security entirely.
+- The application uses no service-role key at all. If you introduce one, keep it server-side: it bypasses row level security entirely.
 - Ownership is enforced twice: every statement carries an explicit `user_id` predicate, and PostgreSQL policies decide independently. A mistake in one layer is caught by the other.
 - Avatar buckets are public-read so published characters render for other accounts; writes are restricted to `users/{account_id}/…` by storage policy. Nothing confidential belongs in an avatar.
 - Conversations, messages, memories, and arcs are private without exception, including when the character they use is public.

@@ -398,6 +398,11 @@ CREATE TRIGGER on_auth_user_created
 -- what actually decide which rows each account sees.
 -- ---------------------------------------------------------------------------
 
+-- Granted explicitly rather than relying on the project's "automatically
+-- expose new tables" default, so the migration is self-sufficient on a project
+-- created with that setting off.
+GRANT USAGE ON SCHEMA public TO authenticated;
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   profiles, user_settings, characters, worlds, personas,
   conversations, messages, memories, memory_arcs, character_worlds
