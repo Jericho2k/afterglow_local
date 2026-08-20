@@ -3,12 +3,14 @@ import { ensureSchema, pool } from "@/lib/db";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const required = ["DATABASE_URL", "DEEPSEEK_API_KEY", "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"];
+  const missing = required.filter((name) => !process.env[name]);
+  if (process.env.NODE_ENV === "production" && missing.length) {
+    console.error("health_check_misconfigured", { missing });
+    return Response.json({ ok: false, configured: false, missing }, { status: 503 });
+  }
+
   try {
-    const required = ["DATABASE_URL", "DEEPSEEK_API_KEY", "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"];
-    const missing = required.filter((name) => !process.env[name]);
-    if (process.env.NODE_ENV === "production" && missing.length) {
-      return Response.json({ ok: false, configured: false, missing }, { status: 503 });
-    }
     if (process.env.DATABASE_URL) {
       // A database socket alone is not enough to serve the application. Run
       // the same cached schema/bootstrap path used by authenticated routes so
@@ -18,7 +20,13 @@ export async function GET() {
       await pool().query("SELECT 1");
     }
     return Response.json({ ok: true, configured: true, database: Boolean(process.env.DATABASE_URL), timestamp: new Date().toISOString() });
-  } catch {
-    return Response.json({ ok: false, database: false }, { status: 503 });
+  } catch (error) {
+    // Failing fast is deliberate, but failing silently is not: the platform
+    // restarts the container on a failed check, so a bare 503 leaves nothing
+    // to distinguish a wrong host from rejected credentials from a migration
+    // that has not been applied. Report it here and in the platform log.
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error("health_check_failed", { reason });
+    return Response.json({ ok: false, database: false, error: reason }, { status: 503 });
   }
 }
