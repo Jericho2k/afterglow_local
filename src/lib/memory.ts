@@ -6,6 +6,7 @@ import type { Memory, MemoryArc, Message } from "./types";
 import { memoryArcFromRow, memoryFromRow, messageFromRow } from "./db";
 import { recordUsageEvent } from "./usage";
 import { estimateTokens } from "./context";
+import { providerModelId, taskModelSelection } from "./provider";
 import type { PoolClient } from "pg";
 
 const stopWords = new Set(["the", "and", "that", "this", "with", "from", "have", "your", "you", "are", "was", "for", "but", "not", "they", "she", "him", "her", "his", "our"]);
@@ -200,14 +201,13 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
     const { settings, conversation, messageCount, delta, messages, activeCommitments } = prepared;
     const previousCount = Number(conversation.last_consolidated_count || 0);
 
-    const providerId = String(conversation.provider_id || settings.providerId);
-    const modelId = String(conversation.model_id || settings.model);
+    const { providerId,modelId } = taskModelSelection("memory_consolidation");
     const rpEngineId = String(conversation.rp_engine_id || settings.roleplayPreset);
     const response = await completionWithUsage({ providerId, modelId }, [
       { role: "system", content: "You are a precise continuity editor and episodic-memory curator. Output JSON only." },
       { role: "user", content: consolidationPrompt(String(conversation.summary), messages, settings.ownerName, activeCommitments) },
     ], { json: true, maxTokens: 3600, temperature: 0.2 });
-    if (response.usage) await recordUsageEvent({ userId, conversationId, providerId, model: modelId, rpEngineId, kind: "memory_consolidation", usage: response.usage });
+    if (response.usage) await recordUsageEvent({ userId, conversationId, providerId, model: modelId, actualModel: providerModelId(providerId,modelId) ?? modelId, rpEngineId, kind: "memory_consolidation", taskRoute: "memory_consolidation", usage: response.usage });
     const data = parseJson<Consolidation>(response.content);
     if (!data.summary) return false;
 

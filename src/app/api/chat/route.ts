@@ -9,7 +9,7 @@ import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { currentAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
-import { resolveEngine, resolveModel } from "@/lib/provider";
+import { providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
 import type { AppSettings } from "@/lib/types";
 
 export const maxDuration = 120;
@@ -59,14 +59,21 @@ export async function POST(request: Request) {
   });
   if ("error" in prepared) return Response.json({ error: prepared.error }, { status: 404 });
   const { row, character, settings, worlds, persona } = prepared;
-  const selection = {
+  const conversationSelection = {
     providerId: String(row.provider_id || settings.providerId),
     modelId: String(row.model_id || settings.model),
   };
+  let selection: typeof conversationSelection;
+  try {
+    selection = taskModelSelection("rp_generation",conversationSelection);
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "The RP model route is unavailable" },{ status:409 });
+  }
   const engineId = String(row.rp_engine_id || settings.roleplayPreset) as AppSettings["roleplayPreset"];
+  const conversationModelDefinition = resolveModel(conversationSelection.providerId,conversationSelection.modelId);
   const modelDefinition = resolveModel(selection.providerId, selection.modelId);
   const engineDefinition = resolveEngine(engineId);
-  if (!modelDefinition || !engineDefinition) return Response.json({ error: "This chat's model or roleplay engine is no longer available. Choose another one in chat tools." }, { status: 409 });
+  if (!conversationModelDefinition || !modelDefinition || !engineDefinition) return Response.json({ error: "This chat's model or roleplay engine is no longer available. Choose another one in chat tools." }, { status: 409 });
 
   // If a previous background consolidation was interrupted by a deploy or cold
   // shutdown, catch it up before building the next prompt.
@@ -121,6 +128,7 @@ export async function POST(request: Request) {
   if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
 
   let upstream: ReadableStream<Uint8Array>;
+  const requestStartedAt = Date.now();
   try {
     upstream = await streamCompletion(selection, [
       { role: "system", content: system },
@@ -139,6 +147,8 @@ export async function POST(request: Request) {
       let buffer = "";
       let assistant = "";
       let usage: LLMUsage | null = null;
+      let providerRequestId: string | undefined;
+      let actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       try {
         while (true) {
@@ -153,9 +163,16 @@ export async function POST(request: Request) {
             if (!payload || payload === "[DONE]") continue;
             try {
               const data = JSON.parse(payload);
+              if (typeof data?.id === "string") providerRequestId = data.id;
+              if (typeof data?.model === "string") actualProviderModel = data.model;
               const delta = data?.choices?.[0]?.delta?.content;
               if (typeof delta === "string" && delta) { assistant += delta; send({ type: "delta", content: delta }); }
-              if (data?.usage) usage = data.usage;
+              if (data?.usage) usage = {
+                ...data.usage,
+                provider_request_id: providerRequestId,
+                actual_model: actualProviderModel,
+                latency_ms: Math.max(0,Date.now() - requestStartedAt),
+              };
             } catch { /* ignore malformed upstream chunks */ }
           }
         }
@@ -175,7 +192,7 @@ export async function POST(request: Request) {
             await client.query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1 AND user_id=$2", [conversationId,account.id]);
           });
         }
-        if (usage) await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, rpEngineId: engineId, kind: action === "send" ? "chat" : action, usage });
+        if (usage) await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
         send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, memoriesUsed: memories.map((memory) => memory.id), arcsUsed: arcs.map((arc) => arc.id), usage });
         controller.close();
         if (!regenerateTarget) void maybeConsolidate(account.id, conversationId).catch((error) => console.error("Memory consolidation failed", error));

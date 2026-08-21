@@ -110,7 +110,17 @@ async function schema() {
       completion_tokens integer NOT NULL DEFAULT 0,
       cache_hit_tokens integer NOT NULL DEFAULT 0,
       cache_miss_tokens integer NOT NULL DEFAULT 0,
+      cache_write_tokens integer NOT NULL DEFAULT 0,
+      reasoning_tokens integer NOT NULL DEFAULT 0,
       estimated_cost_usd numeric(20,10),
+      provider_cost_usd numeric(20,10),
+      upstream_cost_usd numeric(20,10),
+      actual_provider_model text,
+      catalog_model_id text,
+      task_route text,
+      latency_ms integer,
+      provider_request_id text,
+      provider_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS usage_events_created_idx ON usage_events(created_at DESC);
@@ -201,6 +211,16 @@ async function schema() {
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS rp_engine_id text NOT NULL DEFAULT 'immersive'");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS funding_source text NOT NULL DEFAULT 'afterglow'");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS estimated_cost_usd numeric(20,10)");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cache_write_tokens integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS reasoning_tokens integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS provider_cost_usd numeric(20,10)");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS upstream_cost_usd numeric(20,10)");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS actual_provider_model text");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS catalog_model_id text");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS task_route text");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS latency_ms integer");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS provider_request_id text");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS provider_metadata jsonb NOT NULL DEFAULT '{}'::jsonb");
   await pool().query(`
     UPDATE usage_events SET estimated_cost_usd = CASE model
       WHEN 'deepseek-v4-flash' THEN (

@@ -6,6 +6,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { currentAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
 import { normalizeGeneratedCharacter } from "@/lib/character-import";
+import { providerModelId, taskModelSelection } from "@/lib/provider";
 
 export async function POST(request: Request) {
   // Authenticated before the model call, and throttled per account rather than
@@ -19,7 +20,8 @@ export async function POST(request: Request) {
 
   try {
     const settings = await asUser(account.id, (client) => getUserSettings(client, account.id));
-    const selection = { providerId: settings.providerId, modelId: settings.model };
+    const selection = taskModelSelection("character_import");
+    const actualModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
     let inventory = "";
     if (input.data.mode === "dump" && input.data.idea.length >= 12_000) {
       const audited = await completionWithUsage(selection, [
@@ -27,13 +29,13 @@ export async function POST(request: Request) {
         { role: "user", content: characterImportInventoryPrompt(input.data.idea) },
       ], { json: true, maxTokens: Math.min(5000, Math.max(2600, Math.ceil(input.data.idea.length / 9))), temperature: 0.1 });
       inventory = audited.content;
-      if (audited.usage) await recordUsageEvent({ userId: account.id, providerId: selection.providerId, model: selection.modelId, rpEngineId: settings.roleplayPreset, kind: "character_generation", usage: audited.usage });
+      if (audited.usage) await recordUsageEvent({ userId: account.id, providerId: selection.providerId, model: selection.modelId, actualModel, rpEngineId: settings.roleplayPreset, kind: "character_generation", taskRoute: "character_import", usage: audited.usage });
     }
     const response = await completionWithUsage(selection, [
       { role: "system", content: "You are an expert character designer. Return valid JSON only." },
       { role: "user", content: characterGenerationPrompt(input.data.idea, input.data.tone, input.data.nsfwEnabled, input.data.mode, inventory) },
     ], { json: true, maxTokens: characterGenerationTokenBudget(input.data.mode, input.data.idea.length), temperature: input.data.mode === "dump" ? 0.25 : 0.9 });
-    if (response.usage) await recordUsageEvent({ userId: account.id, providerId: selection.providerId, model: selection.modelId, rpEngineId: settings.roleplayPreset, kind: "character_generation", usage: response.usage });
+    if (response.usage) await recordUsageEvent({ userId: account.id, providerId: selection.providerId, model: selection.modelId, actualModel, rpEngineId: settings.roleplayPreset, kind: "character_generation", taskRoute: "character_import", usage: response.usage });
     const character = normalizeGeneratedCharacter(response.content, input.data.mode === "dump" ? input.data.idea : "", input.data.nsfwEnabled);
     const retainedCharacters = character.backstory.length + character.personality.length + character.scenario.length + character.exampleDialogue.length
       + character.responseDirective.length + character.boundaries.length + character.lorebook.length
