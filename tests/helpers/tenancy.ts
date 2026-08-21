@@ -32,6 +32,8 @@ export async function migratedPool() {
     await client.query(sql("supabase/migrations/0001_multi_tenant_foundation.sql"));
     await client.query(sql("supabase/migrations/0003_conversation_inference.sql"));
     await client.query(sql("supabase/migrations/0004_product_social.sql"));
+    await client.query(sql("supabase/migrations/0005_openrouter_usage.sql"));
+    await client.query(sql("supabase/migrations/0006_memory_retrieval_v2.sql"));
   } finally {
     client.release();
   }

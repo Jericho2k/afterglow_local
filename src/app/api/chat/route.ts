@@ -3,6 +3,7 @@ import { conversationCharacter, ownedConversation } from "@/lib/access";
 import { asUser, getUserSettings, messageFromRow, personaFromRow, userQuery, worldFromRow } from "@/lib/db";
 import { streamCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
+import { focusedRetrievalQuery, maybeBackfillMemoryEmbeddings, maybeCurateCanon, memoryRetrievalV2Enabled, retrieveContinuityV2 } from "@/lib/memory-v2";
 import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
 import { recallText, selectRecentMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
@@ -111,16 +112,35 @@ export async function POST(request: Request) {
     const history = selectRecentMessages(availableHistory, settings.contextMessages, settings.contextTokenBudget);
     const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
     const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
-    const { memories, arcs } = await relevantContinuity(client, account.id, row.character_id, conversationId, recallContext, settings.memoryLimit, settings.memoryTokenBudget);
-    return { regenerateTarget, userMessageId, history, lastUserInput, memories, arcs };
+    return { regenerateTarget, userMessageId, history, lastUserInput, recallContext };
   });
 
-  const { regenerateTarget, userMessageId, history, lastUserInput, memories, arcs } = staged;
+  const { regenerateTarget, userMessageId, history, lastUserInput, recallContext } = staged;
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
+
+  let memories; let arcs; let coreCanon = [] as Awaited<ReturnType<typeof retrieveContinuityV2>>["coreCanon"];
+  if (memoryRetrievalV2Enabled(account.id)) {
+    try {
+      const continuity = await retrieveContinuityV2({
+        userId:account.id,characterId:row.character_id,conversationId,
+        query:focusedRetrievalQuery(history,lastUserInput || character.scenario || character.name),
+        messageId:userMessageId,limit:settings.memoryLimit,tokenBudget:settings.memoryTokenBudget,
+      });
+      ({memories,arcs,coreCanon}=continuity);
+    } catch (error) {
+      // Schema/configuration mistakes must not take chat down during the staged
+      // rollout. The complete V1 path remains the operational fallback.
+      console.error("Memory Retrieval V2 failed; using V1",error);
+      ({memories,arcs}=await asUser(account.id,(client)=>relevantContinuity(client,account.id,row.character_id,conversationId,recallContext,settings.memoryLimit,settings.memoryTokenBudget)));
+    }
+  } else {
+    ({memories,arcs}=await asUser(account.id,(client)=>relevantContinuity(client,account.id,row.character_id,conversationId,recallContext,settings.memoryLimit,settings.memoryTokenBudget)));
+  }
 
   const system = roleplayPrompt(character, currentSummary, memories, arcs, { ...settings, roleplayPreset: engineId }, {
     worlds,
     persona,
+    coreCanon,
     instructionPresets: Array.isArray(row.instruction_presets) ? row.instruction_presets : [],
     customInstructions: String(row.custom_instructions || ""),
   });
@@ -195,7 +215,11 @@ export async function POST(request: Request) {
         if (usage) await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
         send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, memoriesUsed: memories.map((memory) => memory.id), arcsUsed: arcs.map((arc) => arc.id), usage });
         controller.close();
-        if (!regenerateTarget) void maybeConsolidate(account.id, conversationId).catch((error) => console.error("Memory consolidation failed", error));
+        if (!regenerateTarget) void (async () => {
+          await maybeConsolidate(account.id,conversationId);
+          await maybeCurateCanon(account.id,conversationId);
+          await maybeBackfillMemoryEmbeddings(account.id,conversationId);
+        })().catch((error) => console.error("Memory maintenance failed",error));
       } catch (error) {
         send({ type: "error", error: error instanceof Error ? error.message : "Stream failed" });
         controller.close();

@@ -7,6 +7,8 @@ import { memoryArcFromRow, memoryFromRow, messageFromRow } from "./db";
 import { recordUsageEvent } from "./usage";
 import { estimateTokens } from "./context";
 import { providerModelId, taskModelSelection } from "./provider";
+import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
+import { memoryRetrievalV2Enabled } from "./memory-flags";
 import type { PoolClient } from "pg";
 
 const stopWords = new Set(["the", "and", "that", "this", "with", "from", "have", "your", "you", "are", "was", "for", "but", "not", "they", "she", "him", "her", "his", "our"]);
@@ -19,9 +21,19 @@ export async function invalidateDerivedContinuity(client: PoolClient, conversati
   const owner = userId ?? null;
   await client.query("DELETE FROM memories WHERE conversation_id=$1 AND source_message_count > $2 AND ($3::uuid IS NULL OR user_id=$3)",[conversationId,position,owner]);
   await client.query("DELETE FROM memory_arcs WHERE conversation_id=$1 AND end_message_count > $2 AND ($3::uuid IS NULL OR user_id=$3)",[conversationId,position,owner]);
+  const v2Enabled=Boolean(userId&&memoryRetrievalV2Enabled(userId));
+  if (v2Enabled) {
+    // Canon is derived from the permanent archive. A branch/edit supersedes
+    // only canon whose evidence came from the discarded future.
+    await client.query("UPDATE core_canon_entries SET status='superseded',updated_at=now() WHERE conversation_id=$1 AND source_message_count>$2 AND user_id=$3",[conversationId,position,userId]);
+  }
   const countResult = await client.query("SELECT COUNT(*) count FROM messages WHERE conversation_id=$1",[conversationId]);
   const messageCount = Number(countResult.rows[0].count);
-  await client.query(
+  if (v2Enabled) await client.query(
+    "UPDATE conversations SET message_count=$1,summary='',last_consolidated_count=$2,last_curated_message_count=LEAST(last_curated_message_count,$5),canon_version=canon_version+1,updated_at=now() WHERE id=$3 AND user_id=$4",
+    [messageCount,Math.max(0,messageCount - 50),conversationId,userId,position],
+  );
+  else await client.query(
     "UPDATE conversations SET message_count=$1,summary='',last_consolidated_count=$2,updated_at=now() WHERE id=$3 AND ($4::uuid IS NULL OR user_id=$4)",
     [messageCount,Math.max(0,messageCount - 50),conversationId,owner],
   );
@@ -174,7 +186,12 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
   const lockKey = `${userId}:${conversationId}`;
   if (activeConsolidations.has(lockKey)) return false;
   activeConsolidations.add(lockKey);
+  let databaseLease: string | null = null;
   try {
+    if (memoryRetrievalV2Enabled(userId)) {
+      databaseLease = await acquireMemoryJobLease(userId,conversationId,"consolidation",480);
+      if (!databaseLease) return false;
+    }
     const prepared = await asUser(userId, async (client) => {
       const settings = await getUserSettings(client, userId);
       const conversationResult = await client.query("SELECT * FROM conversations WHERE id = $1 AND user_id = $2", [conversationId, userId]);
@@ -211,15 +228,20 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
     const data = parseJson<Consolidation>(response.content);
     if (!data.summary) return false;
 
-    await asUser(userId, async (client) => {
+    const createdRecords = await asUser(userId, async (client) => {
+      const records: Array<{type:"memory"|"arc";id:string;content:string}> = [];
       await client.query(
         "UPDATE conversations SET summary = $1, last_consolidated_count = GREATEST(last_consolidated_count,$2), updated_at = now() WHERE id = $3 AND user_id = $4",
         [data.summary!.slice(0, 12000), messageCount, conversationId, userId],
       );
-      if (delta > 0 && data.arcSummary?.trim()) await client.query(
-        "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-        [randomUUID(),conversationId,userId,data.arcSummary.trim().slice(0,4000),(data.arcKeywords ?? []).slice(0,12),Math.min(messageCount,previousCount + 1),messageCount],
-      );
+      if (delta > 0 && data.arcSummary?.trim()) {
+        const arcId=randomUUID(); const arcContent=data.arcSummary.trim().slice(0,4000);
+        await client.query(
+          "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+          [arcId,conversationId,userId,arcContent,(data.arcKeywords ?? []).slice(0,12),Math.min(messageCount,previousCount + 1),messageCount],
+        );
+        records.push({type:"arc",id:arcId,content:arcContent});
+      }
       const updateableIds = new Set(activeCommitments.filter((memory) => memory.kind === "promise" || memory.kind === "open_loop").map((memory) => memory.id));
       for (const update of (data.memoryUpdates ?? []).slice(0,20)) {
         if (!update.id || !updateableIds.has(update.id) || !["active","resolved"].includes(String(update.status))) continue;
@@ -242,14 +264,19 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
         if (!content || seenContent.some((stored) => similarity(stored, content) >= 0.72)) continue;
         const kind = kinds.includes(item.kind as Memory["kind"]) ? item.kind : "event";
         seenContent.push(content);
+        const memoryId=randomUUID();
         await client.query(
           "INSERT INTO memories (id, character_id, conversation_id, user_id, content, kind, importance, keywords, source_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-          [randomUUID(), conversation.character_id, conversationId, userId, content.slice(0, 3000), kind, Math.min(5, Math.max(1, Number(item.importance) || 3)), (item.keywords ?? []).slice(0, 12), messageCount],
+          [memoryId, conversation.character_id, conversationId, userId, content.slice(0, 3000), kind, Math.min(5, Math.max(1, Number(item.importance) || 3)), (item.keywords ?? []).slice(0, 12), messageCount],
         );
+        records.push({type:"memory",id:memoryId,content:content.slice(0,3000)});
       }
+      return records;
     });
+    if (createdRecords.length) await import("./memory-v2").then(({embedContinuityRecords}) => embedContinuityRecords(userId,conversationId,createdRecords)).catch((error) => { console.error("New memory embedding failed",error); return false; });
     return true;
   } finally {
+    if (databaseLease) await releaseMemoryJobLease(userId,conversationId,databaseLease).catch(() => undefined);
     activeConsolidations.delete(lockKey);
   }
 }

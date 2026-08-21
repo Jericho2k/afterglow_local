@@ -20,6 +20,8 @@ const aliceMemory = "eeeeeeee-0000-4000-8000-000000000001";
 const aliceArc = "ffffffff-0000-4000-8000-000000000001";
 const aliceWorld = "12121212-0000-4000-8000-000000000001";
 const alicePersona = "13131313-0000-4000-8000-000000000001";
+const aliceCanon = "14141414-0000-4000-8000-000000000001";
+const aliceRetrieval = "15151515-0000-4000-8000-000000000001";
 
 describeTenancy("multi-tenant isolation", () => {
   let pool: Pool;
@@ -37,6 +39,8 @@ describeTenancy("multi-tenant isolation", () => {
       await run("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'user','Alice said something private')", [aliceMessage, aliceConversation, alice]);
       await run("INSERT INTO memories (id,character_id,conversation_id,user_id,content) VALUES ($1,$2,NULL,$3,'Alice character-level secret')", [aliceMemory, alicePublicCharacter, alice]);
       await run("INSERT INTO memory_arcs (id,conversation_id,user_id,summary) VALUES ($1,$2,$3,'Alice arc')", [aliceArc, aliceConversation, alice]);
+      await run("INSERT INTO core_canon_entries (id,conversation_id,character_id,user_id,content) VALUES ($1,$2,$3,$4,'Alice foundational canon')",[aliceCanon,aliceConversation,alicePrivateCharacter,alice]);
+      await run("INSERT INTO memory_retrieval_runs (id,conversation_id,user_id,recalled_memory_ids) VALUES ($1,$2,$3,$4)",[aliceRetrieval,aliceConversation,alice,[aliceMemory]]);
       await run("INSERT INTO usage_events (id,user_id,model,usage_type,estimated_cost_usd) VALUES (gen_random_uuid(),$1,'deepseek-v4-flash','chat',1.25)", [alice]);
     });
   });
@@ -69,6 +73,9 @@ describeTenancy("multi-tenant isolation", () => {
     expect(await visibleCount(pool, bob, "conversations")).toBe(0);
     expect(await visibleCount(pool, bob, "messages")).toBe(0);
     expect(await visibleCount(pool, bob, "memory_arcs")).toBe(0);
+    expect(await visibleCount(pool, bob, "core_canon_entries")).toBe(0);
+    expect(await visibleCount(pool, bob, "memory_retrieval_runs")).toBe(0);
+    expect(await visibleCount(pool, alice, "core_canon_entries", "id=$1",[aliceCanon])).toBe(1);
   });
 
   it("keeps memories private even when they hang off a public character", async () => {

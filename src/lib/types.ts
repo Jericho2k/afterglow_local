@@ -123,6 +123,29 @@ export type MemoryArc = {
   createdAt: string;
 };
 
+export type CoreCanonStatus = "active" | "superseded" | "demoted";
+
+/**
+ * A compact, conversation-owned continuity layer. The complete evidence stays
+ * in memories/memory_arcs; canon rows are curated pointers, never the archive.
+ */
+export type CoreCanonEntry = {
+  id: string;
+  conversationId: string;
+  characterId: string;
+  content: string;
+  category: MemoryKind;
+  importance: number;
+  status: CoreCanonStatus;
+  sourceMemoryIds: string[];
+  sourceArcIds: string[];
+  sourceMessageCount: number;
+  tokenCount: number;
+  curationVersion: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Profile = {
   id: string;
   username: string;

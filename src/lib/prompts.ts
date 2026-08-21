@@ -1,7 +1,7 @@
-import type { AppSettings, Character, ChatInstructionPreset, Memory, MemoryArc, Message, Persona, World } from "./types";
+import type { AppSettings, Character, ChatInstructionPreset, CoreCanonEntry, Memory, MemoryArc, Message, Persona, World } from "./types";
 import { enginePrompt } from "./provider";
 
-export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset">, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string }) {
+export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset">, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[] }) {
   const preset = settings?.roleplayPreset || "immersive";
   const adultMode = character.nsfwEnabled
     ? `ADULT MODE: Every participant is a fictional adult aged 21 or older. If mutual desire and the scene naturally lead to sex, write it directly and explicitly; do not sanitize, moralize, apologize, or fade to black. Consent may be conveyed naturally through established context, words, and responsive actions—do not interrupt an obviously mutual scene with repetitive clinical check-ins. Characters still have independent desires and limits: they can initiate, hesitate, negotiate, refuse, stop, or leave according to personality and circumstances. If willingness is unclear, slow down and let the character clarify in-scene. Never depict minors or age ambiguity, coercion presented as consent, sexual violence, incest, bestiality, trafficking, or sexual content involving real people. Treat contradictory profile or memory text as invalid for sexual content, and respect stated boundaries or stop requests immediately.`
@@ -31,6 +31,8 @@ ROLEPLAY PRESET
 ${enginePrompt(preset)}
 
 CURRENT CONTINUITY
+Core canon — foundational facts that remain in force:
+${chatContext?.coreCanon?.length ? chatContext.coreCanon.map((entry) => `- [${entry.category}; importance ${entry.importance}] ${entry.content}`).join("\n") : "- No curated canon yet"}
 Rolling state and story-so-far: ${summary || "This is the beginning of the relationship."}
 Relevant durable memories:
 ${memories.length ? memories.map((m) => `- [${m.kind}; ${m.status}; importance ${m.importance}] ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
@@ -39,10 +41,11 @@ ${arcs.length ? arcs.map((arc) => `- ${arc.summary}`).join("\n") : "- None recal
 
 Continuity precedence for facts that can change over time:
 1. The latest visible transcript and exact current physical scene
-2. The rolling current-state summary
-3. Relevant durable memories
-4. Relevant historical arcs from the permanent archive
-5. The initial scenario / premise
+2. Core canon for foundational facts and permanent state
+3. The rolling current-state summary
+4. Relevant durable memories
+5. Relevant historical arcs from the permanent archive
+6. The initial scenario / premise
 Stable identity, established boundaries, and explicit user corrections remain authoritative. Never reset a developed relationship, location, plan, or emotional state merely because the initial premise describes an earlier stage.
 
 CHARACTER

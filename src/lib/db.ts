@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type Memory, type MemoryArc, type Message, type Persona, type World } from "./types";
+import { roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type Memory, type MemoryArc, type Message, type Persona, type World } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -98,6 +98,49 @@ async function schema() {
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS memory_arcs_conversation_idx ON memory_arcs(conversation_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS core_canon_entries (
+      id uuid PRIMARY KEY,
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      content text NOT NULL,
+      category text NOT NULL DEFAULT 'event',
+      importance smallint NOT NULL DEFAULT 4 CHECK (importance BETWEEN 1 AND 5),
+      status text NOT NULL DEFAULT 'active',
+      source_memory_ids uuid[] NOT NULL DEFAULT '{}',
+      source_arc_ids uuid[] NOT NULL DEFAULT '{}',
+      source_message_count integer NOT NULL DEFAULT 0,
+      token_count integer NOT NULL DEFAULT 0,
+      curation_version integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS core_canon_conversation_idx ON core_canon_entries(conversation_id,status,importance DESC);
+    CREATE TABLE IF NOT EXISTS memory_retrieval_runs (
+      id uuid PRIMARY KEY,
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      message_id uuid,
+      retrieval_version text NOT NULL DEFAULT 'v2',
+      semantic_available boolean NOT NULL DEFAULT false,
+      fallback_reason text NOT NULL DEFAULT '',
+      total_stored_memories integer NOT NULL DEFAULT 0,
+      core_canon_tokens integer NOT NULL DEFAULT 0,
+      retrieved_episodic_tokens integer NOT NULL DEFAULT 0,
+      arc_tokens integer NOT NULL DEFAULT 0,
+      recalled_memory_ids uuid[] NOT NULL DEFAULT '{}',
+      recalled_arc_ids uuid[] NOT NULL DEFAULT '{}',
+      score_details jsonb NOT NULL DEFAULT '[]'::jsonb,
+      latency_ms integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS memory_retrieval_runs_conversation_idx ON memory_retrieval_runs(conversation_id,created_at DESC);
+    CREATE TABLE IF NOT EXISTS memory_job_leases (
+      conversation_id uuid PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+      job_type text NOT NULL,
+      lease_token uuid NOT NULL,
+      locked_until timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS usage_events (
       id uuid PRIMARY KEY,
       conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,
@@ -194,6 +237,8 @@ async function schema() {
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS rp_engine_id text NOT NULL DEFAULT 'immersive'");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS instruction_presets text[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS custom_instructions text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_curated_message_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS canon_version integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
@@ -258,7 +303,7 @@ async function schema() {
   // policies. This block keeps a plain PostgreSQL (and the in-memory test
   // database, which supports neither roles nor RLS) on the identical column
   // set so the application's SQL is the same everywhere.
-  for (const table of ["characters","worlds","personas","conversations","messages","memories","memory_arcs","usage_events"]) {
+  for (const table of ["characters","worlds","personas","conversations","messages","memories","memory_arcs","core_canon_entries","memory_retrieval_runs","memory_job_leases","usage_events"]) {
     await pool().query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS user_id uuid`);
   }
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'private'");
@@ -305,6 +350,8 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS conversations_user_idx ON conversations (user_id, updated_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS memories_user_idx ON memories (user_id, character_id)");
   await pool().query("CREATE INDEX IF NOT EXISTS usage_events_user_idx ON usage_events (user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS core_canon_user_idx ON core_canon_entries (user_id, conversation_id, status)");
+  await pool().query("CREATE INDEX IF NOT EXISTS memory_retrieval_runs_user_idx ON memory_retrieval_runs (user_id, conversation_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_user_idx ON character_likes (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_reports_user_idx ON character_reports (user_id, created_at DESC)");
 
@@ -524,6 +571,22 @@ export function memoryArcFromRow(row: Record<string, unknown>): MemoryArc {
     id: String(row.id), conversationId: String(row.conversation_id), summary: String(row.summary),
     keywords: textArrayFromRow(row.keywords), startMessageCount: Number(row.start_message_count),
     endMessageCount: Number(row.end_message_count), createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+export function coreCanonFromRow(row: Record<string, unknown>): CoreCanonEntry {
+  const storedStatus = String(row.status || "active");
+  const storedCategory = String(row.category || "event");
+  return {
+    id: String(row.id), conversationId: String(row.conversation_id), characterId: String(row.character_id),
+    content: String(row.content),
+    category: (["identity","relationship","event","promise","preference","boundary","open_loop"].includes(storedCategory) ? storedCategory : "event") as CoreCanonEntry["category"],
+    importance: Number(row.importance || 3),
+    status: (["active","superseded","demoted"].includes(storedStatus) ? storedStatus : "active") as CoreCanonEntry["status"],
+    sourceMemoryIds: textArrayFromRow(row.source_memory_ids), sourceArcIds: textArrayFromRow(row.source_arc_ids),
+    sourceMessageCount: Number(row.source_message_count || 0), tokenCount: Number(row.token_count || 0),
+    curationVersion: Number(row.curation_version || 1),
+    createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
 
