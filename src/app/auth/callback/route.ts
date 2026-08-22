@@ -1,6 +1,6 @@
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { verificationDestination } from "@/lib/auth-callback";
+import { externalRequestOrigin, verificationDestination } from "@/lib/auth-callback";
 import { supabaseServer } from "@/lib/supabase/server";
 
 export async function GET(request:Request) {
@@ -17,5 +17,5 @@ export async function GET(request:Request) {
     const {error}=await supabase.auth.verifyOtp({token_hash:tokenHash,type});
     valid=!error;
   }
-  return NextResponse.redirect(new URL(verificationDestination(url.searchParams.get("next"),valid?"success":"invalid"),url.origin));
+  return NextResponse.redirect(new URL(verificationDestination(url.searchParams.get("next"),valid?"success":"invalid"),externalRequestOrigin(request)));
 }
