@@ -95,8 +95,8 @@ export async function POST(request: Request) {
       // Publishing is a deliberate act in the owner's own library.
       await client.query(
         `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility)
-         VALUES ($1,$2,$3,$4,'',$5,$6,$7,$8,$9::jsonb,'',$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18,'private')`,
-        [id,account.id,c.name,c.profileType,c.avatarUrl,c.avatarPath ?? "",c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled],
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,'private')`,
+        [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath ?? "",c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled],
       );
       for (const sourceWorldId of c.worldIds) {
         const worldId = worldIds.get(sourceWorldId);
@@ -124,7 +124,7 @@ export async function POST(request: Request) {
       const conversationId = conversationIds.get(item.conversationId); if (!conversationId) continue;
       const messageId=randomUUID();
       await client.query(
-        "INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,authored_event_id,created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,COALESCE($9::timestamptz,now()))",
+        "INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,authored_event_id,generation_started_at,created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,CASE WHEN $4='user' THEN COALESCE($9::timestamptz,now()) ELSE NULL END,COALESCE($9::timestamptz,now()))",
         [messageId,conversationId,account.id,item.role,item.content,JSON.stringify(item.variants),Math.min(item.selectedVariant,Math.max(0,item.variants.length - 1)),item.role==="user"?messageId:null,item.createdAt ?? null],
       );
       messageCount += 1;

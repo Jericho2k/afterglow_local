@@ -43,7 +43,7 @@ export async function GET() {
       ),
       // A branch copies transcript rows. authored_event_id preserves the
       // original accepted user turn, so branching cannot inflate this metric.
-      client.query("SELECT COUNT(DISTINCT COALESCE(authored_event_id,id))::int count FROM messages WHERE user_id=$1 AND role='user'", [account.id]),
+      client.query("SELECT COUNT(DISTINCT COALESCE(authored_event_id,id))::int count FROM messages WHERE user_id=$1 AND role='user' AND generation_started_at IS NOT NULL", [account.id]),
     ]);
     return {
       usage: usage(result.rows[0]),

@@ -153,6 +153,12 @@ export async function POST(request: Request) {
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Model request failed" }, { status: 502 });
   }
+  if (userMessageId) {
+    await asUser(account.id, (client) => client.query(
+      "UPDATE messages SET generation_started_at=COALESCE(generation_started_at,now()) WHERE id=$1 AND user_id=$2 AND role='user'",
+      [userMessageId, account.id],
+    ));
+  }
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();

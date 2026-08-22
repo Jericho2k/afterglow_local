@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {useRouter} from "next/navigation";
 import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, ModelCatalog, Persona, Profile, UsageResponse, World } from "@/lib/types";
 import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
 import { supabaseBrowser, supabaseBrowserConfigured } from "@/lib/supabase/client";
 import { avatarObjectPath, avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
+import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
 
 type CharacterDraft = Omit<Character, "id" | "createdAt" | "updatedAt" | "ownedByViewer" | "likeCount" | "likedByViewer" | "creator">;
 type WorldWithCount = World & { characterCount?: number };
@@ -63,6 +65,7 @@ async function uploadAvatar(file: File, bucket: string) {
 }
 
 export default function Home() {
+  const router=useRouter();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -81,16 +84,12 @@ export default function Home() {
   const [streaming, setStreaming] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [storyNavigation, setStoryNavigation] = useState(closedStoryNavigation);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeView, setActiveView] = useState<AppView>("home");
   const [studioStartSection, setStudioStartSection] = useState<"identity" | "definition" | "world">("identity");
   const [composerToolsOpen, setComposerToolsOpen] = useState(false);
-  const [instructionsOpen, setInstructionsOpen] = useState(false);
-  const [personaPickerOpen, setPersonaPickerOpen] = useState(false);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [worldPickerOpen, setWorldPickerOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [models, setModels] = useState<string[]>([]);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>({ providers: [], models: [], engines: [] });
@@ -101,7 +100,9 @@ export default function Home() {
   const [editWidth, setEditWidth] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [chatNotice, setChatNotice] = useState("");
+  const [accountNotice,setAccountNotice]=useState("");
   const [branchPendingMessageId, setBranchPendingMessageId] = useState<string | null>(null);
+  const [sidebarCharacterMenuId,setSidebarCharacterMenuId]=useState<string|null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -110,9 +111,14 @@ export default function Home() {
   const variantDesiredRef = useRef(new Map<string,{ message:Message; index:number; position:number }>());
   const variantWorkersRef = useRef(new Set<string>());
   const branchPendingRef = useRef<string | null>(null);
+  const routeHandledRef=useRef(false);
   const [atBottom, setAtBottom] = useState(true);
   const selected = useMemo(() => characters.find((item) => item.id === selectedId) ?? null, [characters, selectedId]);
   const activePersona = useMemo(() => personas.find((item) => item.id === conversation?.personaId) ?? personas.find((item) => item.isDefault) ?? null, [personas, conversation?.personaId]);
+  const ownedCharacters=useMemo(()=>characters.filter((character)=>character.ownedByViewer),[characters]);
+  const closeStoryNavigation=()=>setStoryNavigation((state)=>closeStorySurface(state));
+  const openComposerTool=(child:StoryChild)=>{setStoryNavigation(openChatChild(child));setComposerToolsOpen(false);};
+  const openCharacterPage=(characterId:string)=>router.push(`/characters/${characterId}`);
 
   const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
     const query = new URLSearchParams({ characterId });
@@ -162,6 +168,29 @@ export default function Home() {
     return () => listener.subscription.unsubscribe();
   }, []);
   useEffect(() => { if (authenticated) { void loadCharacters(); void loadChatIndex().catch(() => undefined); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings; models: string[]; catalog: ModelCatalog }>("/api/settings").then((data) => { setSettings({...defaultSettings,...data.settings}); setModels(data.models ?? []); setModelCatalog(data.catalog ?? {providers:[],models:[],engines:[]}); }).catch(() => undefined); } }, [authenticated, loadCharacters, loadChatIndex, loadLibraries]);
+  useEffect(()=>{if(!authenticated)return;if(new URLSearchParams(window.location.search).get("verification")==="success"){setAccountNotice("Email verified — welcome to Afterglow.");const timeout=window.setTimeout(()=>setAccountNotice(""),5000);return()=>window.clearTimeout(timeout);}},[authenticated]);
+  useEffect(()=>{
+    if(!authenticated||routeHandledRef.current)return;
+    const params=new URLSearchParams(window.location.search);
+    const view=params.get("view") as AppView|null;
+    if(view&&["home","chats","worlds","personas","profile","likes"].includes(view)){setActiveView(view);routeHandledRef.current=true;return;}
+    if(params.get("create")==="1"){setEditing(null);setStudioStartSection("identity");setStudioOpen(true);routeHandledRef.current=true;return;}
+    const characterId=params.get("editCharacter")||params.get("character");
+    if(!characterId)return;
+    routeHandledRef.current=true;
+    void api<{character:Character}>(`/api/characters/${characterId}`).then(({character})=>{
+      setCharacters((items)=>items.some((item)=>item.id===character.id)?items:[character,...items]);
+      setSelectedId(character.id);
+      if(params.get("editCharacter")){
+        if(character.ownedByViewer){setEditing(character);setStudioStartSection("identity");setStudioOpen(true);}
+        else {router.replace(`/characters/${character.id}`);return;}
+      }else{
+        requestedConversationRef.current=params.get("conversation");
+        setActiveView("chat");
+      }
+      window.history.replaceState({},"","/");
+    }).catch((reason)=>setError(reason instanceof Error?reason.message:"Could not open character"));
+  },[authenticated,router]);
   useEffect(() => {
     if (!selectedId || !authenticated) { setConversation(null); setConversations([]); setMessages([]); setMemories([]); setMemoryArcs([]); return; }
     if (activeView !== "chat") return;
@@ -282,7 +311,7 @@ export default function Home() {
     if (!selected || streaming) return;
     try {
       const data = await api<{ conversation: Conversation; messages: Message[] }>("/api/conversations", { method: "POST", body: JSON.stringify({ characterId: selected.id, greetingIndex, personaId: personaId ?? activePersona?.id ?? null }) });
-      setConversation(data.conversation); setMessages(data.messages); setConversations((items) => [data.conversation, ...items]); setHistoryOpen(false);
+      setConversation(data.conversation); setMessages(data.messages); setConversations((items) => [data.conversation, ...items]); setStoryNavigation(closedStoryNavigation);
       setChatIndex((items) => [data.conversation, ...items]); setActiveView("chat");
       if (isAdmin) { const memoryData = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,data.conversation.id)); setMemories(memoryData.memories); setMemoryArcs(memoryData.arcs); }
       else { setMemories([]); setMemoryArcs([]); }
@@ -386,6 +415,7 @@ export default function Home() {
 
   return (
     <main className="app-shell">
+      {accountNotice&&<div className="account-notice" role="status"><span>✦</span>{accountNotice}<button onClick={()=>setAccountNotice("")}>×</button></div>}
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}>×</button></div>
         <nav className="primary-nav">
@@ -396,21 +426,21 @@ export default function Home() {
           <button className={activeView === "profile" ? "active" : ""} onClick={() => { setActiveView("profile"); setSidebarOpen(false); }}><span>◉</span><strong>Profile</strong></button>
           <button className={activeView === "personas" ? "active" : ""} onClick={() => { setActiveView("personas"); setSidebarOpen(false); }}><span>◎</span><strong>Personas</strong></button>
           <button className={activeView === "likes" ? "active" : ""} onClick={() => { setActiveView("likes"); setSidebarOpen(false); }}><span>♡</span><strong>Likes</strong></button>
-          <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><span>⚙</span><strong>Settings</strong></button>
+          <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><span>≛</span><strong>Settings</strong></button>
         </nav>
-        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}><span>↪</span><strong>Sign out</strong></button></div></div>
+        <section className="sidebar-characters" aria-label="Your Characters"><span className="sidebar-section-title">Your Characters</span>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${character.name}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{character.name}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${character.name}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button onClick={()=>openCharacterPage(character.id)}>View {character.name}</button><button onClick={()=>{setStudioStartSection("identity");setEditing(character);setStudioOpen(true);setSidebarCharacterMenuId(null);setSidebarOpen(false);}}>Edit {character.name}</button></div>}</div>)}</section>
+        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}><span>⇥</span><strong>Sign out</strong></button></div></div>
       </aside>
       {activeView !== "chat" && <button className="global-mobile-menu" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>☰</button>}
 
-      {activeView === "home" ? <HomeFeed onOpen={(character) => { setCharacters((items)=>items.some((item)=>item.id===character.id)?items:[character,...items]); setSelectedId(character.id); setActiveView("chat"); }} /> : activeView === "chats" ? <ChatLibrary characters={characters} conversations={chatIndex} personas={personas} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} onManage={(character) => { setStudioStartSection("identity"); setEditing(character); setStudioOpen(true); }} /> : activeView === "worlds" ? <WorldLibrary worlds={worlds} onChange={() => void loadLibraries()} /> : activeView === "personas" ? <PersonaLibrary personas={personas} onClose={() => setActiveView(conversation ? "chat" : "chats")} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <AccountProfile profile={profile} onSaved={setProfile} /> : activeView === "likes" ? <LikedCharacters onOpen={(character)=>{setCharacters((items)=>items.some((item)=>item.id===character.id)?items:[character,...items]);setSelectedId(character.id);setActiveView("chat");}} /> : selected ? (
+      {activeView === "home" ? <HomeFeed onOpen={(character) => openCharacterPage(character.id)} /> : activeView === "chats" ? <ChatLibrary characters={characters} conversations={chatIndex} personas={personas} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} /> : activeView === "worlds" ? <WorldLibrary worlds={worlds} onChange={() => void loadLibraries()} /> : activeView === "personas" ? <PersonaLibrary personas={personas} onClose={() => setActiveView(conversation ? "chat" : "chats")} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <AccountProfile profile={profile} onSaved={setProfile} /> : activeView === "likes" ? <LikedCharacters onOpen={(character)=>openCharacterPage(character.id)} /> : selected ? (
         <section className="chat-panel">
           <header className="chat-header">
-            <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open menu">☰</button><button className="identity-profile" title="View or edit character profile" onClick={() => { setStudioStartSection("identity"); setEditing(selected); setStudioOpen(true); }}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{selected.name}</strong><small>{selected.profileType === "ensemble" ? "Multiple characters" : `Chatting as ${activePersona?.name || "You"}`}</small></span></button></div>
+            <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open menu">☰</button><button className="identity-profile" title={`View ${selected.name}`} onClick={() => openCharacterPage(selected.id)}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{selected.name}</strong><small>{selected.profileType === "ensemble" ? "Multiple characters" : `Chatting as ${activePersona?.name || "You"}`}</small></span></button></div>
             <div className="header-actions">
-              <button className="icon-button labeled" onClick={() => setActiveView("chats")}><span>◫</span><span>Chats</span></button>
-              <button className="icon-button labeled" onClick={() => setHistoryOpen(true)}><span>⌘</span><span>Story</span></button>
+              <button className="icon-button labeled" onClick={() => setStoryNavigation(openStory())}><span>⌘</span><span>Story</span></button>
               {isAdmin && <button className="icon-button labeled" onClick={() => setMemoryOpen(true)}><span>⌁</span><span>Memories</span>{memories.length > 0 && <b>{memories.length}</b>}</button>}
-              <button className="icon-button labeled" title="View, edit, or delete character" onClick={() => { setStudioStartSection("identity"); setEditing(selected); setStudioOpen(true); }}><span>✎</span><span>Profile</span></button>
+              {selected.ownedByViewer?<button className="icon-button labeled" title={`Edit ${selected.name}`} onClick={() => { setStudioStartSection("identity"); setEditing(selected); setStudioOpen(true); }}><span>✎</span><span>Edit</span></button>:<button className="icon-button labeled" title={`View ${selected.name}`} onClick={()=>openCharacterPage(selected.id)}><span>◉</span><span>Page</span></button>}
             </div>
           </header>
           <div className="messages" ref={attachMessageList} onScroll={trackScrollPosition}>
@@ -434,10 +464,10 @@ export default function Home() {
             {!atBottom && <button className="jump-latest" aria-label="Jump to the latest message" onClick={scrollToBottom}>↓ Latest</button>}
             <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span>•</span><span>{activePersona?.name || "You"}</span>{conversation && (conversation.instructionPresets.length > 0 || conversation.customInstructions) && <><span>•</span><span>{conversation.instructionPresets.length + (conversation.customInstructions ? 1 : 0)} instructions</span></>}</div>
             {composerToolsOpen && <div className="composer-tools">
-              <button onClick={() => { setWorldPickerOpen(true); setComposerToolsOpen(false); }}><span>▤</span><strong>World</strong><small>{selected.worldIds.length} attached</small></button>
-              <button onClick={() => { setPersonaPickerOpen(true); setComposerToolsOpen(false); }}><span>◉</span><strong>Persona</strong><small>{activePersona?.name || "Choose who you are"}</small></button>
-              <button onClick={() => { setInstructionsOpen(true); setComposerToolsOpen(false); }}><span>⌘</span><strong>Instructions</strong><small>{conversation?.instructionPresets.length || 0} selected</small></button>
-              <button onClick={() => { setModelPickerOpen(true); setComposerToolsOpen(false); }}><span>✦</span><strong>Model</strong><small>{modelCatalog.engines.find((engine)=>engine.id===(conversation?.rpEngineId||settings.roleplayPreset))?.label || "Choose RP model"}</small></button>
+              {selected.ownedByViewer&&<button onClick={() => openComposerTool("world")}><span>▤</span><strong>World</strong><small>{selected.worldIds.length} attached</small></button>}
+              <button onClick={() => openComposerTool("persona")}><span>◉</span><strong>Persona</strong><small>{activePersona?.name || "Choose who you are"}</small></button>
+              <button onClick={() => openComposerTool("instructions")}><span>⌘</span><strong>Instructions</strong><small>{conversation?.instructionPresets.length || 0} selected</small></button>
+              <button onClick={() => openComposerTool("model")}><span>✦</span><strong>Model</strong><small>{modelCatalog.engines.find((engine)=>engine.id===(conversation?.rpEngineId||settings.roleplayPreset))?.label || "Choose RP model"}</small></button>
             </div>}
             <div className="composer">
               <button className={`composer-plus ${composerToolsOpen ? "active" : ""}`} aria-label="Chat tools" onClick={() => setComposerToolsOpen((value) => !value)}>{composerToolsOpen ? "×" : "+"}</button>
@@ -453,13 +483,13 @@ export default function Home() {
 
       {studioOpen && <CharacterStudio character={editing} worlds={worlds} startSection={studioStartSection} onOpenWorldLibrary={() => { setStudioOpen(false); setEditing(null); setActiveView("worlds"); }} onLibrariesChanged={() => void loadLibraries()} onClose={() => { setStudioOpen(false); setEditing(null); }} onSaved={async (character) => { setStudioOpen(false); setEditing(null); await Promise.all([loadCharacters(),loadLibraries(),loadChatIndex()]); setSelectedId(character.id); setActiveView("chat"); }} onDeleted={async () => { setStudioOpen(false); setEditing(null); await Promise.all([loadCharacters(),loadChatIndex()]); setActiveView("chats"); }} />}
       {isAdmin && memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); setMemoryArcs(data.arcs); }} />}
-      {historyOpen && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setHistoryOpen(false)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={async (id) => { await loadChat(selected.id,id); setHistoryOpen(false); }} onChange={() => void loadChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>{setHistoryOpen(false);setModelPickerOpen(true);}} onOpenPersona={()=>{setHistoryOpen(false);setPersonaPickerOpen(true);}} onOpenInstructions={()=>{setHistoryOpen(false);setInstructionsOpen(true);}} onOpenWorld={()=>{setHistoryOpen(false);setWorldPickerOpen(true);}} />}
+      {storyNavigation.surface==="story" && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setStoryNavigation(closedStoryNavigation)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={async (id) => { await loadChat(selected.id,id); setStoryNavigation(closedStoryNavigation); }} onChange={() => void loadChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>setStoryNavigation(openStoryChild("model"))} onOpenPersona={()=>setStoryNavigation(openStoryChild("persona"))} onOpenInstructions={()=>setStoryNavigation(openStoryChild("instructions"))} onOpenWorld={()=>setStoryNavigation(openStoryChild("world"))} />}
       {settingsOpen && <SettingsDrawer isAdmin={isAdmin} settings={settings} models={models} catalog={modelCatalog} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings({...defaultSettings,...value}); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings; catalog: ModelCatalog }>("/api/settings"); setSettings({...defaultSettings,...data.settings}); if(data.catalog)setModelCatalog(data.catalog); }} />}
       {isAdmin && recallMessage && <RecallDrawer message={recallMessage} memories={memories} arcs={memoryArcs} onClose={() => setRecallMessage(null)} />}
-      {instructionsOpen && conversation && <InstructionsDrawer conversation={conversation} onClose={() => setInstructionsOpen(false)} onSave={async (changes) => { await updateConversationContext(changes); setInstructionsOpen(false); }} />}
-      {personaPickerOpen && conversation && <PersonaPicker personas={personas} selectedId={conversation.personaId || activePersona?.id || null} onClose={() => setPersonaPickerOpen(false)} onManage={() => { setPersonaPickerOpen(false); setActiveView("personas"); }} onCreated={(persona)=>setPersonas((items)=>[persona,...items])} onSave={async (personaId) => { await updateConversationContext({personaId}); setPersonaPickerOpen(false); }} />}
-      {modelPickerOpen && conversation && <ModelPicker catalog={modelCatalog} conversation={conversation} onClose={() => setModelPickerOpen(false)} onSave={async (changes) => { await updateConversationContext(changes); setModelPickerOpen(false); }} />}
-      {worldPickerOpen && selected && <WorldPicker character={selected} worlds={worlds} onClose={()=>setWorldPickerOpen(false)} onCreated={(world)=>setWorlds((items)=>[world,...items])} onSaved={(character)=>{setCharacters((items)=>items.map((item)=>item.id===character.id?character:item));setWorldPickerOpen(false);}} />}
+      {storyNavigation.surface==="instructions" && conversation && <InstructionsDrawer conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
+      {storyNavigation.surface==="persona" && conversation && <PersonaPicker personas={personas} selectedId={conversation.personaId || activePersona?.id || null} onClose={closeStoryNavigation} onManage={() => { setStoryNavigation(closedStoryNavigation); setActiveView("personas"); }} onCreated={(persona)=>setPersonas((items)=>[persona,...items])} onSave={async (personaId) => { await updateConversationContext({personaId}); closeStoryNavigation(); }} />}
+      {storyNavigation.surface==="model" && conversation && <ModelPicker catalog={modelCatalog} conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
+      {storyNavigation.surface==="world" && selected?.ownedByViewer && <WorldPicker character={selected} worlds={worlds} onClose={closeStoryNavigation} onCreated={(world)=>setWorlds((items)=>[world,...items])} onSaved={(character)=>{setCharacters((items)=>items.map((item)=>item.id===character.id?character:item));closeStoryNavigation();}} />}
     </main>
   );
 }
@@ -497,6 +527,7 @@ function AuthGate() {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
+  useEffect(()=>{const status=new URLSearchParams(window.location.search).get("verification");if(status==="invalid")setError("That verification link is invalid or has expired. Request a fresh email below.");if(status==="success")setNotice("Email verified. You can sign in now.");},[]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError(""); setNotice("");
@@ -504,11 +535,11 @@ function AuthGate() {
       const supabase = supabaseBrowser();
       if (mode === "signup") {
         const { data, error: signUpError } = await supabase.auth.signUp({
-          email, password, options: { data: { display_name: displayName.trim() || email.split("@")[0] } },
+          email, password, options: { emailRedirectTo:`${window.location.origin}/auth/callback?next=/`,data: { display_name: displayName.trim() || email.split("@")[0] } },
         });
         if (signUpError) throw signUpError;
         // Projects with email confirmation enabled return no session yet.
-        if (!data.session) setNotice("Check your inbox to confirm the address, then sign in.");
+        if (!data.session) setNotice("We sent a verification link. Open it on this device to finish creating your Afterglow account.");
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
         if (signInError) throw signInError;
@@ -517,6 +548,7 @@ function AuthGate() {
       setError(err instanceof Error ? err.message : "Could not sign in");
     } finally { setBusy(false); }
   }
+  async function resend(){if(!email){setError("Enter your email address first.");return;}setBusy(true);setError("");try{const {error:resendError}=await supabaseBrowser().auth.resend({type:"signup",email,options:{emailRedirectTo:`${window.location.origin}/auth/callback?next=/`}});if(resendError)throw resendError;setNotice("A fresh verification link is on its way.");}catch(reason){setError(reason instanceof Error?reason.message:"Could not resend verification");}finally{setBusy(false);}}
 
   return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">◇</div>
     <span className="eyebrow">{mode === "signup" ? "Create an account" : "Welcome back"}</span>
@@ -528,7 +560,7 @@ function AuthGate() {
       <input type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" />
       <button className="primary" disabled={busy || !email || password.length < 8}>{busy ? "One moment…" : mode === "signup" ? "Create account" : "Sign in"}</button>
       {error && <small className="form-error">{error}</small>}
-      {notice && <small className="success-note">{notice}</small>}
+      {notice && <div className="verification-notice"><span>✦</span><p>{notice}</p><button type="button" disabled={busy} onClick={()=>void resend()}>Resend email</button></div>}
     </form>
     <button className="text-button auth-switch" onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); setNotice(""); }}>
       {mode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}
@@ -563,7 +595,7 @@ function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, 
         const created = await api<{ world: World }>("/api/worlds", { method: "POST", body: JSON.stringify({ name: `${form.name.trim()} world`, description: "World material separated automatically from the character import.", content: form.lorebook.trim() }) });
         worldIds = [...new Set([...worldIds,created.world.id])]; onLibrariesChanged();
       }
-      const payload = characterDraft({ ...form, tagline: "", lorebook: "", worldIds, id: character?.id || "draft", ownedByViewer: true, createdAt: character?.createdAt || new Date().toISOString(), updatedAt: character?.updatedAt || new Date().toISOString() });
+      const payload = characterDraft({ ...form, lorebook: "", worldIds, id: character?.id || "draft", ownedByViewer: true, createdAt: character?.createdAt || new Date().toISOString(), updatedAt: character?.updatedAt || new Date().toISOString() });
       const data = await api<{ character: Character }>(character ? `/api/characters/${character.id}` : "/api/characters", { method: character ? "PATCH" : "POST", body: JSON.stringify(payload) });
       onSaved(data.character);
     } catch (e) { setError(e instanceof Error ? e.message : "Save failed"); } finally { setBusy(false); }
@@ -585,6 +617,7 @@ function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, 
       {section === "identity" && <>
         <ChoiceField label="Card type" value={form.profileType} onChange={(value)=>field("profileType",value as CharacterDraft["profileType"])} options={[{value:"single",label:"Single character"},{value:"ensemble",label:"Multiple characters"}]}/><label>Accent<input className="color-input" type="color" value={form.accent} onChange={(e) => field("accent", e.target.value)} /></label>
         <label className="wide">Character name<input value={form.name} onChange={(e) => field("name", e.target.value)} placeholder={form.profileType === "ensemble" ? "The Wayfarers · Tower of Babel" : "Character name"} /></label>
+        <label className="wide">Tagline<input value={form.tagline} maxLength={300} onChange={(e)=>field("tagline",e.target.value)} placeholder="A short line visitors see beneath the name"/></label>
         <div className="avatar-source wide"><div><strong>Character image</strong><small>Upload from your media library or use a direct image link.</small></div><div className="avatar-source-actions"><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (e) => { const file=e.target.files?.[0]; if(!file) return; try { field("avatarPath",await uploadAvatar(file,characterAvatarBucket)); } catch(err) { setError(err instanceof Error ? err.message : "Image upload failed"); } finally { e.target.value=""; } }} /></label>{(form.avatarPath || form.avatarUrl) && <button className="secondary" onClick={() => { field("avatarPath",""); field("avatarUrl",""); }}>Remove</button>}</div><input aria-label="Character image URL" value={form.avatarUrl.startsWith("data:") ? "" : form.avatarUrl} onChange={(e) => field("avatarUrl", e.target.value)} placeholder="https://… (optional)" /></div>
         <label className="toggle-row wide"><span><strong>Adult mode</strong><small>Allows consensual explicit roleplay between fictional adults.</small></span><input type="checkbox" checked={form.nsfwEnabled} onChange={(e) => field("nsfwEnabled", e.target.checked)} /></label>
         <div className="visibility-row wide"><span><strong>Who can see this character</strong><small>Your chats, memories, and story stay private either way. Publishing shares only the character card.</small></span><ChoiceField label="Visibility" value={form.visibility} onChange={(value)=>field("visibility",value as CharacterDraft["visibility"])} options={[{value:"private",label:"Private — only me"},{value:"unlisted",label:"Unlisted — anyone with the link"},{value:"public",label:"Public — listed for others"}]} compact/></div>
@@ -630,8 +663,10 @@ function ConversationDrawer({ character, conversation, settings, catalog, person
   return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer conversation-drawer"><header><div><span className="eyebrow">Story control center</span><h2>{character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header>{conversation&&<section className="story-controls"><div className="story-control-grid"><button onClick={onOpenModel}><span>✦</span><strong>Model</strong><small>{engine?.label||conversation.rpEngineId}</small></button><button onClick={onOpenPersona}><span>◉</span><strong>Persona</strong><small>{activePersona?.name||"Choose who you are"}</small></button><button onClick={onOpenInstructions}><span>⌘</span><strong>Instructions</strong><small>{conversation.instructionPresets.length+(conversation.customInstructions?1:0)} active</small></button><button onClick={onOpenWorld} disabled={!character.ownedByViewer}><span>▤</span><strong>World</strong><small>{character.ownedByViewer?`${character.worldIds.length} attached`:"Creator-owned canon"}</small></button></div><div className="story-preferences"><ChoiceField label="Response length" value={conversation.responseLength||"default"} onChange={(value)=>void onUpdate({responseLength:value==="default"?null:value as Conversation["responseLength"]})} options={[{value:"default",label:`Use default (${settings.responseLength})`},{value:"concise",label:"Concise",description:"Tighter replies with fewer beats."},{value:"natural",label:"Natural",description:"Preserves Afterglow's current pacing."},{value:"detailed",label:"Detailed",description:"Fuller scenes where the moment supports it."}]}/><ChoiceField label="Creativity" value={conversation.temperature==null?"default":String(conversation.temperature)} onChange={(value)=>void onUpdate({temperature:value==="default"?null:Number(value)})} options={[{value:"default",label:`Use default (${settings.temperature})`},{value:"0.7",label:"Grounded"},{value:"0.95",label:"Balanced"},{value:"1.15",label:"Expressive"}]}/></div><p className="setting-note">These choices affect only this story. Messages, branches, and continuity stay intact.</p></section>}<div className="drawer-action"><span className="field-label">Start another story as</span><div className="persona-choice-grid">{personas.map((persona)=><button key={persona.id} className={personaId===persona.id?"selected":""} onClick={()=>setPersonaId(persona.id)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available persona"}</small></span></button>)}</div><button className="primary" onClick={() => onNew(0,personaId || null)}>＋ Start separate story</button><p>Opening messages appear as options on the first reply. Existing stories are never reset.</p></div><div className="conversation-list">{conversations.map((item) => <article key={item.id} className={`conversation-card ${item.id === activeId ? "active" : ""}`}><button className="conversation-main" onClick={() => onSelect(item.id)}><strong>{item.title}</strong><span>{item.messageCount} messages · {personas.find((persona) => persona.id === item.personaId)?.name || "Default persona"} · {new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(item.updatedAt))}</span></button><div><button title="Rename" onClick={async () => { const title = window.prompt("Conversation title",item.title)?.trim(); if (!title || title === item.title) return; await api(`/api/conversations/${item.id}`,{method:"PATCH",body:JSON.stringify({title})}); onChange(); }}>✎</button><button title="Delete" onClick={async () => { if (!window.confirm(`Delete “${item.title}” and its chat-specific memories? All-chats journal entries will remain.`)) return; await api(`/api/conversations/${item.id}`,{method:"DELETE"}); onChange(); }}>⌫</button></div></article>)}</div></aside></div>;
 }
 
-function ChatLibrary({ characters, conversations, personas, onOpen, onManage }: { characters: Character[]; conversations: Conversation[]; personas: Persona[]; onOpen: (characterId: string, conversationId?: string) => void; onManage: (character: Character) => void }) {
-  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Characters and stories</span><h1>Chats</h1><p>Choose a character, resume any existing story, or open a character that has not started a conversation yet.</p></div></header><div className="chat-library-list">{characters.map((character)=>{const stories=conversations.filter((item)=>item.characterId===character.id);return <article className="chat-library-card" key={character.id}><button className="chat-character-main" onClick={()=>onOpen(character.id,stories[0]?.id)}><Avatar character={character} large/><span><strong>{character.name}</strong><small>{character.profileType==="ensemble"?"Multiple characters":"Character"} · {stories.length} {stories.length===1?"story":"stories"}</small></span></button>{character.ownedByViewer&&<button className="chat-manage" onClick={()=>onManage(character)}>•••</button>}<div className="chat-story-list">{stories.length?stories.map((story)=><button key={story.id} onClick={()=>onOpen(character.id,story.id)}><span><strong>{story.title}</strong><small>{story.messageCount} messages · {personas.find((persona)=>persona.id===story.personaId)?.name||"Default persona"}</small></span><time>{new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(story.updatedAt))}</time></button>):<button className="start-first-story" onClick={()=>onOpen(character.id)}>Start first story <span>→</span></button>}</div></article>;})}{!characters.length&&<div className="empty-library-note">No characters or chats yet. Create or import a character to begin.</div>}</div></section>;
+function ChatLibrary({ characters, conversations, personas, onOpen }: { characters: Character[]; conversations: Conversation[]; personas: Persona[]; onOpen: (characterId: string, conversationId?: string) => void }) {
+  const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
+  const toggle=(id:string)=>setExpanded((current)=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;});
+  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Characters and stories</span><h1>Chats</h1><p>Choose a character or expand one to resume a specific story.</p></div></header><div className="chat-library-list">{characters.map((character)=>{const stories=conversations.filter((item)=>item.characterId===character.id);const open=expanded.has(character.id);return <article className={`chat-library-card ${open?"expanded":""}`} key={character.id}><button className="chat-character-main" onClick={()=>onOpen(character.id,stories[0]?.id)}><Avatar character={character} large/><span><strong>{character.name}</strong><small>{character.profileType==="ensemble"?"Multiple characters":"Character"} · {stories.length} {stories.length===1?"story":"stories"}</small></span></button><button className="chat-expand" aria-label={`${open?"Collapse":"Expand"} ${character.name} stories`} aria-expanded={open} onClick={()=>toggle(character.id)}>{open?"⌃":"⌄"}</button><div className="chat-story-list" aria-hidden={!open}>{stories.length?stories.map((story)=><button key={story.id} onClick={()=>onOpen(character.id,story.id)}><span><strong>{story.title}</strong><small>{story.messageCount} messages · {personas.find((persona)=>persona.id===story.personaId)?.name||"Default persona"}</small></span><time>{new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(story.updatedAt))}</time></button>):<button className="start-first-story" onClick={()=>onOpen(character.id)}>Start first story <span>→</span></button>}</div></article>;})}{!characters.length&&<div className="empty-library-note">No characters or chats yet. Create or import a character to begin.</div>}</div></section>;
 }
 
 function HomeFeed({ onOpen }: { onOpen: (character: Character) => void }) {

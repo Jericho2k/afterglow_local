@@ -123,9 +123,9 @@ async function branchConversation(client:PoolClient,userId:string,sourceConversa
   for (const message of sourceMessages.rows) {
     const parsed=messageFromRow(message);
     await client.query(
-    `INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids,authored_event_id,created_at)
-     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8::uuid[],$9::uuid[],$10,$11)`,
-    [randomUUID(),id,userId,message.role,message.content,JSON.stringify(parsed.variants),parsed.selectedVariant,parsed.memoryIds.map((value)=>memoryMap.get(value)||value),parsed.arcIds.map((value)=>arcMap.get(value)||value),message.role==="user"?message.authored_event_id??message.id:null,message.created_at],
+    `INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids,authored_event_id,generation_started_at,created_at)
+     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8::uuid[],$9::uuid[],$10,$11,$12)`,
+    [randomUUID(),id,userId,message.role,message.content,JSON.stringify(parsed.variants),parsed.selectedVariant,parsed.memoryIds.map((value)=>memoryMap.get(value)||value),parsed.arcIds.map((value)=>arcMap.get(value)||value),message.role==="user"?message.authored_event_id??message.id:null,message.role==="user"?message.generation_started_at:null,message.created_at],
     );
   }
   const messages=await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC,id ASC",[id,userId]);

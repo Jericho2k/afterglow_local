@@ -32,6 +32,7 @@ vi.mock("@/lib/deepseek", () => ({
 const { ensureSchema, query, setPoolForTesting } = await import("@/lib/db");
 const chat = await import("@/app/api/chat/route");
 const characters = await import("@/app/api/characters/route");
+const characterDetail = await import("@/app/api/characters/[id]/route");
 const conversations = await import("@/app/api/conversations/route");
 const memories = await import("@/app/api/memories/route");
 const consolidate = await import("@/app/api/memories/consolidate/route");
@@ -60,6 +61,10 @@ beforeEach(async () => {
       return truncated;
     },
   });
+  memoryDb.public.registerFunction({
+    name:"left",args:[DataType.text,DataType.integer],returns:DataType.text,
+    implementation:(value:string,length:number)=>value.slice(0,length),
+  });
   const adapter = memoryDb.adapters.createPg();
   setPoolForTesting(new adapter.Pool() as unknown as Pool);
   await ensureSchema();
@@ -69,7 +74,7 @@ beforeEach(async () => {
 
   await query("INSERT INTO characters (id,name,user_id,visibility) VALUES ($1,'Alice Private',$3,'private'),($2,'Alice Public',$3,'public')", [aliceCharacter, alicePublic, alice]);
   await query("INSERT INTO conversations (id,character_id,user_id,title) VALUES ($1,$2,$3,'Alice chat')", [aliceConversation, aliceCharacter, alice]);
-  await query("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($4,$1,$2,'user','Private words')", [aliceConversation, alice, null, crypto.randomUUID()]);
+  await query("INSERT INTO messages (id,conversation_id,user_id,role,content,generation_started_at) VALUES ($4,$1,$2,'user','Private words',now())", [aliceConversation, alice, null, crypto.randomUUID()]);
   await query("INSERT INTO memories (id,character_id,conversation_id,user_id,content) VALUES ($4,$1,$2,$3,'Alice memory')", [aliceCharacter, aliceConversation, alice, crypto.randomUUID()]);
   await query("INSERT INTO usage_events (id,user_id,model,usage_type,estimated_cost_usd) VALUES ($2,$1,'deepseek-v4-flash','chat',2.5)", [alice, crypto.randomUUID()]);
 });
@@ -120,6 +125,25 @@ describe("cross-account access", () => {
     expect(Number((await query("SELECT COUNT(*) count FROM conversations WHERE user_id=$1 AND branch_request_id=$2",[alice,branchRequestId])).rows[0].count)).toBe(1);
     const ledger=await (await usage.GET()).json();
     expect(ledger.userMessages).toBe(1);
+  });
+
+  it("counts only user-authored events that reach generation", async () => {
+    account={id:alice,email:null};
+    streamCompletion.mockRejectedValueOnce(new Error("provider unavailable"));
+    const failed=await chat.POST(post("http://test/api/chat",{conversationId:aliceConversation,content:"This never reached generation",action:"send"}));
+    expect(failed.status).toBe(502);
+    expect((await (await usage.GET()).json()).userMessages).toBe(1);
+
+    const encoder=new TextEncoder();
+    streamCompletion.mockResolvedValueOnce(new ReadableStream({start(controller){
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({choices:[{delta:{content:"Generated reply"}}]})}\n`));
+      controller.enqueue(encoder.encode("data: [DONE]\n"));
+      controller.close();
+    }}));
+    const generated=await chat.POST(post("http://test/api/chat",{conversationId:aliceConversation,content:"This reaches generation",action:"send"}));
+    expect(generated.status).toBe(200);
+    await generated.text();
+    expect((await (await usage.GET()).json()).userMessages).toBe(2);
   });
 
   it("lists only the caller's complete chat index", async () => {
@@ -195,6 +219,42 @@ describe("cross-account access", () => {
 });
 
 describe("public characters", () => {
+  it("exposes only a readable character page and viewer-owned aggregates", async () => {
+    const privateWorld=crypto.randomUUID();
+    await query("INSERT INTO worlds (id,user_id,name,content,visibility) VALUES ($1,$2,'Private world','Creator-only canon','private')",[privateWorld,alice]);
+    await query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)",[alicePublic,privateWorld]);
+    await query("UPDATE characters SET source_material='Creator-only notes' WHERE id=$1",[alicePublic]);
+
+    account={id:bob,email:null};
+    const response=await characterDetail.GET(new Request(`http://test/api/characters/${alicePublic}`),{params:Promise.resolve({id:alicePublic})});
+    expect(response.status).toBe(200);
+    const body=await response.json();
+    expect(body.character).toMatchObject({id:alicePublic,ownedByViewer:false,sourceMaterial:""});
+    expect(body.worlds).toEqual([]);
+    expect(body.viewerMessageCount).toBe(0);
+    expect(body).not.toHaveProperty("conversations");
+
+    const hidden=await characterDetail.GET(new Request(`http://test/api/characters/${aliceCharacter}`),{params:Promise.resolve({id:aliceCharacter})});
+    expect(hidden.status).toBe(404);
+  });
+
+  it("enforces owner-only character mutation at the route boundary", async () => {
+    const editable={
+      name:"Owner renamed",profileType:"single",tagline:"A real tagline",avatarUrl:"",avatarPath:"",accent:"#e879a9",
+      backstory:"",cast:[],lorebook:"",personality:"",scenario:"",greeting:"",alternateGreetings:[],exampleDialogue:"",
+      responseDirective:"",boundaries:"",sourceMaterial:"",worldIds:[],visibility:"public",nsfwEnabled:false,
+    };
+    account={id:bob,email:null};
+    const denied=await characterDetail.PATCH(post(`http://test/api/characters/${alicePublic}`,editable),{params:Promise.resolve({id:alicePublic})});
+    expect(denied.status).toBe(404);
+    expect(String((await query("SELECT name FROM characters WHERE id=$1",[alicePublic])).rows[0].name)).toBe("Alice Public");
+
+    account={id:alice,email:null};
+    const accepted=await characterDetail.PATCH(post(`http://test/api/characters/${alicePublic}`,editable),{params:Promise.resolve({id:alicePublic})});
+    expect(accepted.status).toBe(200);
+    expect((await accepted.json()).character).toMatchObject({name:"Owner renamed",tagline:"A real tagline"});
+  });
+
   it("stores every opening as an instantly selectable first-message variant", async () => {
     await query("UPDATE characters SET greeting='Opening one',alternate_greetings=$2::jsonb WHERE id=$1", [alicePublic, JSON.stringify(["Opening two","Opening three"])]);
     account = { id: bob, email: null };

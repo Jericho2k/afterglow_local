@@ -55,6 +55,8 @@ psql "$DATABASE_URL" -f supabase/migrations/0003_conversation_inference.sql
 psql "$DATABASE_URL" -f supabase/migrations/0004_product_social.sql
 psql "$DATABASE_URL" -f supabase/migrations/0005_openrouter_usage.sql
 psql "$DATABASE_URL" -f supabase/migrations/0006_memory_retrieval_v2.sql
+psql "$DATABASE_URL" -f supabase/migrations/0007_productization_sprint_1.sql
+psql "$DATABASE_URL" -f supabase/migrations/0008_canonical_generated_user_messages.sql
 ```
 
 Every file is idempotent, so re-running them is safe. `0002_storage.sql` touches the `storage` schema and only applies to Supabase.
@@ -82,9 +84,11 @@ The first run is a dry run that reports what it would claim and rolls back. Char
 2. On the project creation screen, under **Security**, turn **Enable Data API** off and **Enable automatic RLS** on. Afterglow talks to PostgreSQL directly and uses Supabase only for Auth and Storage, so PostgREST is unused surface; automatic RLS is a free safety net for any table added later. Both are reversible in Project Settings.
 3. Apply `supabase/migrations/0000_baseline.sql` and `0001_multi_tenant_foundation.sql`. The migration grants its own schema and table privileges, so it does not depend on the project's "automatically expose new tables" default.
 4. Apply `supabase/migrations/0002_storage.sql`, which creates the `profile-avatars` and `character-avatars` buckets and their policies, then apply `0003_conversation_inference.sql`, `0004_product_social.sql`, `0005_openrouter_usage.sql`, and `0006_memory_retrieval_v2.sql`.
-5. In **Authentication → Providers**, keep Email enabled. Decide whether to require email confirmation; the sign-up screen handles both.
-6. In **Authentication → URL Configuration**, add your deployed origin to the redirect allow list.
-7. Copy `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY` into your host's environment.
+5. In **Authentication → Providers → Email**, keep Email enabled and turn **Confirm email** on. The app supplies a PKCE callback and a resend action.
+6. In **Authentication → URL Configuration**, set **Site URL** to the deployed origin and add both `https://YOUR-DOMAIN/auth/callback` and `http://localhost:3000/auth/callback` to **Redirect URLs**.
+7. In **Authentication → Email Templates → Confirm signup**, replace the template source with [`docs/supabase-confirmation-email.html`](docs/supabase-confirmation-email.html). Keep `{{ .ConfirmationURL }}` exactly as written; Supabase creates and signs that verification URL.
+8. Send a test signup from both desktop and iPhone-width clients. Confirm that the button returns to `/auth/callback`, the app shows “Email verified,” expired links show a recoverable error, and **Resend email** produces a fresh message.
+9. Copy `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY` into your host's environment.
 
 No part of the application uses the service-role key. Ordinary reads and writes run as the signed-in account so row level security applies, and the legacy migration script connects with `DATABASE_URL` directly.
 
@@ -97,7 +101,7 @@ No part of the application uses the service-role key. Ordinary reads and writes 
    The two `NEXT_PUBLIC_*` values are inlined into the browser bundle while the image is built, not read when the container starts, so they must be present **before** the build runs. The Dockerfile declares them as build arguments and Railway passes service variables to the build automatically; on another host, pass them with `--build-arg`. Adding them to an already-built deployment has no effect until it is rebuilt, and the app now says so on its front page rather than failing silently.
 4. Optionally enable OpenRouter with the server-only `ENABLE_OPENROUTER=true` and `OPENROUTER_API_KEY`. Add the desired catalog IDs to `ALLOWED_MODELS`: `minimax-m2-her`, `kimi-k2.5`, `glm-4.7`, `midnight-cherry`, `passion-fruit`, and `wild-peach`. `DEEPSEEK_BASE_URL` and `DEEPSEEK_MODEL` remain available for the direct provider.
 5. To trial Memory Retrieval V2, apply migration `0006`, set `MEMORY_RETRIEVAL_V2_ENABLED=true`, and put the owner/test account UUID in `MEMORY_RETRIEVAL_V2_USER_IDS`. Keep `MEMORY_RETRIEVAL_V2_ALL_USERS=false` during beta. Semantic recall uses the same OpenRouter key with `MEMORY_EMBEDDING_MODEL=qwen/qwen3-embedding-8b` and `MEMORY_EMBEDDING_DIMENSIONS=1024`; failure automatically falls back to V1 lexical retrieval.
-6. Apply migration `0007` for per-story response length/creativity and branch idempotency. Set `AFTERGLOW_ADMIN_USER_IDS` to the comma-separated Supabase account UUIDs that may access memory diagnostics, tuning, manual consolidation, and the internal cost ledger. During transition, `MEMORY_RETRIEVAL_V2_USER_IDS` is used only when the explicit admin list is empty.
+6. Apply migration `0007` for per-story response length/creativity and branch idempotency, then `0008` for canonical generated-user-message accounting. Set `AFTERGLOW_ADMIN_USER_IDS` to the comma-separated Supabase account UUIDs that may access memory diagnostics, tuning, manual consolidation, and the internal cost ledger. During transition, `MEMORY_RETRIEVAL_V2_USER_IDS` is used only when the explicit admin list is empty.
 
 The admin ledger defines cost per 100 user messages as total recorded inference cost × 100 divided by distinct accepted user-authored message events. Regenerations, continuations, assistant replies, and background jobs can contribute cost to the numerator but never inflate the denominator; transcript copies created by branching retain the original authored event id.
 6. Deploy, then open the domain, complete the adult age gate, and create an account.

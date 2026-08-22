@@ -281,6 +281,16 @@ async function schema() {
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS upstream_provider text");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS authored_event_id uuid");
   await pool().query("UPDATE messages SET authored_event_id=id WHERE role='user' AND authored_event_id IS NULL");
+  await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS generation_started_at timestamptz");
+  await pool().query("CREATE TABLE IF NOT EXISTS afterglow_runtime_migrations (key text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())");
+  try {
+    await pool().query("ALTER TABLE afterglow_runtime_migrations ENABLE ROW LEVEL SECURITY");
+    await pool().query("REVOKE ALL ON afterglow_runtime_migrations FROM anon,authenticated");
+  } catch (error) {
+    if(process.env.NODE_ENV!=="test")throw error;
+  }
+  const canonicalBackfill=await pool().query("INSERT INTO afterglow_runtime_migrations(key) VALUES ('0008_canonical_generated_user_messages') ON CONFLICT DO NOTHING RETURNING key");
+  if(canonicalBackfill.rowCount)await pool().query("UPDATE messages SET generation_started_at=created_at WHERE role='user' AND generation_started_at IS NULL");
   await pool().query(`
     UPDATE usage_events SET estimated_cost_usd = CASE model
       WHEN 'deepseek-v4-flash' THEN (
@@ -322,6 +332,7 @@ async function schema() {
   for (const table of ["characters","worlds","personas","conversations","messages","memories","memory_arcs","core_canon_entries","memory_retrieval_runs","memory_job_leases","usage_events"]) {
     await pool().query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS user_id uuid`);
   }
+  await pool().query("CREATE INDEX IF NOT EXISTS messages_canonical_user_event_idx ON messages(user_id,authored_event_id) WHERE role='user' AND generation_started_at IS NOT NULL");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'private'");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS avatar_path text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS published_at timestamptz");
