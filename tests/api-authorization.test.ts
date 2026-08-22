@@ -92,6 +92,21 @@ describe("unauthenticated access", () => {
 });
 
 describe("cross-account access", () => {
+  it("creates an isolated conversation branch through the selected message", async () => {
+    account = { id: alice, email: null };
+    const sourceMessage = await query("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id LIMIT 1",[aliceConversation]);
+    const response = await conversations.POST(post("http://test/api/conversations",{
+      branchFromConversationId:aliceConversation,
+      branchFromMessageId:String(sourceMessage.rows[0].id),
+    }));
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.conversation.id).not.toBe(aliceConversation);
+    expect(body.conversation.title).toContain("Branch");
+    expect(body.messages.map((message:{content:string})=>message.content)).toEqual(["Private words"]);
+    expect(Number((await query("SELECT COUNT(*) count FROM messages WHERE conversation_id=$1",[aliceConversation])).rows[0].count)).toBe(1);
+  });
+
   it("lists only the caller's complete chat index", async () => {
     account = { id: bob, email: null };
     const bobView = await (await conversations.GET(new Request("http://test/api/conversations?scope=all"))).json();

@@ -42,6 +42,8 @@ describe("roleplay prompt", () => {
     expect(prompt).toContain("Paris Underground");
     expect(prompt).toContain("Actively avoid repeating");
     expect(prompt).toContain("Use clipped dialogue.");
+    expect(prompt.indexOf("CHARACTER")).toBeLessThan(prompt.indexOf("CURRENT CONTINUITY — DYNAMIC"));
+    expect(prompt.indexOf("CHAT-SPECIFIC INSTRUCTIONS")).toBeLessThan(prompt.indexOf("CURRENT CONTINUITY — DYNAMIC"));
   });
 
   it("continues the scene without inventing a user turn", () => {

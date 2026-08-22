@@ -33,6 +33,12 @@ describe("character message formatting", () => {
     ]);
   });
 
+  it("hides escaped bold markers emitted by some providers", () => {
+    const segments = tokenizeCharacterMessage('\\*\\*She stays still.\\*\\* "\\*\\*I remember.\\*\\*"');
+    expect(segments.map((segment) => segment.text).join("")).toBe("She stays still. I remember.");
+    expect(segments.map((segment) => segment.text).join("")).not.toContain("**");
+  });
+
   it("turns long conversation titles into a compact header preview", () => {
     expect(compactMessagePreview("  A very long message\nwith extra spacing that should not fill the entire header  ", 32))
       .toBe("A very long message with extra…");

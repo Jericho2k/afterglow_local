@@ -16,6 +16,14 @@ const essentialKinds = new Set<Memory["kind"]>(["relationship", "promise", "boun
 const protectedKinds = new Set<Memory["kind"]>(["promise", "boundary", "open_loop"]);
 const activeConsolidations = new Set<string>();
 
+/**
+ * The newest assistant reply remains provisional while the user can regenerate
+ * or choose another variant. It becomes accepted only when the story advances.
+ */
+export function acceptedMessageCount(messageCount: number, latestRole?: Message["role"] | null) {
+  return Math.max(0,messageCount - (latestRole === "assistant" ? 1 : 0));
+}
+
 export async function invalidateDerivedContinuity(client: PoolClient, conversationId: string, validThroughPosition: number, userId?: string) {
   const position = Math.max(0,validThroughPosition);
   const owner = userId ?? null;
@@ -196,26 +204,36 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
       const settings = await getUserSettings(client, userId);
       const conversationResult = await client.query("SELECT * FROM conversations WHERE id = $1 AND user_id = $2", [conversationId, userId]);
       const conversation = conversationResult.rows[0];
-      const messageCount = Number(conversation?.message_count || 0);
-      const delta = messageCount - Number(conversation?.last_consolidated_count || 0);
-      if (!conversation || (!force && delta < settings.consolidationInterval) || messageCount < 2) return null;
-
-      const batchSize = Math.min(50, Math.max(2, force ? (delta || settings.consolidationInterval) : delta));
-      const messageResult = await client.query(
-        "SELECT * FROM messages WHERE conversation_id = $1 AND user_id = $2 ORDER BY created_at DESC, id DESC LIMIT $3",
-        [conversationId, userId, batchSize],
+      if (!conversation) return null;
+      const messageCount = Number(conversation.message_count || 0);
+      const latestResult = await client.query(
+        "SELECT role FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1",
+        [conversationId,userId],
       );
-      const messages = messageResult.rows.reverse().map(messageFromRow) as Message[];
+      const eligibleMessageCount = acceptedMessageCount(messageCount,latestResult.rows[0]?.role as Message["role"] | undefined);
+      const previousCount = Number(conversation.last_consolidated_count || 0);
+      const delta = eligibleMessageCount - previousCount;
+      if (delta <= 0 || eligibleMessageCount < 2 || (!force && delta < settings.consolidationInterval)) return null;
+
+      // Process the next unseen window rather than the newest 50 messages. If
+      // maintenance ever falls behind, no older accepted turns are skipped.
+      const batchSize = Math.min(50,delta);
+      const batchEnd = previousCount + batchSize;
+      const messageResult = await client.query(
+        "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC,id ASC OFFSET $3 LIMIT $4",
+        [conversationId,userId,previousCount,batchSize],
+      );
+      const messages = messageResult.rows.map(messageFromRow) as Message[];
       const activeResult = await client.query(
         "SELECT * FROM memories WHERE user_id=$3 AND character_id=$1 AND (conversation_id=$2 OR conversation_id IS NULL) AND status='active' AND kind IN ('promise','open_loop','boundary') ORDER BY pinned DESC,importance DESC,created_at ASC",
         [conversation.character_id, conversationId, userId],
       );
       const allActiveCommitments = activeResult.rows.map(memoryFromRow);
       const activeCommitments = rankMemories(allActiveCommitments, `${conversation.summary || ""}\n${messages.map((message) => message.content).join("\n")}`, 0, 5000);
-      return { settings, conversation, messageCount, delta, messages, activeCommitments };
+      return { settings, conversation, batchEnd, messages, activeCommitments };
     });
     if (!prepared) return false;
-    const { settings, conversation, messageCount, delta, messages, activeCommitments } = prepared;
+    const { settings, conversation, batchEnd, messages, activeCommitments } = prepared;
     const previousCount = Number(conversation.last_consolidated_count || 0);
 
     const { providerId,modelId } = taskModelSelection("memory_consolidation");
@@ -232,13 +250,13 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
       const records: Array<{type:"memory"|"arc";id:string;content:string}> = [];
       await client.query(
         "UPDATE conversations SET summary = $1, last_consolidated_count = GREATEST(last_consolidated_count,$2), updated_at = now() WHERE id = $3 AND user_id = $4",
-        [data.summary!.slice(0, 12000), messageCount, conversationId, userId],
+        [data.summary!.slice(0, 12000), batchEnd, conversationId, userId],
       );
-      if (delta > 0 && data.arcSummary?.trim()) {
+      if (data.arcSummary?.trim()) {
         const arcId=randomUUID(); const arcContent=data.arcSummary.trim().slice(0,4000);
         await client.query(
           "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-          [arcId,conversationId,userId,arcContent,(data.arcKeywords ?? []).slice(0,12),Math.min(messageCount,previousCount + 1),messageCount],
+          [arcId,conversationId,userId,arcContent,(data.arcKeywords ?? []).slice(0,12),previousCount + 1,batchEnd],
         );
         records.push({type:"arc",id:arcId,content:arcContent});
       }
@@ -267,7 +285,7 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
         const memoryId=randomUUID();
         await client.query(
           "INSERT INTO memories (id, character_id, conversation_id, user_id, content, kind, importance, keywords, source_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-          [memoryId, conversation.character_id, conversationId, userId, content.slice(0, 3000), kind, Math.min(5, Math.max(1, Number(item.importance) || 3)), (item.keywords ?? []).slice(0, 12), messageCount],
+          [memoryId, conversation.character_id, conversationId, userId, content.slice(0, 3000), kind, Math.min(5, Math.max(1, Number(item.importance) || 3)), (item.keywords ?? []).slice(0, 12), batchEnd],
         );
         records.push({type:"memory",id:memoryId,content:content.slice(0,3000)});
       }

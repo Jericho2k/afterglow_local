@@ -9,7 +9,10 @@ export function compactMessagePreview(value: string, maxLength = 48): string {
 export function tokenizeCharacterMessage(content: string): MessageSegment[] {
   const segments: MessageSegment[] = [];
   const addSegment = (text: string, kind: MessageSegment["kind"]) => {
-    const cleaned = text.replace(/\*\*/g, "");
+    // Models occasionally escape Markdown markers (\*\*text\*\*) even though
+    // the chat renderer is intentionally not a Markdown surface. Strip both
+    // forms so formatting syntax never leaks into the visible prose.
+    const cleaned = text.replace(/\\?\*\\?\*/g, "");
     if (cleaned) segments.push({ text: cleaned, kind });
   };
   let cursor = 0;

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { conversationCharacter, ownedConversation } from "@/lib/access";
-import { asUser, getUserSettings, messageFromRow, personaFromRow, userQuery, worldFromRow } from "@/lib/db";
+import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
 import { streamCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { focusedRetrievalQuery, maybeBackfillMemoryEmbeddings, maybeCurateCanon, memoryRetrievalV2Enabled, retrieveContinuityV2 } from "@/lib/memory-v2";
@@ -76,16 +76,10 @@ export async function POST(request: Request) {
   const engineDefinition = resolveEngine(engineId);
   if (!conversationModelDefinition || !modelDefinition || !engineDefinition) return Response.json({ error: "This chat's model or roleplay engine is no longer available. Choose another one in chat tools." }, { status: 409 });
 
-  // If a previous background consolidation was interrupted by a deploy or cold
-  // shutdown, catch it up before building the next prompt.
-  let currentSummary = String(row.summary || "");
-  const caughtUp = await maybeConsolidate(account.id, conversationId).catch((error) => {
-    console.error("Pre-reply memory consolidation failed", error); return false;
-  });
-  if (caughtUp) {
-    const refreshed = await userQuery(account.id, "SELECT summary FROM conversations WHERE id=$1 AND user_id=$2", [conversationId, account.id]);
-    currentSummary = String(refreshed.rows[0]?.summary || currentSummary);
-  }
+  // Memory maintenance is deliberately not on the reply's critical path. The
+  // recent transcript already carries the newest accepted turns, while the
+  // rolling summary is updated in the background after successful replies.
+  const currentSummary = String(row.summary || "");
 
   const staged = await asUser(account.id, async (client) => {
     let regenerateTarget: ReturnType<typeof messageFromRow> | null = null;
@@ -147,13 +141,12 @@ export async function POST(request: Request) {
   const modelHistory = history.map((message) => ({ role: message.role, content: message.content }));
   if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
 
+  const completionMessages = [{ role: "system" as const, content: system },...modelHistory];
+  const completionOptions = { signal: request.signal, maxTokens: settings.maxTokens, temperature: settings.temperature, thinking: engineDefinition.thinking && modelDefinition.supportsThinking };
   let upstream: ReadableStream<Uint8Array>;
   const requestStartedAt = Date.now();
   try {
-    upstream = await streamCompletion(selection, [
-      { role: "system", content: system },
-      ...modelHistory,
-    ], { signal: request.signal, maxTokens: settings.maxTokens, temperature: settings.temperature, thinking: engineDefinition.thinking && modelDefinition.supportsThinking });
+    upstream = await streamCompletion(selection,completionMessages,completionOptions);
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Model request failed" }, { status: 502 });
   }
@@ -163,40 +156,60 @@ export async function POST(request: Request) {
   const assistantId = regenerateTarget?.id ?? parsed.data.assistantMessageId ?? randomUUID();
   const responseStream = new ReadableStream({
     async start(controller) {
-      const reader = upstream.getReader();
       let buffer = "";
       let assistant = "";
       let usage: LLMUsage | null = null;
       let providerRequestId: string | undefined;
       let actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const payload = line.slice(6).trim();
-            if (!payload || payload === "[DONE]") continue;
-            try {
-              const data = JSON.parse(payload);
-              if (typeof data?.id === "string") providerRequestId = data.id;
-              if (typeof data?.model === "string") actualProviderModel = data.model;
-              const delta = data?.choices?.[0]?.delta?.content;
-              if (typeof delta === "string" && delta) { assistant += delta; send({ type: "delta", content: delta }); }
-              if (data?.usage) usage = {
-                ...data.usage,
-                provider_request_id: providerRequestId,
-                actual_model: actualProviderModel,
-                latency_ms: Math.max(0,Date.now() - requestStartedAt),
-              };
-            } catch { /* ignore malformed upstream chunks */ }
+      const recordAttemptUsage = async () => {
+        if (!usage) return;
+        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
+      };
+      const consume = async (stream: ReadableStream<Uint8Array>,startedAt: number) => {
+        const reader = stream.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              const payload = line.slice(6).trim();
+              if (!payload || payload === "[DONE]") continue;
+              try {
+                const data = JSON.parse(payload);
+                if (typeof data?.id === "string") providerRequestId = data.id;
+                if (typeof data?.model === "string") actualProviderModel = data.model;
+                const delta = data?.choices?.[0]?.delta?.content;
+                if (typeof delta === "string" && delta) { assistant += delta; send({ type: "delta", content: delta }); }
+                if (data?.usage) usage = {
+                  ...data.usage,
+                  provider_request_id: providerRequestId,
+                  actual_model: actualProviderModel,
+                  latency_ms: Math.max(0,Date.now() - startedAt),
+                };
+              } catch { /* ignore malformed upstream chunks */ }
+            }
           }
+        } finally { reader.releaseLock(); }
+      };
+      try {
+        await consume(upstream,requestStartedAt);
+        if (!assistant.trim()) {
+          // Some routed providers occasionally finish a successful HTTP stream
+          // without text. Account for that attempt, then transparently retry
+          // once so the user does not have to delete and resend their turn.
+          await recordAttemptUsage();
+          buffer = ""; usage = null; providerRequestId = undefined;
+          actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
+          const retryStartedAt = Date.now();
+          const retry = await streamCompletion(selection,completionMessages,completionOptions);
+          await consume(retry,retryStartedAt);
         }
-        if (!assistant.trim()) throw new Error("The model returned an empty response");
+        if (!assistant.trim()) throw new Error("The model returned no text after two attempts. Please try again.");
         let variants: string[];
         let selectedVariant: number;
         if (regenerateTarget) {
@@ -212,7 +225,7 @@ export async function POST(request: Request) {
             await client.query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1 AND user_id=$2", [conversationId,account.id]);
           });
         }
-        if (usage) await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
+        await recordAttemptUsage();
         send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, memoriesUsed: memories.map((memory) => memory.id), arcsUsed: arcs.map((arc) => arc.id), usage });
         controller.close();
         if (!regenerateTarget) void (async () => {

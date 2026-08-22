@@ -19,7 +19,7 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
     ? chatContext.worlds.map((world) => `### ${world.name}${world.description ? `\n${world.description}` : ""}\n${world.content}`).join("\n\n")
     : "No reusable world documents are attached.";
   const instructionText: Record<ChatInstructionPreset,string> = {
-    reduce_repetition: "Actively avoid repeating recent phrasing, gestures, emotional beats, or information unless repetition is deliberately meaningful in-scene.",
+    reduce_repetition: "Actively avoid repeating recent material. Before sending the reply, compare it with the recent assistant turns and rewrite repeated openings, sentence shapes, metaphors, gestures, pet phrases, emotional beats, questions, and already-established information. Repetition is allowed only when deliberately meaningful in-scene.",
     stay_focused: "Keep the response centered on the user's latest meaningful actions and the immediate scene; do not introduce distracting side plots or unrelated exposition.",
     advance_plot: "When the moment permits, add a concrete new beat, consequence, discovery, decision, or complication that moves the roleplay forward without controlling the user.",
   };
@@ -29,24 +29,6 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
 
 ROLEPLAY PRESET
 ${enginePrompt(preset)}
-
-CURRENT CONTINUITY
-Core canon — foundational facts that remain in force:
-${chatContext?.coreCanon?.length ? chatContext.coreCanon.map((entry) => `- [${entry.category}; importance ${entry.importance}] ${entry.content}`).join("\n") : "- No curated canon yet"}
-Rolling state and story-so-far: ${summary || "This is the beginning of the relationship."}
-Relevant durable memories:
-${memories.length ? memories.map((m) => `- [${m.kind}; ${m.status}; importance ${m.importance}] ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
-Relevant historical arcs:
-${arcs.length ? arcs.map((arc) => `- ${arc.summary}`).join("\n") : "- None recalled for this moment"}
-
-Continuity precedence for facts that can change over time:
-1. The latest visible transcript and exact current physical scene
-2. Core canon for foundational facts and permanent state
-3. The rolling current-state summary
-4. Relevant durable memories
-5. Relevant historical arcs from the permanent archive
-6. The initial scenario / premise
-Stable identity, established boundaries, and explicit user corrections remain authoritative. Never reset a developed relationship, location, plan, or emotional state merely because the initial premise describes an earlier stage.
 
 CHARACTER
 Card name: ${character.name}
@@ -70,6 +52,7 @@ Profile: ${persona?.description || settings?.ownerProfile || process.env.OWNER_P
 
 CHAT-SPECIFIC INSTRUCTIONS
 ${chatInstructions.length ? chatInstructions.join("\n") : "No additional conversation instructions."}
+These instructions are active requirements for this conversation. Apply all selected presets together and follow the custom instruction exactly unless it conflicts with the character's established facts, the user's agency, or a hard boundary.
 
 RULES
 - Give every portrayed cast member and NPC independent motives, tastes, loyalties, secrets, fears, boundaries, and agency. They may desire, initiate, disagree, refuse, escalate, deceive, fail, change their mind, or leave when authentic to them; they are not wish-fulfillment puppets.
@@ -87,7 +70,25 @@ RULES
 - Use *italics* for actions and narration, and quotation marks for spoken dialogue. Keep prose readable and specific rather than purple or mechanically explicit.
 - Do not append menus, suggested replies, disclaimers, summaries, analysis, or out-of-character notes.
 
-${adultMode}`;
+${adultMode}
+
+CONTINUITY PRECEDENCE FOR FACTS THAT CAN CHANGE OVER TIME
+1. The latest visible transcript and exact current physical scene
+2. Core canon for foundational facts and permanent state
+3. The rolling current-state summary
+4. Relevant durable memories
+5. Relevant historical arcs from the permanent archive
+6. The initial scenario / premise
+Stable identity, established boundaries, and explicit user corrections remain authoritative. Never reset a developed relationship, location, plan, or emotional state merely because the initial premise describes an earlier stage.
+
+CURRENT CONTINUITY — DYNAMIC FOR THIS REPLY
+Core canon — foundational facts that remain in force:
+${chatContext?.coreCanon?.length ? chatContext.coreCanon.map((entry) => `- [${entry.category}; importance ${entry.importance}] ${entry.content}`).join("\n") : "- No curated canon yet"}
+Rolling state and story-so-far: ${summary || "This is the beginning of the relationship."}
+Relevant durable memories:
+${memories.length ? memories.map((m) => `- [${m.kind}; ${m.status}; importance ${m.importance}] ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
+Relevant historical arcs:
+${arcs.length ? arcs.map((arc) => `- ${arc.summary}`).join("\n") : "- None recalled for this moment"}`;
 }
 
 export const continueSceneCue = `[CONTINUE SCENE]

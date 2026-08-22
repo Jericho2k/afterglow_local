@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { rankArcs, rankMemories } from "@/lib/memory";
+import { acceptedMessageCount, rankArcs, rankMemories } from "@/lib/memory";
 import type { Memory, MemoryArc } from "@/lib/types";
 
 const base = { characterId: "c", conversationId: "x", kind: "event" as const, importance: 3, pinned: false, status: "active" as const, resolution: "", resolvedAt: null, lastRecalledAt: null, recallCount: 0, sourceMessageCount: 0, createdAt: new Date().toISOString() };
 const memory = (id: string, content: string, keywords: string[] = [], extra: Partial<Memory> = {}): Memory => ({ ...base, id, content, keywords, ...extra });
 
 describe("rankMemories", () => {
+  it("does not accept the latest assistant variant for consolidation", () => {
+    expect(acceptedMessageCount(11,"assistant")).toBe(10);
+    expect(acceptedMessageCount(11,"user")).toBe(11);
+  });
   it("prioritizes exact journal keyword matches", () => {
     const result = rankMemories([
       memory("rain", "They first met during a storm in Paris.", ["Paris café"]),

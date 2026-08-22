@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import { asUser, coreCanonFromRow, memoryArcFromRow, memoryFromRow } from "./db";
 import { estimateTokens } from "./context";
 import { completionWithUsage, embeddingWithUsage, parseJson } from "./llm";
-import { rankArcs, rankMemories } from "./memory";
+import { acceptedMessageCount, rankArcs, rankMemories } from "./memory";
 import { providerModelId, taskModelSelection } from "./provider";
 import { recordUsageEvent } from "./usage";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
@@ -321,8 +321,14 @@ export async function maybeCurateCanon(userId:string,conversationId:string,force
       const conversation=(await client.query("SELECT * FROM conversations WHERE id=$1 AND user_id=$2",[conversationId,userId])).rows[0];
       if (!conversation) return null;
       const interval=Math.min(150,Math.max(75,Number(process.env.MEMORY_CURATION_INTERVAL_MESSAGES)||100));
-      const messageCount=Number(conversation.message_count||0); const last=Number(conversation.last_curated_message_count||0);
-      if (!force && (messageCount<interval || messageCount-last<interval)) return null;
+      const latest=(await client.query("SELECT role FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1",[conversationId,userId])).rows[0];
+      const messageCount=acceptedMessageCount(Number(conversation.message_count||0),latest?.role as Message["role"] | undefined);
+      const last=Number(conversation.last_curated_message_count||0);
+      const canonCount=Number((await client.query("SELECT COUNT(*) count FROM core_canon_entries WHERE conversation_id=$1 AND user_id=$2 AND status='active'",[conversationId,userId])).rows[0]?.count||0);
+      // Establish the first compact canon early enough to matter, then return
+      // to the bounded 75–150 message maintenance cadence.
+      const due = canonCount === 0 ? messageCount >= 24 : messageCount-last >= interval;
+      if (!force && !due) return null;
       const [canonResult,memoryResult,arcResult]=await Promise.all([
         client.query("SELECT * FROM core_canon_entries WHERE conversation_id=$1 AND user_id=$2 AND status='active' ORDER BY importance DESC,created_at ASC",[conversationId,userId]),
         client.query("SELECT * FROM memories WHERE user_id=$2 AND character_id=$3 AND (conversation_id=$1 OR conversation_id IS NULL) AND status<>'superseded' ORDER BY pinned DESC,importance DESC,created_at DESC LIMIT 100",[conversationId,userId,conversation.character_id]),

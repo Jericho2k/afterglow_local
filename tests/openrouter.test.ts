@@ -54,6 +54,19 @@ describe("OpenRouter provider", () => {
     expect(stream).toBeInstanceOf(ReadableStream);
   });
 
+  it("retries a stale provider deployment through a healthy fallback", async () => {
+    enable();
+    const fetchMock=vi.fn(async (_url:string,init?:RequestInit) => {
+      const body=JSON.parse(String(init?.body));
+      if (fetchMock.mock.calls.length === 1) return new Response('{"error":{"message":"Provider returned error: deployment does not exist"}}',{status:404});
+      expect(body.provider).toEqual({allow_fallbacks:true,sort:"throughput"});
+      return new Response('data: {"choices":[{"delta":{"content":"Recovered"}}]}\n\ndata: [DONE]\n\n');
+    });
+    vi.stubGlobal("fetch",fetchMock);
+    await streamCompletion({providerId:"openrouter",modelId:"passion-fruit"},[{role:"user",content:"Hi"}]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("exposes a separate reduced-dimension embedding capability", async () => {
     enable();
     vi.stubGlobal("fetch",vi.fn(async (url:string,init?:RequestInit) => {
