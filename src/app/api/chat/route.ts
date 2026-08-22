@@ -8,10 +8,10 @@ import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
 import { recallText, selectRecentMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
-import { currentAccount, unauthorized } from "@/lib/session";
+import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
 import { providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
-import type { AppSettings } from "@/lib/types";
+import { responseLengths, type AppSettings, type ResponseLength } from "@/lib/types";
 
 export const maxDuration = 120;
 
@@ -71,6 +71,9 @@ export async function POST(request: Request) {
     return Response.json({ error: error instanceof Error ? error.message : "The RP model route is unavailable" },{ status:409 });
   }
   const engineId = String(row.rp_engine_id || settings.roleplayPreset) as AppSettings["roleplayPreset"];
+  const storedResponseLength = String(row.response_length || "");
+  const responseLength: ResponseLength = responseLengths.includes(storedResponseLength as ResponseLength) ? storedResponseLength as ResponseLength : settings.responseLength;
+  const temperature = row.temperature == null ? settings.temperature : Math.min(2,Math.max(0,Number(row.temperature)));
   const conversationModelDefinition = resolveModel(conversationSelection.providerId,conversationSelection.modelId);
   const modelDefinition = resolveModel(selection.providerId, selection.modelId);
   const engineDefinition = resolveEngine(engineId);
@@ -87,7 +90,7 @@ export async function POST(request: Request) {
 
     if (action === "send") {
       userMessageId = parsed.data.userMessageId ?? randomUUID();
-      await client.query("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'user',$4)", [userMessageId, conversationId, account.id, content]);
+      await client.query("INSERT INTO messages (id,conversation_id,user_id,role,content,authored_event_id) VALUES ($1,$2,$3,'user',$4,$1)", [userMessageId, conversationId, account.id, content]);
       await client.query(
         `UPDATE conversations SET message_count=message_count+1,updated_at=now(),
          title=CASE WHEN message_count <= 1 AND title LIKE 'Chat with %' THEN left($2,120) ELSE title END WHERE id=$1 AND user_id=$3`,
@@ -131,7 +134,7 @@ export async function POST(request: Request) {
     ({memories,arcs}=await asUser(account.id,(client)=>relevantContinuity(client,account.id,row.character_id,conversationId,recallContext,settings.memoryLimit,settings.memoryTokenBudget)));
   }
 
-  const system = roleplayPrompt(character, currentSummary, memories, arcs, { ...settings, roleplayPreset: engineId }, {
+  const system = roleplayPrompt(character, currentSummary, memories, arcs, { ...settings, roleplayPreset: engineId, responseLength }, {
     worlds,
     persona,
     coreCanon,
@@ -142,7 +145,7 @@ export async function POST(request: Request) {
   if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
 
   const completionMessages = [{ role: "system" as const, content: system },...modelHistory];
-  const completionOptions = { signal: request.signal, maxTokens: settings.maxTokens, temperature: settings.temperature, thinking: engineDefinition.thinking && modelDefinition.supportsThinking };
+  const completionOptions = { signal: request.signal, maxTokens: settings.maxTokens, temperature, thinking: engineDefinition.thinking && modelDefinition.supportsThinking };
   let upstream: ReadableStream<Uint8Array>;
   const requestStartedAt = Date.now();
   try {
@@ -161,10 +164,12 @@ export async function POST(request: Request) {
       let usage: LLMUsage | null = null;
       let providerRequestId: string | undefined;
       let actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
+      let upstreamProvider: string | undefined;
+      let ttftMs: number | undefined;
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       const recordAttemptUsage = async () => {
         if (!usage) return;
-        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
+        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
       };
       const consume = async (stream: ReadableStream<Uint8Array>,startedAt: number) => {
         const reader = stream.getReader();
@@ -183,13 +188,16 @@ export async function POST(request: Request) {
                 const data = JSON.parse(payload);
                 if (typeof data?.id === "string") providerRequestId = data.id;
                 if (typeof data?.model === "string") actualProviderModel = data.model;
+                if (typeof data?.provider === "string") upstreamProvider = data.provider;
                 const delta = data?.choices?.[0]?.delta?.content;
-                if (typeof delta === "string" && delta) { assistant += delta; send({ type: "delta", content: delta }); }
+                if (typeof delta === "string" && delta) { if(ttftMs===undefined)ttftMs=Math.max(0,Date.now()-startedAt); assistant += delta; send({ type: "delta", content: delta }); }
                 if (data?.usage) usage = {
                   ...data.usage,
                   provider_request_id: providerRequestId,
                   actual_model: actualProviderModel,
                   latency_ms: Math.max(0,Date.now() - startedAt),
+                  ttft_ms:ttftMs,
+                  upstream_provider:upstreamProvider,
                 };
               } catch { /* ignore malformed upstream chunks */ }
             }
@@ -203,7 +211,7 @@ export async function POST(request: Request) {
           // without text. Account for that attempt, then transparently retry
           // once so the user does not have to delete and resend their turn.
           await recordAttemptUsage();
-          buffer = ""; usage = null; providerRequestId = undefined;
+          buffer = ""; usage = null; providerRequestId = undefined; upstreamProvider=undefined; ttftMs=undefined;
           actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
           const retryStartedAt = Date.now();
           const retry = await streamCompletion(selection,completionMessages,completionOptions);
@@ -225,8 +233,10 @@ export async function POST(request: Request) {
             await client.query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1 AND user_id=$2", [conversationId,account.id]);
           });
         }
-        await recordAttemptUsage();
-        send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, memoriesUsed: memories.map((memory) => memory.id), arcsUsed: arcs.map((arc) => arc.id), usage });
+        // Accounting must not hold the accepted-message event (and therefore
+        // the post-stream controls) behind another database round trip.
+        void recordAttemptUsage().catch((error)=>console.error("Usage accounting failed",error));
+        send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, ...(isAdminAccount(account)?{memoriesUsed: memories.map((memory) => memory.id), arcsUsed: arcs.map((arc) => arc.id),usage}: {}) });
         controller.close();
         if (!regenerateTarget) void (async () => {
           await maybeConsolidate(account.id,conversationId);

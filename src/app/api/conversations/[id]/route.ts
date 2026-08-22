@@ -30,8 +30,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (!resolveEngine(rpEngineId)) return { inferenceError: "That roleplay engine is unavailable" };
 
     const result = await client.query(
-      "UPDATE conversations SET title=$1,persona_id=$2,provider_id=$3,model_id=$4,rp_engine_id=$5,instruction_presets=$6,custom_instructions=$7,updated_at=now() WHERE id=$8 AND user_id=$9 RETURNING *",
-      [value.title ?? current.title, personaId, providerId, modelId, rpEngineId, value.instructionPresets ?? current.instruction_presets, value.customInstructions ?? current.custom_instructions, id, account.id],
+      "UPDATE conversations SET title=$1,persona_id=$2,provider_id=$3,model_id=$4,rp_engine_id=$5,instruction_presets=$6,custom_instructions=$7,response_length=$8,temperature=$9,updated_at=now() WHERE id=$10 AND user_id=$11 RETURNING *",
+      [value.title ?? current.title, personaId, providerId, modelId, rpEngineId, value.instructionPresets ?? current.instruction_presets, value.customInstructions ?? current.custom_instructions, value.responseLength === undefined ? current.response_length : value.responseLength, value.temperature === undefined ? current.temperature : value.temperature, id, account.id],
     );
     return result.rows[0] ?? null;
   });

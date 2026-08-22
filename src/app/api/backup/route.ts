@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { asUser, characterFromRow, conversationFromRow, getUserSettings, memoryArcFromRow, memoryFromRow, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
 import { backupSchema } from "@/lib/schemas";
-import { currentAccount, unauthorized } from "@/lib/session";
+import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 
 /**
  * Exports only what the calling account owns.
@@ -13,6 +13,7 @@ import { currentAccount, unauthorized } from "@/lib/session";
 export async function GET() {
   const account = await currentAccount();
   if (!account) return unauthorized();
+  const includeContinuity=isAdminAccount(account);
 
   const payload = await asUser(account.id, async (client) => {
     const [charactersResult, linksResult, personasResult, worldsResult, conversationsResult, messagesResult, memoriesResult, arcsResult, settings] = await Promise.all([
@@ -22,14 +23,14 @@ export async function GET() {
       client.query("SELECT * FROM worlds WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
       client.query("SELECT * FROM conversations WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
       client.query("SELECT * FROM messages WHERE user_id=$1 ORDER BY created_at ASC,id ASC", [account.id]),
-      client.query("SELECT * FROM memories WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
-      client.query("SELECT * FROM memory_arcs WHERE user_id=$1 ORDER BY created_at ASC", [account.id]),
+      includeContinuity?client.query("SELECT * FROM memories WHERE user_id=$1 ORDER BY created_at ASC", [account.id]):Promise.resolve({rows:[]}),
+      includeContinuity?client.query("SELECT * FROM memory_arcs WHERE user_id=$1 ORDER BY created_at ASC", [account.id]):Promise.resolve({rows:[]}),
       getUserSettings(client, account.id),
     ]);
     return {
       version: 1,
       exportedAt: new Date().toISOString(),
-      settings,
+      settings:includeContinuity?settings:{providerId:settings.providerId,model:settings.model,roleplayPreset:settings.roleplayPreset,responseLength:settings.responseLength,temperature:settings.temperature},
       personas: personasResult.rows.map((row) => { const persona = personaFromRow(row); return { id: persona.id, data: persona }; }),
       worlds: worldsResult.rows.map((row) => { const world = worldFromRow(row); return { id: world.id, data: world }; }),
       characters: charactersResult.rows.map((row) => {
@@ -63,6 +64,7 @@ export async function GET() {
 export async function POST(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
+  const includeContinuity=isAdminAccount(account);
   const parsed = backupSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Invalid or unsupported Afterglow backup", details: parsed.error.flatten() }, { status: 400 });
   const backup = parsed.data;
@@ -113,16 +115,17 @@ export async function POST(request: Request) {
       const characterId = characterIds.get(item.characterId); if (!characterId) continue;
       const id = randomUUID(); conversationIds.set(item.id,id);
       await client.query(
-        "INSERT INTO conversations (id,character_id,user_id,title,summary,persona_id,provider_id,model_id,rp_engine_id,instruction_presets,custom_instructions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-        [id,characterId,account.id,item.title,item.summary,item.personaId ? personaIds.get(item.personaId) ?? null : null,item.providerId,item.modelId,item.rpEngineId,item.instructionPresets,item.customInstructions],
+        "INSERT INTO conversations (id,character_id,user_id,title,summary,persona_id,provider_id,model_id,rp_engine_id,instruction_presets,custom_instructions,response_length,temperature) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+        [id,characterId,account.id,item.title,item.summary,item.personaId ? personaIds.get(item.personaId) ?? null : null,item.providerId,item.modelId,item.rpEngineId,item.instructionPresets,item.customInstructions,item.responseLength,item.temperature],
       );
     }
     let messageCount = 0;
     for (const item of backup.messages) {
       const conversationId = conversationIds.get(item.conversationId); if (!conversationId) continue;
+      const messageId=randomUUID();
       await client.query(
-        "INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,COALESCE($8::timestamptz,now()))",
-        [randomUUID(),conversationId,account.id,item.role,item.content,JSON.stringify(item.variants),Math.min(item.selectedVariant,Math.max(0,item.variants.length - 1)),item.createdAt ?? null],
+        "INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,authored_event_id,created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,COALESCE($9::timestamptz,now()))",
+        [messageId,conversationId,account.id,item.role,item.content,JSON.stringify(item.variants),Math.min(item.selectedVariant,Math.max(0,item.variants.length - 1)),item.role==="user"?messageId:null,item.createdAt ?? null],
       );
       messageCount += 1;
     }
@@ -131,7 +134,7 @@ export async function POST(request: Request) {
       [[...conversationIds.values()], account.id],
     );
     let memoryCount = 0;
-    for (const item of backup.memories) {
+    for (const item of includeContinuity?backup.memories:[]) {
       const characterId = characterIds.get(item.characterId); if (!characterId) continue;
       const conversationId = item.conversationId ? conversationIds.get(item.conversationId) ?? null : null;
       await client.query(
@@ -141,7 +144,7 @@ export async function POST(request: Request) {
       memoryCount += 1;
     }
     let arcCount = 0;
-    for (const item of backup.arcs) {
+    for (const item of includeContinuity?backup.arcs:[]) {
       const conversationId = conversationIds.get(item.conversationId); if (!conversationId) continue;
       await client.query(
         "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7)",
@@ -151,11 +154,13 @@ export async function POST(request: Request) {
     }
     if (backup.settings) {
       const s = backup.settings;
-      await getUserSettings(client, account.id);
+      const current=await getUserSettings(client,account.id);
+      const internal=includeContinuity?s:current;
+      const identity=includeContinuity?s:current;
       await client.query(
-        `UPDATE user_settings SET owner_name=$1,owner_profile=$2,provider_id=$3,model=$4,roleplay_preset=$5,temperature=$6,max_tokens=$7,
-         context_messages=$8,context_token_budget=$9,consolidation_interval=$10,memory_limit=$11,memory_token_budget=$12,updated_at=now() WHERE user_id=$13`,
-        [s.ownerName,s.ownerProfile,s.providerId,s.model,s.roleplayPreset,s.temperature,s.maxTokens,s.contextMessages,s.contextTokenBudget,s.consolidationInterval,s.memoryLimit,s.memoryTokenBudget,account.id],
+        `UPDATE user_settings SET owner_name=$1,owner_profile=$2,provider_id=$3,model=$4,roleplay_preset=$5,response_length=$6,temperature=$7,max_tokens=$8,
+         context_messages=$9,context_token_budget=$10,consolidation_interval=$11,memory_limit=$12,memory_token_budget=$13,updated_at=now() WHERE user_id=$14`,
+        [identity.ownerName,identity.ownerProfile,s.providerId,s.model,s.roleplayPreset,s.responseLength,s.temperature,internal.maxTokens,internal.contextMessages,internal.contextTokenBudget,internal.consolidationInterval,internal.memoryLimit,internal.memoryTokenBudget,account.id],
       );
     }
     return { personas: personaIds.size, worlds: worldIds.size, characters: characterIds.size, conversations: conversationIds.size, messages: messageCount, memories: memoryCount, arcs: arcCount };

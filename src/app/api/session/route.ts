@@ -1,5 +1,5 @@
 import { asUser, profileFromRow } from "@/lib/db";
-import { currentAccount } from "@/lib/session";
+import { currentAccount, isAdminAccount } from "@/lib/session";
 import { supabaseConfigured } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -27,5 +27,5 @@ export async function GET() {
     return profileFromRow(created.rows[0]);
   });
 
-  return Response.json({ authenticated: true, configured: true, account, profile });
+  return Response.json({ authenticated: true, configured: true, account, profile, isAdmin:isAdminAccount(account) });
 }

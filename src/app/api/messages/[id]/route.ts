@@ -1,9 +1,9 @@
-import { messageFromRow } from "@/lib/db";
+import { messageForViewer, messageFromRow } from "@/lib/db";
 import { asUser } from "@/lib/db";
 import { invalidateDerivedContinuity } from "@/lib/memory";
 import { deleteMessagesFromPosition, lockMessageForMutation, persistedMessagePosition, truncateMessagesAfterPosition } from "@/lib/message-mutations";
 import { messageUpdateSchema } from "@/lib/schemas";
-import { currentAccount, unauthorized } from "@/lib/session";
+import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const account = await currentAccount();
@@ -41,7 +41,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   });
 
   if (!message) return Response.json({ error: "Message not found" }, { status: 404 });
-  return Response.json({ message });
+  return Response.json({ message:messageForViewer(message,isAdminAccount(account)) });
 }
 
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {

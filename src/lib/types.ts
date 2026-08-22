@@ -51,6 +51,10 @@ export type Conversation = {
   rpEngineId: RoleplayEngineId;
   instructionPresets: ChatInstructionPreset[];
   customInstructions: string;
+  /** Null means inherit the account default. */
+  responseLength: ResponseLength | null;
+  /** Null means inherit the account default. */
+  temperature: number | null;
   messageCount: number;
   createdAt: string;
   updatedAt: string;
@@ -79,6 +83,8 @@ export type World = {
 };
 
 export type ChatInstructionPreset = "reduce_repetition" | "stay_focused" | "advance_plot";
+export const responseLengths = ["concise", "natural", "detailed"] as const;
+export type ResponseLength = typeof responseLengths[number];
 
 export type Message = {
   id: string;
@@ -197,6 +203,7 @@ export type AppSettings = {
   providerId: string;
   model: string;
   roleplayPreset: RoleplayEngineId;
+  responseLength: ResponseLength;
   temperature: number;
   maxTokens: number;
   contextMessages: number;

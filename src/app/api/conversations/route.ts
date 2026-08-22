@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { characterSnapshot, ownedPersona, readableCharacter } from "@/lib/access";
-import { asUser, characterFromRow, conversationFromRow, coreCanonFromRow, getUserSettings, memoryArcFromRow, memoryFromRow, messageFromRow } from "@/lib/db";
-import { currentAccount, unauthorized } from "@/lib/session";
+import { asUser, characterFromRow, conversationFromRow, coreCanonFromRow, getUserSettings, memoryArcFromRow, memoryFromRow, messageForViewer, messageFromRow } from "@/lib/db";
+import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 
 /**
  * Starts a chat.
@@ -49,7 +49,12 @@ async function createConversation(client: PoolClient, userId: string, characterI
   return conversationFromRow(result.rows[0]);
 }
 
-async function branchConversation(client:PoolClient,userId:string,sourceConversationId:string,sourceMessageId:string) {
+async function branchConversation(client:PoolClient,userId:string,sourceConversationId:string,sourceMessageId:string,branchRequestId:string) {
+  const prior=await client.query("SELECT * FROM conversations WHERE user_id=$1 AND branch_request_id=$2",[userId,branchRequestId]);
+  if (prior.rowCount) {
+    const messages=await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC,id ASC",[prior.rows[0].id,userId]);
+    return {conversation:conversationFromRow(prior.rows[0]),messages:messages.rows.map(messageFromRow)};
+  }
   const source=(await client.query("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE",[sourceConversationId,userId])).rows[0];
   if (!source) return null;
   const target=(await client.query("SELECT id FROM messages WHERE id=$1 AND conversation_id=$2 AND user_id=$3",[sourceMessageId,sourceConversationId,userId])).rows[0];
@@ -64,10 +69,17 @@ async function branchConversation(client:PoolClient,userId:string,sourceConversa
   const id=randomUUID();
   const created=await client.query(
     `INSERT INTO conversations
-     (id,character_id,user_id,title,summary,persona_id,character_snapshot,provider_id,model_id,rp_engine_id,instruction_presets,custom_instructions,message_count,last_consolidated_count,last_curated_message_count,canon_version)
-     VALUES ($1,$2,$3,$4,'',$5,$6::jsonb,$7,$8,$9,$10,$11,$12,0,0,0) RETURNING *`,
-    [id,source.character_id,userId,`${String(source.title).slice(0,105)} — Branch`,source.persona_id,source.character_snapshot?JSON.stringify(source.character_snapshot):null,source.provider_id,source.model_id,source.rp_engine_id,source.instruction_presets,source.custom_instructions,position],
+     (id,character_id,user_id,title,summary,persona_id,character_snapshot,provider_id,model_id,rp_engine_id,instruction_presets,custom_instructions,response_length,temperature,branch_request_id,message_count,last_consolidated_count,last_curated_message_count,canon_version)
+     VALUES ($1,$2,$3,$4,'',$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15,0,0,0)
+     ON CONFLICT (user_id,branch_request_id) DO NOTHING RETURNING *`,
+    [id,source.character_id,userId,`${String(source.title).slice(0,105)} — Branch`,source.persona_id,source.character_snapshot?JSON.stringify(source.character_snapshot):null,source.provider_id,source.model_id,source.rp_engine_id,source.instruction_presets,source.custom_instructions,source.response_length,source.temperature,branchRequestId,position],
   );
+  if (!created.rowCount) {
+    const existing=(await client.query("SELECT * FROM conversations WHERE user_id=$1 AND branch_request_id=$2",[userId,branchRequestId])).rows[0];
+    if (!existing) return null;
+    const messages=await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC,id ASC",[existing.id,userId]);
+    return {conversation:conversationFromRow(existing),messages:messages.rows.map(messageFromRow)};
+  }
 
   const memoryMap=new Map<string,string>();
   const sourceMemories=await client.query(
@@ -111,9 +123,9 @@ async function branchConversation(client:PoolClient,userId:string,sourceConversa
   for (const message of sourceMessages.rows) {
     const parsed=messageFromRow(message);
     await client.query(
-    `INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids,created_at)
-     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8::uuid[],$9::uuid[],$10)`,
-    [randomUUID(),id,userId,message.role,message.content,JSON.stringify(parsed.variants),parsed.selectedVariant,parsed.memoryIds.map((value)=>memoryMap.get(value)||value),parsed.arcIds.map((value)=>arcMap.get(value)||value),message.created_at],
+    `INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids,authored_event_id,created_at)
+     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8::uuid[],$9::uuid[],$10,$11)`,
+    [randomUUID(),id,userId,message.role,message.content,JSON.stringify(parsed.variants),parsed.selectedVariant,parsed.memoryIds.map((value)=>memoryMap.get(value)||value),parsed.arcIds.map((value)=>arcMap.get(value)||value),message.role==="user"?message.authored_event_id??message.id:null,message.created_at],
     );
   }
   const messages=await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC,id ASC",[id,userId]);
@@ -126,6 +138,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const characterId = url.searchParams.get("characterId");
   const requestedId = url.searchParams.get("conversationId");
+  const includeDiagnostics=isAdminAccount(account);
   if (url.searchParams.get("scope") === "all") {
     const result = await asUser(account.id, (client) => client.query(
       "SELECT * FROM conversations WHERE user_id=$1 ORDER BY updated_at DESC,created_at DESC",
@@ -155,7 +168,7 @@ export async function GET(request: Request) {
       "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC, id ASC",
       [conversation.id, account.id],
     );
-    return { conversations, conversation, messages: messages.rows.map(messageFromRow) };
+    return { conversations, conversation, messages: messages.rows.map(messageFromRow).map((message)=>messageForViewer(message,includeDiagnostics)) };
   });
 
   if ("error" in payload) return Response.json({ error: payload.error }, { status: payload.status });
@@ -167,9 +180,11 @@ export async function POST(request: Request) {
   if (!account) return unauthorized();
   const body = await request.json().catch(() => ({}));
   if (typeof body.branchFromConversationId === "string" && typeof body.branchFromMessageId === "string") {
-    const branch=await asUser(account.id,(client)=>branchConversation(client,account.id,body.branchFromConversationId,body.branchFromMessageId));
+    const branchRequestId=typeof body.branchRequestId === "string" ? body.branchRequestId : randomUUID();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(branchRequestId)) return Response.json({error:"Invalid branch request"},{status:400});
+    const branch=await asUser(account.id,(client)=>branchConversation(client,account.id,body.branchFromConversationId,body.branchFromMessageId,branchRequestId));
     if (!branch) return Response.json({error:"Conversation or branch point not found"},{status:404});
-    return Response.json(branch,{status:201});
+    return Response.json({...branch,messages:branch.messages.map((message)=>messageForViewer(message,isAdminAccount(account)))},{status:201});
   }
   if (typeof body.characterId !== "string") return Response.json({ error: "characterId is required" }, { status: 400 });
   const greetingIndex = typeof body.greetingIndex === "number" ? body.greetingIndex : 0;
@@ -182,7 +197,7 @@ export async function POST(request: Request) {
       "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC, id ASC",
       [conversation.id, account.id],
     );
-    return { conversation, messages: messages.rows.map(messageFromRow) };
+    return { conversation, messages: messages.rows.map(messageFromRow).map((message)=>messageForViewer(message,isAdminAccount(account))) };
   });
 
   if (!payload) return Response.json({ error: "Character not found" }, { status: 404 });

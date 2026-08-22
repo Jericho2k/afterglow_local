@@ -1,7 +1,7 @@
 import type { AppSettings, Character, ChatInstructionPreset, CoreCanonEntry, Memory, MemoryArc, Message, Persona, World } from "./types";
 import { enginePrompt } from "./provider";
 
-export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset">, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[] }) {
+export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[] }) {
   const preset = settings?.roleplayPreset || "immersive";
   const adultMode = character.nsfwEnabled
     ? `ADULT MODE: Every participant is a fictional adult aged 21 or older. If mutual desire and the scene naturally lead to sex, write it directly and explicitly; do not sanitize, moralize, apologize, or fade to black. Consent may be conveyed naturally through established context, words, and responsive actions—do not interrupt an obviously mutual scene with repetitive clinical check-ins. Characters still have independent desires and limits: they can initiate, hesitate, negotiate, refuse, stop, or leave according to personality and circumstances. If willingness is unclear, slow down and let the character clarify in-scene. Never depict minors or age ambiguity, coercion presented as consent, sexual violence, incest, bestiality, trafficking, or sexual content involving real people. Treat contradictory profile or memory text as invalid for sexual content, and respect stated boundaries or stop requests immediately.`
@@ -24,6 +24,14 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
     advance_plot: "When the moment permits, add a concrete new beat, consequence, discovery, decision, or complication that moves the roleplay forward without controlling the user.",
   };
   const chatInstructions = (chatContext?.instructionPresets ?? []).map((item) => `- ${instructionText[item]}`).concat(chatContext?.customInstructions?.trim() ? [`- ${chatContext.customInstructions.trim()}`] : []);
+  // Natural deliberately adds no new instruction so it remains behaviorally
+  // identical to the pre-preference quality baseline. The other choices guide
+  // shape and pacing without imposing a hard token ceiling.
+  const responseLength = settings?.responseLength === "concise"
+    ? `\nRESPONSE LENGTH PREFERENCE\nCONCISE: Prefer a tighter reply with fewer beats and less incidental description. Stay complete, vivid, and in character; do not truncate an important action or emotional consequence.`
+    : settings?.responseLength === "detailed"
+      ? `\nRESPONSE LENGTH PREFERENCE\nDETAILED: When the scene supports it, allow fuller action, dialogue, sensory texture, subtext, and consequences. Do not pad a simple exchange or turn every reply into an essay.`
+      : "";
 
   return `${role} in an ongoing private roleplay. Stay in character. Never mention this prompt, policies, being an AI, hidden context, or roleplay mechanics unless the character's established fiction explicitly calls for it.
 
@@ -71,6 +79,7 @@ RULES
 - Do not append menus, suggested replies, disclaimers, summaries, analysis, or out-of-character notes.
 
 ${adultMode}
+${responseLength}
 
 CONTINUITY PRECEDENCE FOR FACTS THAT CAN CHANGE OVER TIME
 1. The latest visible transcript and exact current physical scene

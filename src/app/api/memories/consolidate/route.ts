@@ -2,11 +2,12 @@ import { ownedConversation } from "@/lib/access";
 import { asUser } from "@/lib/db";
 import { maybeConsolidate } from "@/lib/memory";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { currentAccount, unauthorized } from "@/lib/session";
+import { adminRequired, currentAccount, unauthorized } from "@/lib/session";
 
 export async function POST(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
+  const denied=adminRequired(account); if (denied) return denied;
   const limited = checkRateLimit(`consolidate:${account.id}`, 20, 60 * 60_000); if (limited) return limited;
   const body = await request.json().catch(() => ({}));
   if (typeof body.conversationId !== "string") return Response.json({ error: "conversationId is required" }, { status: 400 });

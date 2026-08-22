@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { roleplayEngineIds } from "./types";
+import { responseLengths, roleplayEngineIds } from "./types";
 
 const text = (max: number, min = 0) => z.preprocess(
   (value) => value == null ? "" : typeof value === "string" ? value : String(value),
@@ -122,6 +122,8 @@ export const conversationUpdateSchema = z.object({
   rpEngineId: z.enum(roleplayEngineIds).optional(),
   instructionPresets: z.array(z.enum(["reduce_repetition", "stay_focused", "advance_plot"])).max(3).optional(),
   customInstructions: text(3000).optional(),
+  responseLength: z.enum(responseLengths).nullable().optional(),
+  temperature: z.number().min(0).max(2).nullable().optional(),
 }).refine((value) => Object.values(value).some((item) => item !== undefined), "Provide a conversation change");
 
 export const personaSchema = z.object({
@@ -164,6 +166,7 @@ export const settingsSchema = z.object({
   providerId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek"),
   model: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek-v4-flash"),
   roleplayPreset: z.enum(roleplayEngineIds).default("immersive"),
+  responseLength: z.enum(responseLengths).default("natural"),
   temperature: z.number().min(0).max(2).default(0.95),
   maxTokens: z.number().int().min(256).max(8000).default(1800),
   contextMessages: z.number().int().min(8).max(100).default(30),
@@ -184,6 +187,7 @@ export const backupSchema = z.object({
     providerId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek"), modelId: z.string().trim().regex(/^[a-zA-Z0-9._-]{1,100}$/).default("deepseek-v4-flash"),
     rpEngineId: z.enum(roleplayEngineIds).default("immersive"),
     instructionPresets: z.array(z.enum(["reduce_repetition", "stay_focused", "advance_plot"])).max(3).default([]), customInstructions: text(3000).default(""),
+    responseLength: z.enum(responseLengths).nullable().default(null), temperature: z.number().min(0).max(2).nullable().default(null),
   })).max(5000),
   messages: z.array(z.object({
     conversationId: z.string().min(1), role: z.enum(["user", "assistant"]), content: text(12000, 1),

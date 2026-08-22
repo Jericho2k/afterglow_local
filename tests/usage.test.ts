@@ -31,9 +31,10 @@ describe("usage accounting", () => {
       cost: 0.0042,
       cost_details: { upstream_inference_cost: 0.0038 },
       latency_ms: 987.4,
+      ttft_ms: 321.4,
     })).toEqual({
       promptTokens:1000,completionTokens:250,cacheHitTokens:400,cacheMissTokens:600,
-      cacheWriteTokens:50,reasoningTokens:75,providerCostUsd:0.0042,upstreamCostUsd:0.0038,latencyMs:987,
+      cacheWriteTokens:50,reasoningTokens:75,providerCostUsd:0.0042,upstreamCostUsd:0.0038,latencyMs:987,ttftMs:321,
     });
   });
 

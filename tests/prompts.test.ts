@@ -51,6 +51,15 @@ describe("roleplay prompt", () => {
     expect(continueSceneCue).toContain("Do not write the user's dialogue");
     expect(continueSceneCue).toContain("Do not repeat or paraphrase");
   });
+
+  it("keeps natural unchanged while concise and detailed remain soft preferences", () => {
+    const natural=roleplayPrompt(character,"",[],[],{ownerName:"Alex",ownerProfile:"",roleplayPreset:"immersive",responseLength:"natural"});
+    const concise=roleplayPrompt(character,"",[],[],{ownerName:"Alex",ownerProfile:"",roleplayPreset:"immersive",responseLength:"concise"});
+    const detailed=roleplayPrompt(character,"",[],[],{ownerName:"Alex",ownerProfile:"",roleplayPreset:"immersive",responseLength:"detailed"});
+    expect(natural).not.toContain("RESPONSE LENGTH PREFERENCE");
+    expect(concise).toContain("do not truncate");
+    expect(detailed).toContain("Do not pad");
+  });
 });
 
 describe("character import prompt", () => {

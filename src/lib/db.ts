@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type Memory, type MemoryArc, type Message, type Persona, type World } from "./types";
+import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type Memory, type MemoryArc, type Message, type Persona, type World } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -52,6 +52,9 @@ async function schema() {
       rp_engine_id text NOT NULL DEFAULT 'immersive',
       instruction_presets text[] NOT NULL DEFAULT '{}',
       custom_instructions text NOT NULL DEFAULT '',
+      response_length text,
+      temperature double precision,
+      branch_request_id uuid,
       message_count integer NOT NULL DEFAULT 0,
       last_consolidated_count integer NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now(),
@@ -164,6 +167,9 @@ async function schema() {
       latency_ms integer,
       provider_request_id text,
       provider_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+      response_length text,
+      ttft_ms integer,
+      upstream_provider text,
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS usage_events_created_idx ON usage_events(created_at DESC);
@@ -174,6 +180,7 @@ async function schema() {
       provider_id text NOT NULL DEFAULT 'deepseek',
       model text NOT NULL DEFAULT 'deepseek-v4-flash',
       roleplay_preset text NOT NULL DEFAULT 'immersive',
+      response_length text NOT NULL DEFAULT 'natural',
       temperature double precision NOT NULL DEFAULT 0.95,
       max_tokens integer NOT NULL DEFAULT 1800,
       context_messages integer NOT NULL DEFAULT 30,
@@ -237,6 +244,9 @@ async function schema() {
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS rp_engine_id text NOT NULL DEFAULT 'immersive'");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS instruction_presets text[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS custom_instructions text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS response_length text");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS temperature double precision");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS branch_request_id uuid");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_curated_message_count integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS canon_version integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
@@ -266,6 +276,11 @@ async function schema() {
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS latency_ms integer");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS provider_request_id text");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS provider_metadata jsonb NOT NULL DEFAULT '{}'::jsonb");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS response_length text");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS ttft_ms integer");
+  await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS upstream_provider text");
+  await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS authored_event_id uuid");
+  await pool().query("UPDATE messages SET authored_event_id=id WHERE role='user' AND authored_event_id IS NULL");
   await pool().query(`
     UPDATE usage_events SET estimated_cost_usd = CASE model
       WHEN 'deepseek-v4-flash' THEN (
@@ -285,6 +300,7 @@ async function schema() {
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS context_token_budget integer NOT NULL DEFAULT 12000");
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS memory_token_budget integer NOT NULL DEFAULT 6000");
+  await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS response_length text NOT NULL DEFAULT 'natural'");
   await pool().query(
     "INSERT INTO app_settings (id, owner_name, owner_profile, model) VALUES ('owner',$1,$2,$3) ON CONFLICT (id) DO NOTHING",
     [process.env.OWNER_NAME || "You", process.env.OWNER_PROFILE || "", process.env.DEEPSEEK_MODEL || "deepseek-v4-flash"],
@@ -331,6 +347,7 @@ async function schema() {
       provider_id text NOT NULL DEFAULT 'deepseek',
       model text NOT NULL DEFAULT 'deepseek-v4-flash',
       roleplay_preset text NOT NULL DEFAULT 'immersive',
+      response_length text NOT NULL DEFAULT 'natural',
       temperature double precision NOT NULL DEFAULT 0.95,
       max_tokens integer NOT NULL DEFAULT 1800,
       context_messages integer NOT NULL DEFAULT 30,
@@ -343,11 +360,13 @@ async function schema() {
     );
   `);
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
+  await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS response_length text NOT NULL DEFAULT 'natural'");
   // One default persona per account rather than per installation.
   await pool().query("DROP INDEX IF EXISTS personas_single_default_idx");
   await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS personas_user_default_idx ON personas (user_id) WHERE is_default");
   await pool().query("CREATE INDEX IF NOT EXISTS characters_user_idx ON characters (user_id, updated_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS conversations_user_idx ON conversations (user_id, updated_at DESC)");
+  await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS conversations_branch_request_idx ON conversations (user_id,branch_request_id)");
   await pool().query("CREATE INDEX IF NOT EXISTS memories_user_idx ON memories (user_id, character_id)");
   await pool().query("CREATE INDEX IF NOT EXISTS usage_events_user_idx ON usage_events (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS core_canon_user_idx ON core_canon_entries (user_id, conversation_id, status)");
@@ -516,7 +535,9 @@ export function conversationFromRow(row: Record<string, unknown>): Conversation 
     summary: String(row.summary), personaId: row.persona_id ? String(row.persona_id) : null,
     providerId: String(row.provider_id || "deepseek"), modelId: String(row.model_id || "deepseek-v4-flash"),
     rpEngineId: (roleplayEngineIds.includes(String(row.rp_engine_id) as Conversation["rpEngineId"]) ? String(row.rp_engine_id) : "immersive") as Conversation["rpEngineId"],
-    instructionPresets, customInstructions: String(row.custom_instructions || ""), messageCount: Number(row.message_count),
+    instructionPresets, customInstructions: String(row.custom_instructions || ""),
+    responseLength: responseLengths.includes(String(row.response_length) as Conversation["responseLength"] & string) ? row.response_length as Conversation["responseLength"] : null,
+    temperature: row.temperature == null ? null : Number(row.temperature), messageCount: Number(row.message_count),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
@@ -546,6 +567,11 @@ export function messageFromRow(row: Record<string, unknown>): Message {
   const selectedVariant = variants.length ? Math.min(Math.max(Number.isInteger(requested) ? requested : 0, 0), variants.length - 1) : 0;
   return { id: String(row.id), conversationId: String(row.conversation_id), role, content, variants, selectedVariant,
     memoryIds: textArrayFromRow(row.memory_ids), arcIds: textArrayFromRow(row.memory_arc_ids), createdAt: new Date(String(row.created_at)).toISOString() };
+}
+
+/** Removes memory-retrieval diagnostics from ordinary product responses. */
+export function messageForViewer(message: Message, includeDiagnostics: boolean): Message {
+  return includeDiagnostics ? message : { ...message, memoryIds: [], arcIds: [] };
 }
 
 function textArrayFromRow(value: unknown) {
@@ -597,6 +623,7 @@ export function settingsFromRow(row: Record<string, unknown>): AppSettings {
   return {
     ownerName: String(row.owner_name), ownerProfile: String(row.owner_profile), providerId: String(row.provider_id || "deepseek"), model: String(row.model),
     roleplayPreset,
+    responseLength: responseLengths.includes(String(row.response_length) as AppSettings["responseLength"]) ? row.response_length as AppSettings["responseLength"] : "natural",
     temperature: Number(row.temperature), maxTokens: Number(row.max_tokens), contextMessages: Number(row.context_messages), contextTokenBudget: Number(row.context_token_budget || 12000),
     consolidationInterval: Number(row.consolidation_interval), memoryLimit: Number(row.memory_limit), memoryTokenBudget: Number(row.memory_token_budget || 6000),
   };

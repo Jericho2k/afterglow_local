@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { ownedConversation, readableCharacter } from "@/lib/access";
 import { asUser, memoryArcFromRow, memoryFromRow } from "@/lib/db";
 import { memorySchema, memoryUpdateSchema } from "@/lib/schemas";
-import { currentAccount, unauthorized } from "@/lib/session";
+import { adminRequired, currentAccount, unauthorized } from "@/lib/session";
 
 export async function GET(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
+  const denied=adminRequired(account); if (denied) return denied;
   const params = new URL(request.url).searchParams;
   const characterId = params.get("characterId");
   const conversationId = params.get("conversationId");
@@ -36,6 +37,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
+  const denied=adminRequired(account); if (denied) return denied;
   const parsed = memorySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Invalid memory", details: parsed.error.flatten() }, { status: 400 });
   const m = parsed.data;
@@ -59,6 +61,7 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
+  const denied=adminRequired(account); if (denied) return denied;
   const id = new URL(request.url).searchParams.get("id");
   if (!id) return Response.json({ error: "id is required" }, { status: 400 });
   const result = await asUser(account.id, (client) => client.query("DELETE FROM memories WHERE id=$1 AND user_id=$2", [id, account.id]));
@@ -69,6 +72,7 @@ export async function DELETE(request: Request) {
 export async function PATCH(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
+  const denied=adminRequired(account); if (denied) return denied;
   const id = new URL(request.url).searchParams.get("id");
   if (!id) return Response.json({ error: "id is required" }, { status: 400 });
   const parsed = memoryUpdateSchema.safeParse(await request.json().catch(() => null));

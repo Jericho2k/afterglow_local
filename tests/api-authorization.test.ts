@@ -34,6 +34,7 @@ const chat = await import("@/app/api/chat/route");
 const characters = await import("@/app/api/characters/route");
 const conversations = await import("@/app/api/conversations/route");
 const memories = await import("@/app/api/memories/route");
+const consolidate = await import("@/app/api/memories/consolidate/route");
 const backup = await import("@/app/api/backup/route");
 const usage = await import("@/app/api/usage/route");
 
@@ -46,6 +47,7 @@ function post(url: string, body: unknown) {
 }
 
 beforeEach(async () => {
+  process.env.AFTERGLOW_ADMIN_USER_IDS=alice;
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
   // The usage ledger buckets by day; pg-mem ships very few native functions.
   memoryDb.public.registerFunction({
@@ -107,6 +109,19 @@ describe("cross-account access", () => {
     expect(Number((await query("SELECT COUNT(*) count FROM messages WHERE conversation_id=$1",[aliceConversation])).rows[0].count)).toBe(1);
   });
 
+  it("makes a retried branch request idempotent", async () => {
+    account = { id: alice, email: null };
+    const sourceMessage = await query("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id LIMIT 1",[aliceConversation]);
+    const branchRequestId=crypto.randomUUID();
+    const requestBody={branchFromConversationId:aliceConversation,branchFromMessageId:String(sourceMessage.rows[0].id),branchRequestId};
+    const first=await (await conversations.POST(post("http://test/api/conversations",requestBody))).json();
+    const retry=await (await conversations.POST(post("http://test/api/conversations",requestBody))).json();
+    expect(retry.conversation.id).toBe(first.conversation.id);
+    expect(Number((await query("SELECT COUNT(*) count FROM conversations WHERE user_id=$1 AND branch_request_id=$2",[alice,branchRequestId])).rows[0].count)).toBe(1);
+    const ledger=await (await usage.GET()).json();
+    expect(ledger.userMessages).toBe(1);
+  });
+
   it("lists only the caller's complete chat index", async () => {
     account = { id: bob, email: null };
     const bobView = await (await conversations.GET(new Request("http://test/api/conversations?scope=all"))).json();
@@ -134,24 +149,31 @@ describe("cross-account access", () => {
     expect(body.characters).toEqual([]);
   });
 
-  it("does not return another account's memories", async () => {
+  it("keeps memory diagnostics behind the admin boundary", async () => {
     account = { id: bob, email: null };
     const response = await memories.GET(new Request(`http://test/api/memories?characterId=${aliceCharacter}&conversationId=${aliceConversation}`));
-    const body = await response.json();
-    expect(body.memories).toEqual([]);
+    expect(response.status).toBe(403);
+    const protectedWrites=await Promise.all([
+      memories.PATCH(post("http://test/api/memories",{})),
+      memories.DELETE(new Request("http://test/api/memories?id="+crypto.randomUUID(),{method:"DELETE"})),
+      consolidate.POST(post("http://test/api/memories/consolidate",{conversationId:aliceConversation})),
+    ]);
+    expect(protectedWrites.map((item)=>item.status)).toEqual([403,403,403]);
+    account = { id: alice, email: null };
+    const own=await memories.GET(new Request(`http://test/api/memories?characterId=${aliceCharacter}&conversationId=${aliceConversation}`));
+    expect(own.status).toBe(200);
+    expect((await own.json()).memories).toHaveLength(1);
   });
 
   it("refuses to hang a memory off another account's conversation", async () => {
     account = { id: bob, email: null };
     const response = await memories.POST(post("http://test/api/memories", { characterId: alicePublic, conversationId: aliceConversation, content: "injected" }));
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(403);
   });
 
-  it("scopes the usage ledger to the caller", async () => {
+  it("keeps the usage ledger admin-only and account-scoped", async () => {
     account = { id: bob, email: null };
-    const body = await (await usage.GET()).json();
-    expect(body.usage.requests).toBe(0);
-    expect(body.usage.estimatedCostUsd).toBe(0);
+    expect((await usage.GET()).status).toBe(403);
 
     account = { id: alice, email: null };
     const own = await (await usage.GET()).json();

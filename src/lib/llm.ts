@@ -11,6 +11,8 @@ export type LLMUsage = deepseek.DeepSeekUsage & {
   provider_request_id?: string;
   actual_model?: string;
   latency_ms?: number;
+  ttft_ms?: number;
+  upstream_provider?: string;
 };
 export type ModelSelection = { providerId: string; modelId: string };
 

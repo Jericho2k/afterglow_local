@@ -1,5 +1,5 @@
 import { asUser } from "@/lib/db";
-import { currentAccount, unauthorized } from "@/lib/session";
+import { adminRequired, currentAccount, unauthorized } from "@/lib/session";
 import { pricingAsOf } from "@/lib/usage";
 
 const aggregate = `COUNT(*)::int requests,
@@ -24,6 +24,7 @@ function usage(row: Record<string, unknown>) {
 export async function GET() {
   const account = await currentAccount();
   if (!account) return unauthorized();
+  const denied=adminRequired(account); if(denied)return denied;
 
   const payload = await asUser(account.id, async (client) => {
     const [result, models, providers, engines, funding, types, today, replies, userMessages] = await Promise.all([
@@ -40,7 +41,9 @@ export async function GET() {
          WHERE user_id=$1 AND role='assistant' AND created_at >= date_trunc('day', now())`,
         [account.id],
       ),
-      client.query("SELECT COUNT(*)::int count FROM messages WHERE user_id=$1 AND role='user'", [account.id]),
+      // A branch copies transcript rows. authored_event_id preserves the
+      // original accepted user turn, so branching cannot inflate this metric.
+      client.query("SELECT COUNT(DISTINCT COALESCE(authored_event_id,id))::int count FROM messages WHERE user_id=$1 AND role='user'", [account.id]),
     ]);
     return {
       usage: usage(result.rows[0]),

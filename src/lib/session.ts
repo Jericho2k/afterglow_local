@@ -23,3 +23,19 @@ export function unauthorized() {
 export function forbidden(message = "You do not have access to that") {
   return Response.json({ error: message }, { status: 403 });
 }
+
+function configuredAdminIds() {
+  // MEMORY_RETRIEVAL_V2_USER_IDS is retained as a transition fallback so the
+  // existing owner/test account does not lose its tools during the first
+  // deployment. AFTERGLOW_ADMIN_USER_IDS is the explicit long-term setting.
+  const configured = process.env.AFTERGLOW_ADMIN_USER_IDS?.trim() || process.env.MEMORY_RETRIEVAL_V2_USER_IDS?.trim() || "";
+  return new Set(configured.split(",").map((value)=>value.trim().toLowerCase()).filter(Boolean));
+}
+
+export function isAdminAccount(account: Account) {
+  return configuredAdminIds().has(account.id.toLowerCase());
+}
+
+export function adminRequired(account: Account) {
+  return isAdminAccount(account) ? null : forbidden("Memory diagnostics are available only to an Afterglow administrator");
+}
