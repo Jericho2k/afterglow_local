@@ -1,6 +1,7 @@
 import { asUser, characterFromRow, worldFromRow } from "@/lib/db";
 import { characterSchema, characterValidationMessage } from "@/lib/schemas";
 import { currentAccount, unauthorized } from "@/lib/session";
+import { visitorCharacter } from "@/lib/access";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const account = await currentAccount();
@@ -43,8 +44,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       "SELECT id,storage_path,external_url,caption,position FROM character_gallery WHERE character_id=$1 ORDER BY position ASC, created_at ASC",
       [id],
     );
+    const character = characterFromRow({ ...row, world_ids: worldIds, gallery: gallery.rows }, account.id);
     return {
-      character: characterFromRow({ ...row, world_ids: worldIds, gallery: gallery.rows }, account.id),
+      // A visitor receives the public creation, not its prompt engineering.
+      character: owner ? character : visitorCharacter(character),
       worlds: worlds.rows.map(worldFromRow),
       viewerMessageCount: Number(messages.rows[0]?.count || 0),
       owner,
@@ -68,10 +71,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     // character updates nothing rather than being silently accepted.
     const result = await client.query(
       `UPDATE characters SET name=$1,profile_type=$2,tagline=$3,avatar_url=$4,avatar_path=$5,accent=$6,backstory=$7,cast_members=$8::jsonb,lorebook='',personality=$9,scenario=$10,greeting=$11,alternate_greetings=$12::jsonb,example_dialogue=$13,response_directive=$14,boundaries=$15,source_material=$16,nsfw_enabled=$17,visibility=$18,tags=$21::text[],quick_facts=$22::jsonb,
+         creation_type=$23,title=$24,description=$25,user_role=$26,hashtags=$27::text[],
          published_at=CASE WHEN $18='public' AND published_at IS NULL THEN now() WHEN $18<>'public' THEN NULL ELSE published_at END,
          updated_at=now()
        WHERE id=$19 AND user_id=$20 RETURNING *`,
-      [c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.visibility,id,account.id,c.tags,JSON.stringify(c.quickFacts)],
+      [c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.visibility,id,account.id,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,c.description,c.userRole,c.hashtags],
     );
     if (!result.rowCount) return null;
     await client.query("DELETE FROM character_worlds WHERE character_id=$1", [id]);

@@ -6,6 +6,8 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 
 ## What works now
 
+- Creations: one flow that publishes a single character, a defined cast, or a scenario/RPG with no primary character at all
+- Adaptive Creation Studio with progressive disclosure, autosaved drafts, platform tags and creator hashtags, reusable Worlds, and long-form openings
 - AI-assisted character creation from a short concept
 - Detailed backstory, personality, scenario, greeting, example voice, response directive, and boundaries
 - Optional avatar URL and per-character visual accent
@@ -23,6 +25,7 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 - Supabase Auth accounts with email/password sign-up, sign-in, and persistent sessions
 - Per-account ownership of every character, world, persona, chat, message, and memory, enforced by PostgreSQL row level security
 - Character visibility model (private / unlisted / public) ready for a creator marketplace, with chats and memories that stay private even when the character is published
+- Public creation pages that render only the sections a creator actually authored, and never expose the hidden prompt fields that steer the model
 - Public discovery, opt-in creator profiles, private per-user likes, and a moderation-report queue
 - Supabase Storage for profile and character images, scoped to the owning account
 - Complete JSON export/import for profiles, chats, memories, and settings
@@ -57,6 +60,9 @@ psql "$DATABASE_URL" -f supabase/migrations/0005_openrouter_usage.sql
 psql "$DATABASE_URL" -f supabase/migrations/0006_memory_retrieval_v2.sql
 psql "$DATABASE_URL" -f supabase/migrations/0007_productization_sprint_1.sql
 psql "$DATABASE_URL" -f supabase/migrations/0008_canonical_generated_user_messages.sql
+psql "$DATABASE_URL" -f supabase/migrations/0009_public_character_profile.sql
+psql "$DATABASE_URL" -f supabase/migrations/0010_world_covers_storage.sql
+psql "$DATABASE_URL" -f supabase/migrations/0011_creation_model.sql
 ```
 
 Every file is idempotent, so re-running them is safe. `0002_storage.sql` touches the `storage` schema and only applies to Supabase.
@@ -126,6 +132,39 @@ With Memory Retrieval V2 enabled for an allowlisted account, each reply receives
 At the configured consolidation interval, the independently configured maintenance model condenses recent events into the summary and extracts a small set of atomic durable memories. Around every 100 messages, a separate conservative curation pass may promote, merge, supersede, or demote Core Canon entries. It never deletes the underlying episodic memories or historical arcs. Passwords, API keys, payment data, addresses, and explicit sexual mechanics are specifically excluded from automatic memory extraction.
 
 This avoids continuously sending the entire chat history, improving continuity while controlling token cost. `memory_retrieval_runs` records selected IDs, tier token counts, deterministic score components and semantic fallback reasons; `usage_events` separately records RP, consolidation, curation and embedding cost metadata.
+
+## Creation model
+
+Everything a creator publishes is a **Creation**. A creation is authored as one
+of three structures, and all three share the same feed, search, chats,
+bookmarks and detail page:
+
+| Structure | What it is | What the studio asks for |
+| --- | --- | --- |
+| Character | One primary character | Name, personality, backstory, scenario, optional supporting cast |
+| Cast | Several defined characters sharing a premise | A card per character, plus the shared premise and history |
+| Scenario / RPG | A situation, story or world | Premise, the reader's role, what the AI is responsible for, and *optional* important characters |
+
+A scenario is never required to invent a primary character: with no cast
+defined, the prompt tells the model to populate the world from the premise and
+any attached World instead of handing it an empty character sheet.
+
+Two distinctions matter throughout:
+
+- **Creation title vs. character name.** "The Final War" and "Your New
+  Roommate" are titles; `Emily Carter` is a name. Feed cards, heroes and chat
+  headers use the title, resolved by `creationTitle` in `src/lib/creation.ts`.
+  A creation written before titles existed has none, and its character name
+  stands in — which is what those surfaces already displayed.
+- **Platform tags vs. creator hashtags.** Tags come from the taxonomy in
+  `src/lib/tags.ts` and drive filtering and recommendation. Hashtags are
+  freeform creator vocabulary, stored normalised and without the leading `#`.
+  They are stored, validated and presented separately and are never merged.
+
+Migration `0011` is additive: `creation_type` is backfilled from
+`profile_type`, `title` and `description` default to empty and fall back to the
+name and the existing backstory text, and no chat, memory, like, comment or
+world link is touched.
 
 ## Adult-content boundaries
 

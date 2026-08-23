@@ -1,16 +1,55 @@
 export type CharacterCastMember = {
   name: string;
   role: string;
+  /** The full definition. Hidden: it feeds the prompt, never the public page. */
   description: string;
+  /** A short public blurb. Safe to render on the creation page. */
+  tagline: string;
+  /** Supabase Storage object path for this member's portrait. */
+  avatarPath: string;
+  /** External portrait URL, used when no storage object exists. */
+  avatarUrl: string;
 };
 
 export type CharacterVisibility = "private" | "unlisted" | "public";
 
+/**
+ * How a creation is authored.
+ *
+ * "character" is one primary character, "cast" is several defined characters
+ * sharing one premise, and "scenario" is world/narrator-driven roleplay that
+ * may define no primary character at all. All three publish into the same
+ * feed, chat and discovery surfaces; the type only decides which authoring
+ * fields matter and how the public page presents them.
+ */
+export type CreationType = "character" | "cast" | "scenario";
+export const creationTypes = ["character", "cast", "scenario"] as const;
+
 export type Character = {
   id: string;
+  /**
+   * The character's own name. For a scenario this is frequently empty of
+   * product meaning and only `title` is shown, so nothing may assume that
+   * this is what a card or a page should be titled with.
+   */
   name: string;
+  /**
+   * The authoring structure. Derived from `profileType` for records created
+   * before creations existed, so an old ensemble card reads as a cast.
+   */
+  creationType: CreationType;
+  /**
+   * Public display title. Empty means the creation predates the title field
+   * and `name` stands in — see `creationTitle`.
+   */
+  title: string;
+  /** Kept in sync with `creationType`; still read by prompts and snapshots. */
   profileType: "single" | "ensemble";
   tagline: string;
+  /** Public premise/description. Never the hidden AI definition. */
+  description: string;
+  /** Who {{user}} plays. Optional, and mostly used by cast and scenario. */
+  userRole: string;
   /** An imported card's external image URL, or a legacy inline data URI. */
   avatarUrl: string;
   /** Supabase Storage object path. Takes precedence over avatarUrl when set. */
@@ -28,8 +67,17 @@ export type Character = {
   boundaries: string;
   sourceMaterial: string;
   worldIds: string[];
-  /** Canonical public tags. The hero chips and the Tags section share these. */
+  /**
+   * Platform taxonomy tags. A controlled vocabulary used for filtering and
+   * recommendations; see `src/lib/tags.ts`. Values outside the taxonomy are
+   * still accepted so tags entered before it existed keep rendering.
+   */
   tags: string[];
+  /**
+   * Creator-defined discovery hashtags, stored without the leading "#".
+   * A separate system from `tags` on purpose: freeform, never a taxonomy.
+   */
+  hashtags: string[];
   /** Up to six creator-configured public facts, ordered. */
   quickFacts: CharacterQuickFact[];
   gallery: CharacterGalleryImage[];

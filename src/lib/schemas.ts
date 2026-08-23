@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { responseLengths, roleplayEngineIds } from "./types";
+import { creationTypes, responseLengths, roleplayEngineIds } from "./types";
+import { canonicalTag, maxHashtags, maxTags, normalizeHashtag } from "./tags";
 
 const text = (max: number, min = 0) => z.preprocess(
   (value) => value == null ? "" : typeof value === "string" ? value : String(value),
@@ -35,13 +36,29 @@ const visibility = z.enum(["private", "unlisted", "public"]).default("private");
 export const characterCastMemberSchema = z.object({
   name: text(120, 1),
   role: text(240).default(""),
+  /** The AI definition. Never rendered publicly. */
   description: text(8000).default(""),
+  /** A short public blurb for the cast card. */
+  tagline: text(240).default(""),
+  avatarPath: storagePath,
+  avatarUrl: imageSource,
 });
 
-export const characterSchema = z.object({
+const characterFields = z.object({
+  // A creation still needs an internal name, but a scenario is allowed to
+  // reuse its title for it: only `title` is presented.
   name: text(120, 1),
+  // Optional on the wire so a payload written before creations existed — a
+  // backup file, an older client — is inferred from profileType rather than
+  // silently downgraded to a plain character.
+  creationType: z.enum(creationTypes).optional(),
+  title: text(120).default(""),
   profileType: z.enum(["single", "ensemble"]).default("single"),
   tagline: text(300).default(""),
+  /** Public premise. Kept apart from the hidden definition on purpose. */
+  description: text(6000).default(""),
+  /** Who {{user}} plays. Optional for every creation type. */
+  userRole: text(4000).default(""),
   avatarUrl: imageSource,
   avatarPath: storagePath,
   accent,
@@ -61,16 +78,32 @@ export const characterSchema = z.object({
   // array, so there is never a second tag dataset to drift out of sync.
   tags: z.preprocess(
     (value) => Array.isArray(value) ? value : [],
-    z.array(z.string().trim().min(1).max(40)).max(20),
-  ).transform((tags) => Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 20)).default([]),
+    z.array(z.string().trim().min(1).max(40)).max(maxTags),
+  ).transform((tags) => Array.from(new Set(tags.map((tag) => canonicalTag(tag)).filter(Boolean))).slice(0, maxTags)).default([]),
   // Generic label/value pairs, capped at six. The labels the design shows are
   // a starting set rather than a fixed schema.
   quickFacts: z.preprocess(
     (value) => Array.isArray(value) ? value : [],
     z.array(z.object({ label: text(40, 1), value: text(120, 1) })).max(6),
   ).default([]),
+  // Creator-defined discovery hashtags. Stored normalised and without the
+  // leading "#", and never merged with the platform tag taxonomy above.
+  hashtags: z.preprocess(
+    (value) => Array.isArray(value) ? value : typeof value === "string" ? value.split(/[\s,]+/) : [],
+    z.array(z.string()).max(60),
+  ).transform((hashtags) => Array.from(new Set(hashtags.map((tag) => normalizeHashtag(String(tag))).filter(Boolean))).slice(0, maxHashtags)).default([]),
   visibility,
   nsfwEnabled: z.boolean().default(false),
+});
+
+/**
+ * The creation type and the legacy profile type describe the same thing, so
+ * one is derived from the other rather than being allowed to disagree. An
+ * older payload that only knows about profileType still resolves correctly.
+ */
+export const characterSchema = characterFields.transform((value) => {
+  const resolved = value.creationType ?? (value.profileType === "ensemble" ? "cast" : "character");
+  return { ...value, creationType: resolved, profileType: resolved === "character" ? "single" as const : "ensemble" as const };
 });
 
 export function characterValidationMessage(error: z.ZodError) {

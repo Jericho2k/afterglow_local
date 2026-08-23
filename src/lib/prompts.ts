@@ -1,5 +1,6 @@
 import type { AppSettings, Character, ChatInstructionPreset, CoreCanonEntry, Memory, MemoryArc, Message, Persona, World } from "./types";
 import { enginePrompt } from "./provider";
+import { creationTitle, creationType } from "./creation";
 
 export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[] }) {
   const preset = settings?.roleplayPreset || "immersive";
@@ -8,12 +9,21 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
     : `SFW MODE: Keep the interaction non-explicit. Romance, tension, and affection are fine, but fade to black before sexual detail.`;
   const castMembers = character.cast ?? [];
   const profileType = character.profileType ?? "single";
+  const type = creationType(character);
+  const title = creationTitle(character);
   const cast = castMembers.length
     ? castMembers.map((member) => `### ${member.name}${member.role ? ` — ${member.role}` : ""}\n${member.description || "No additional definition supplied."}`).join("\n\n")
-    : "No separate structured cast supplied.";
-  const role = profileType === "ensemble"
-    ? `You portray the recurring cast of ${character.name} and the living world around them`
-    : `You are ${character.name} and portray the living world around them`;
+    : type === "scenario"
+      ? "No individually defined characters. Create and portray the NPCs this situation implies, staying consistent with the premise and world canon below."
+      : "No separate structured cast supplied.";
+  // A scenario has no primary character to be, so the model is told what it is
+  // responsible for instead of being handed a fake person to play.
+  const role = type === "scenario"
+    ? `You run the roleplay experience "${title}". You narrate the world, events and consequences, and you portray every character in it`
+    : type === "cast" || profileType === "ensemble"
+      ? `You portray the recurring cast of ${title} and the living world around them`
+      : `You are ${character.name} and portray the living world around them`;
+  const userRole = character.userRole?.trim();
   const persona = chatContext?.persona;
   const worldCanon = chatContext?.worlds?.length
     ? chatContext.worlds.map((world) => `### ${world.name}${world.description ? `\n${world.description}` : ""}\n${world.content}`).join("\n\n")
@@ -38,8 +48,19 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
 ROLEPLAY PRESET
 ${enginePrompt(preset)}
 
-CHARACTER
+${type === "scenario" ? `SCENARIO
+Title: ${title}
+Premise / what is happening: ${character.scenario || "An open-ended situation the user has just entered"}
+Background, history and established facts: ${character.backstory || "Not specified"}
+Tone, atmosphere and narrative style: ${character.personality || "Not specified"}
+Example prose / voice: ${character.exampleDialogue || "Not specified"}
+Narrator and AI rules: ${character.responseDirective || "Narrate the environment and events, portray every NPC with independent motives, and never write actions, dialogue, or thoughts for the user."}
+Boundaries: ${character.boundaries || "Respect consent, the user's agency, and any limits they state."}
+
+IMPORTANT CHARACTERS
+${cast}` : `CHARACTER
 Card name: ${character.name}
+Creation title: ${title}
 Profile type: ${profileType}
 Backstory: ${character.backstory || "Not specified"}
 Personality and mannerisms: ${character.personality || "Not specified"}
@@ -49,7 +70,11 @@ Response directive: ${character.responseDirective || "Write naturally, vividly, 
 Boundaries: ${character.boundaries || "Respect consent, the user's agency, and any limits they state."}
 
 STRUCTURED CAST
-${cast}
+${cast}`}${userRole ? `
+
+THE USER'S ROLE IN THIS STORY
+${userRole}
+This describes who the user is playing. Treat it as established fact about them, and still never write their dialogue, decisions, thoughts, or consent.` : ""}
 
 LOREBOOK / WORLD CANON — ATTACHED WORLD DOCUMENTS
 ${worldCanon}
@@ -175,6 +200,11 @@ Adult mode: ${nsfwEnabled ? "enabled" : "disabled"}
 Return ONLY valid JSON with exactly these fields:
 {
   "name": "string",
+  "title": "string",
+  "creationType": "character, cast, or scenario",
+  "tagline": "string",
+  "description": "string",
+  "userRole": "string",
   "profileType": "single or ensemble",
   "avatarUrl": "string",
   "accent": "#RRGGBB",
@@ -191,6 +221,11 @@ Return ONLY valid JSON with exactly these fields:
 }
 Requirements:
 - Every character is unambiguously 21+.
+- creationType describes the structure. Use "character" for one primary character, "cast" when several defined characters jointly drive the roleplay, and "scenario" when the experience is a situation, story, or world that the AI narrates and populates with NPCs rather than a single person. Never invent a fake primary character in order to avoid "scenario".
+- title is the public display title of the creation. It is frequently the character's name for a single character, but for a cast or scenario it should name the experience rather than a person. name remains the primary character's own name, or the card name when there is no single primary character.
+- tagline is one short hook, at most about 140 characters, that would make somebody open this creation.
+- description is public-facing copy that tells a reader what the experience is. It must not contain hidden instructions, system rules, or private creator notes; those belong in responseDirective and boundaries.
+- userRole describes who the user plays when the material establishes one, and is an empty string otherwise. Never invent a role the source does not support.
 - If the source uses a school-aged or age-ambiguous setting, coherently age all participating characters to 21+ and adapt the institution or timeline into an adult setting. Never preserve minors in sexual or romantic-adult contexts.
 - Fill every field that the source supports; use an empty array for cast or alternateGreetings only when they genuinely do not apply.
 - In dump mode, preserve the supplied fictional character's identity, names, concrete details, relationships, and intended dynamic. Do not transform the import into a different concept. In concept mode, create an original character.

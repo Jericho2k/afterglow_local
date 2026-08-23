@@ -38,13 +38,25 @@ export function normalizeGeneratedCharacter(raw: string, sourceMaterial: string,
       name: text(item.name ?? item.characterName, 120),
       role: text(item.role ?? item.relationship, 240),
       description: text(item.description ?? item.profile ?? item.details ?? item.personality, 8000),
+      tagline: text(item.tagline ?? item.summary ?? item.shortDescription, 240),
+      avatarPath: "",
+      avatarUrl: "",
     };
   }).filter((entry) => entry.name).slice(0, 50);
 
-  const named = text(value.name ?? value.characterName ?? value.cardName ?? value.title, 120);
-  const profileHint = text(value.profileType ?? value.cardType ?? value.type, 40).toLowerCase();
-  const profileType = profileHint.includes("ensemble") || profileHint.includes("multiple") || cast.length > 1 ? "ensemble" : "single";
-  const name = named || (profileType === "ensemble" && cast.length ? cast.slice(0, 4).map((item) => item.name).join(" · ").slice(0, 120) : cast[0]?.name) || "Imported character";
+  const named = text(value.name ?? value.characterName ?? value.cardName, 120);
+  const titled = text(value.title ?? value.cardName, 120);
+  const typeHint = text(value.creationType ?? value.profileType ?? value.cardType ?? value.type, 40).toLowerCase();
+  // Scenario is only chosen when the model says so. Falling back to "cast" for
+  // ensemble material keeps every earlier import mapping exactly as it did.
+  const creationType = typeHint.includes("scenario") || typeHint.includes("rpg")
+    ? "scenario" as const
+    : typeHint.includes("ensemble") || typeHint.includes("cast") || typeHint.includes("multiple") || cast.length > 1
+      ? "cast" as const
+      : "character" as const;
+  const profileType = creationType === "character" ? "single" : "ensemble";
+  const name = named || titled || (profileType === "ensemble" && cast.length ? cast.slice(0, 4).map((item) => item.name).join(" · ").slice(0, 120) : cast[0]?.name) || "Imported character";
+  const title = titled || (creationType === "character" ? "" : name);
   const rawAccent = text(value.accent ?? value.color, 20);
   const accent = /^#[0-9a-f]{6}$/i.test(rawAccent) || /^#[0-9a-f]{3}$/i.test(rawAccent) ? rawAccent : "#e879a9";
   const rawAvatar = text(value.avatarUrl ?? value.avatar ?? value.imageUrl ?? value.image, 1500);
@@ -52,8 +64,12 @@ export function normalizeGeneratedCharacter(raw: string, sourceMaterial: string,
 
   return characterSchema.parse({
     name,
+    title,
+    creationType,
     profileType,
-    tagline: "",
+    tagline: text(value.tagline ?? value.hook ?? value.summary, 300),
+    description: text(value.description ?? value.publicDescription ?? value.premise, 6000),
+    userRole: text(value.userRole ?? value.playerRole ?? value.yourRole, 4000),
     avatarUrl,
     avatarPath: "",
     accent,
