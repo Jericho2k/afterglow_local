@@ -1,5 +1,5 @@
 import { characterSchema } from "./schemas";
-import { parseJson } from "./llm";
+import { parseLenientJson } from "./json-repair";
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -18,11 +18,10 @@ function list(value: unknown, itemLimit: number, countLimit: number) {
 }
 
 function parseObject(raw: string) {
-  try { return object(parseJson<unknown>(raw)); } catch {
-    const start = raw.indexOf("{"); const end = raw.lastIndexOf("}");
-    if (start < 0 || end <= start) throw new Error("The importer returned incomplete JSON. Try the import again.");
-    return object(JSON.parse(raw.slice(start, end + 1)));
-  }
+  // Large imports are exactly where models produce a missing comma, a raw
+  // newline inside prose, or a response that stops mid-array. Recovering the
+  // document beats discarding a long paste over a formatting slip.
+  return object(parseLenientJson<unknown>(raw));
 }
 
 /**
