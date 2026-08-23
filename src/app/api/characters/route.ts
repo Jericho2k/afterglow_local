@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { asUser, characterFromRow } from "@/lib/db";
 import { characterSchema, characterValidationMessage } from "@/lib/schemas";
 import { currentAccount, unauthorized } from "@/lib/session";
-import { characterFromSnapshot } from "@/lib/access";
+import { characterFromSnapshot, visitorCharacter } from "@/lib/access";
 
 export async function GET(request: Request) {
   const account = await currentAccount();
@@ -43,10 +43,15 @@ export async function GET(request: Request) {
     const links = ids.length
       ? await client.query("SELECT character_id,world_id FROM character_worlds WHERE character_id = ANY($1::uuid[])", [ids])
       : { rows: [] as Array<Record<string, unknown>> };
-    return result.rows.map((row) => characterFromRow({
-      ...row,
-      world_ids: links.rows.filter((link) => String(link.character_id) === String(row.id)).map((link) => String(link.world_id)),
-    }, account.id));
+    return result.rows.map((row) => {
+      const character = characterFromRow({
+        ...row,
+        world_ids: links.rows.filter((link) => String(link.character_id) === String(row.id)).map((link) => String(link.world_id)),
+      }, account.id);
+      // Discovery lists somebody else's creations, so they arrive in their
+      // public form rather than carrying the creator's instruction fields.
+      return character.ownedByViewer ? character : visitorCharacter(character);
+    });
   });
 
   return Response.json({ characters });
@@ -62,9 +67,9 @@ export async function POST(request: Request) {
 
   const row = await asUser(account.id, async (client) => {
     const result = await client.query(
-      `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,tags,quick_facts,published_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::text[],$22::jsonb,CASE WHEN $20='public' THEN now() ELSE NULL END) RETURNING *`,
-      [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.visibility,c.tags,JSON.stringify(c.quickFacts)],
+      `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,tags,quick_facts,creation_type,title,description,user_role,hashtags,published_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::text[],$22::jsonb,$23,$24,$25,$26,$27::text[],CASE WHEN $20='public' THEN now() ELSE NULL END) RETURNING *`,
+      [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.visibility,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,c.description,c.userRole,c.hashtags],
     );
     // Only the caller's own worlds may be attached; the insert policy rejects
     // anything else, and filtering here turns that into a clean no-op instead

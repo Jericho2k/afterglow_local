@@ -344,6 +344,15 @@ async function schema() {
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS quick_facts jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS chat_count integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS message_count integer NOT NULL DEFAULT 0");
+  // Creation model. Every column is additive with a default that reproduces
+  // the previous behaviour, so a character written before this release keeps
+  // rendering: an empty title falls back to the name, and an ensemble card
+  // reads as a cast.
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS creation_type text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS user_role text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS hashtags text[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_path text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_url text NOT NULL DEFAULT ''");
   await pool().query(`
@@ -569,15 +578,40 @@ function galleryFromRow(value: unknown) {
     .sort((left, right) => left.position - right.position);
 }
 
+/**
+ * Cast members as stored. The portrait and public blurb are optional, so a
+ * member written before those fields existed simply has neither.
+ */
+export function castMembersFromRow(value: unknown): Character["cast"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === "object")
+    .map((member) => ({
+      name: String(member.name || ""),
+      role: String(member.role || ""),
+      description: String(member.description || ""),
+      tagline: String(member.tagline || ""),
+      avatarPath: String(member.avatarPath || ""),
+      avatarUrl: String(member.avatarUrl || ""),
+    }))
+    .filter((member) => member.name);
+}
+
 export function characterFromRow(row: Record<string, unknown>, viewerId?: string): Character {
   const ownedByViewer = viewerId ? String(row.user_id ?? "") === viewerId : true;
-  const cast = Array.isArray(row.cast_members) ? row.cast_members.filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === "object").map((member) => ({
-    name: String(member.name || ""), role: String(member.role || ""), description: String(member.description || ""),
-  })).filter((member) => member.name) : [];
+  const cast = castMembersFromRow(row.cast_members);
   const alternateGreetings = Array.isArray(row.alternate_greetings) ? row.alternate_greetings.filter((item): item is string => typeof item === "string") : [];
   const worldIds = textArrayFromRow(row.world_ids);
+  const profileType = row.profile_type === "ensemble" ? "ensemble" as const : "single" as const;
+  // An empty creation_type is a row written before creations existed; the
+  // ensemble flag is the only structural information it carries.
+  const storedType = String(row.creation_type || "");
+  const creationType = storedType === "character" || storedType === "cast" || storedType === "scenario"
+    ? storedType as Character["creationType"]
+    : profileType === "ensemble" ? "cast" : "character";
   return {
-    id: String(row.id), name: String(row.name), profileType: row.profile_type === "ensemble" ? "ensemble" : "single", tagline: String(row.tagline),
+    id: String(row.id), name: String(row.name), creationType, title: String(row.title || ""), profileType, tagline: String(row.tagline),
+    description: String(row.description || ""), userRole: String(row.user_role || ""),
     avatarUrl: String(row.avatar_url), avatarPath: String(row.avatar_path || ""), accent: String(row.accent), backstory: String(row.backstory),
     cast, lorebook: String(row.lorebook || ""), personality: String(row.personality), scenario: String(row.scenario), greeting: String(row.greeting), alternateGreetings,
     exampleDialogue: String(row.example_dialogue), responseDirective: String(row.response_directive),
@@ -587,6 +621,7 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
     sourceMaterial: ownedByViewer ? String(row.source_material || "") : "",
     worldIds,
     tags: textArrayFromRow(row.tags),
+    hashtags: textArrayFromRow(row.hashtags),
     quickFacts: quickFactsFromRow(row.quick_facts),
     gallery: galleryFromRow(row.gallery),
     publicStats: {

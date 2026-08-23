@@ -4,22 +4,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, BadgeCheck, Bookmark, ChevronDown, Globe2, Heart, Images,
-  MessageCircle, MoreHorizontal, Share2, Sparkles, Tag, UserRound,
+  ArrowLeft, BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Heart, Images,
+  MessageCircle, MoreHorizontal, Share2, Sparkles, Tag, UserRound, Users,
 } from "lucide-react";
 import type { Character, CharacterComment, World } from "@/lib/types";
+import {
+  castSectionLabel, creationCtaLabel, creationOverview, creationSubject, creationTitle, creationType,
+  publicCastMembers,
+} from "@/lib/creation";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket, worldCoverBucket } from "@/lib/storage";
 import styles from "./profile.module.css";
 
 type Detail = { character: Character; worlds: World[]; owner: boolean };
 
 /**
- * Public character page.
+ * Public creation page.
  *
- * Sections are derived from what the creator actually supplied: a character
- * with no gallery, facts or world simply has a shorter page, and the section
- * navigation is built from the same list that renders, so the two can never
- * disagree about order or contents.
+ * One page shell for all three authoring structures. Sections are derived from
+ * what the creator actually supplied: a creation with no gallery, facts, cast
+ * or world simply has a shorter page, and the section navigation is built from
+ * the same list that renders, so the two can never disagree about order or
+ * contents. A scenario with no defined characters renders correctly — the page
+ * never invents a primary character so an older layout keeps working.
  */
 function compact(value: number) {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
@@ -69,12 +75,10 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const character = detail?.character;
   const worlds = useMemo(() => detail?.worlds ?? [], [detail]);
 
-  const overview = useMemo(() => {
-    if (!character) return "";
-    // The public description only. Internal prompt engineering — response
-    // directives, boundaries, example dialogue — never appears here.
-    return [character.backstory, character.personality].map((part) => part.trim()).filter(Boolean).join("\n\n");
-  }, [character]);
+  // The public description only. Internal prompt engineering — response
+  // directives, boundaries, example dialogue — never appears here.
+  const overview = useMemo(() => (character ? creationOverview(character) : ""), [character]);
+  const cast = useMemo(() => (character ? publicCastMembers(character.cast) : []), [character]);
 
   useEffect(() => {
     const node = overviewRef.current;
@@ -90,15 +94,18 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const sections = useMemo(() => {
     if (!character) return [] as { id: string; label: string; icon: typeof Images }[];
     const available: { id: string; label: string; icon: typeof Images }[] = [];
+    const kind = creationType(character);
     if (character.gallery.length) available.push({ id: "gallery", label: "Gallery", icon: Images });
     if (overview) available.push({ id: "overview", label: "Overview", icon: Sparkles });
-    if (character.tags.length) available.push({ id: "tags", label: "Tags", icon: Tag });
+    if (character.userRole.trim()) available.push({ id: "role", label: "Your role", icon: Compass });
+    if (character.tags.length || character.hashtags.length) available.push({ id: "tags", label: "Tags", icon: Tag });
     if (character.quickFacts.length) available.push({ id: "facts", label: "Quick facts", icon: BadgeCheck });
+    if (cast.length) available.push({ id: "cast", label: castSectionLabel(kind), icon: Users });
     if (character.creator) available.push({ id: "creator", label: "Creator", icon: UserRound });
-    if (worlds.length) available.push({ id: "world", label: "World", icon: Globe2 });
+    if (worlds.length) available.push({ id: "world", label: worlds.length === 1 ? "World" : "Worlds", icon: Globe2 });
     available.push({ id: "comments", label: "Comments", icon: MessageCircle });
     return available;
-  }, [character, overview, worlds]);
+  }, [character, cast, overview, worlds]);
 
   useEffect(() => {
     if (!sections.length) return;
@@ -158,7 +165,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
 
   const share = useCallback(() => {
     const url = window.location.href;
-    if (navigator.share) { void navigator.share({ title: character?.name ?? "Afterglow", url }).catch(() => undefined); return; }
+    if (navigator.share) { void navigator.share({ title: character ? creationTitle(character) : "Afterglow", url }).catch(() => undefined); return; }
     void navigator.clipboard?.writeText(url).catch(() => undefined);
   }, [character]);
 
@@ -179,16 +186,20 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     } finally { setPosting(false); }
   }, [characterId, draft]);
 
-  if (error && !detail) return <main className={styles.state}><Sparkles size={26} /><h1>Character unavailable</h1><p>{error}</p><Link href="/">Return to Afterglow</Link></main>;
-  if (!detail || !character) return <main className={styles.state}><Sparkles size={26} className={styles.spin} /><h1>Opening character</h1></main>;
+  if (error && !detail) return <main className={styles.state}><Sparkles size={26} /><h1>Creation unavailable</h1><p>{error}</p><Link href="/">Return to Afterglow</Link></main>;
+  if (!detail || !character) return <main className={styles.state}><Sparkles size={26} className={styles.spin} /><h1>Opening creation</h1></main>;
 
   const image = avatarSource(characterAvatarBucket, character.avatarPath, character.avatarUrl);
   const creatorName = character.creator?.username ? `@${character.creator.username}` : character.creator?.displayName || "";
   const created = relative(character.createdAt);
-  // Keep the verified badge glued to the final word of the name.
-  const nameWords = character.name.trim().split(/\s+/);
-  const nameLead = nameWords.slice(0, -1).join(" ");
-  const nameTail = nameWords[nameWords.length - 1] ?? character.name;
+  // The hero is titled with the creation, which is not necessarily anybody's
+  // name: "The Final War" and "Your New Roommate" are both valid titles.
+  const title = creationTitle(character);
+  const kind = creationType(character);
+  // Keep the verified badge glued to the final word of the title.
+  const titleWords = title.trim().split(/\s+/);
+  const titleLead = titleWords.slice(0, -1).join(" ");
+  const titleTail = titleWords[titleWords.length - 1] ?? title;
   const stats = character.publicStats;
   const heroTags = character.tags.slice(0, 6);
 
@@ -212,9 +223,9 @@ export default function CharacterProfile({ characterId }: { characterId: string 
 
       <div className={styles.heroCopy}>
         <h1 className={styles.name}>
-          {nameLead && `${nameLead} `}
+          {titleLead && `${titleLead} `}
           <span className={styles.nameTail}>
-            {nameTail}
+            {titleTail}
             {character.creator?.username && <BadgeCheck size={26} className={styles.verified} aria-label="Verified creator" />}
           </span>
         </h1>
@@ -228,15 +239,17 @@ export default function CharacterProfile({ characterId }: { characterId: string 
 
         <div className={styles.ctaRow}>
           <button className={styles.primaryCta} onClick={() => void start()} disabled={starting}>
-            <Sparkles size={18} />{starting ? "Opening story…" : `Chat with ${character.name}`}
+            <Sparkles size={18} />{starting ? "Opening story…" : creationCtaLabel(character)}
           </button>
-          <button className={styles.ghostButton} aria-label="Save character" onClick={() => void toggleLike()}>
+          <button className={styles.ghostButton} aria-label="Save creation" onClick={() => void toggleLike()}>
             <Bookmark size={18} fill={character.likedByViewer ? "currentColor" : "none"} />
           </button>
         </div>
 
         <dl className={styles.stats}>
-          <Stat label={stats.rankCategory ? `in ${stats.rankCategory}` : "Rank"} value={stats.rank === null ? null : `#${stats.rank}`} />
+          {/* Ranking is not computed yet, so the slot is absent rather than
+              showing a placeholder position. */}
+          {stats.rank !== null && <Stat label={stats.rankCategory ? `in ${stats.rankCategory}` : "Rank"} value={`#${stats.rank}`} />}
           <Stat label="Messages" value={stats.messages === null ? null : compact(stats.messages)} />
           <Stat label="Likes" value={stats.likes === null ? null : compact(stats.likes)} />
           <Stat label="Chats" value={stats.chats === null ? null : compact(stats.chats)} />
@@ -244,7 +257,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
       </div>
     </div>
 
-    {sections.length > 1 && <nav className={styles.sectionNav} aria-label="Character sections">
+    {sections.length > 1 && <nav className={styles.sectionNav} aria-label="Creation sections">
       {sections.map((section) => {
         const Icon = section.icon;
         return <button key={section.id} className={active === section.id ? styles.navActive : ""} onClick={() => navigate(section.id)}>
@@ -265,17 +278,27 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         </section>}
 
         {overview && <section id="overview" className={`${styles.card} ${illuminated === "overview" ? styles.illuminate : ""}`}>
-          <header><Sparkles size={16} /><h2>About {character.name}</h2></header>
+          <header><Sparkles size={16} /><h2>{kind === "character" ? `About ${creationSubject(character)}` : "Overview"}</h2></header>
           <p ref={overviewRef} className={`${styles.prose} ${expanded ? styles.proseOpen : ""}`}>{overview}</p>
           {(overflowing || expanded) && <button className={styles.showMore} onClick={() => setExpanded((value) => !value)}>
             {expanded ? "Show less" : "Show more"}<ChevronDown size={15} className={expanded ? styles.flip : ""} />
           </button>}
         </section>}
 
-        {character.tags.length > 0 && <section id="tags" className={`${styles.card} ${illuminated === "tags" ? styles.illuminate : ""}`}>
+        {character.userRole.trim() && <section id="role" className={`${styles.card} ${illuminated === "role" ? styles.illuminate : ""}`}>
+          <header><Compass size={16} /><h2>Your role</h2></header>
+          <p className={styles.roleProse}>{character.userRole}</p>
+        </section>}
+
+        {(character.tags.length > 0 || character.hashtags.length > 0) && <section id="tags" className={`${styles.card} ${illuminated === "tags" ? styles.illuminate : ""}`}>
           <header><Tag size={16} /><h2>Tags</h2>{character.nsfwEnabled && <em className={styles.adultBadge}>18+</em>}</header>
-          <ul className={styles.tagList}>{character.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul>
-          {character.nsfwEnabled && <p className={styles.adultNote}>This character may generate mature and explicit content.</p>}
+          {/* Platform taxonomy and creator hashtags are two systems, so they
+              are presented as two, never merged into one wall of chips. */}
+          {character.tags.length > 0 && <ul className={styles.tagList}>{character.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul>}
+          {character.hashtags.length > 0 && <ul className={styles.hashtagList}>
+            {character.hashtags.map((tag) => <li key={tag}>#{tag}</li>)}
+          </ul>}
+          {character.nsfwEnabled && <p className={styles.adultNote}>This creation may generate mature and explicit content.</p>}
         </section>}
 
         {character.quickFacts.length > 0 && <section id="facts" className={`${styles.card} ${illuminated === "facts" ? styles.illuminate : ""}`}>
@@ -283,6 +306,28 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           <dl className={styles.facts}>
             {character.quickFacts.map((fact) => <div key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}
           </dl>
+        </section>}
+
+        {cast.length > 0 && <section id="cast" className={`${styles.card} ${illuminated === "cast" ? styles.illuminate : ""}`}>
+          <header><Users size={16} /><h2>{castSectionLabel(kind)}</h2><em className={styles.count}>{cast.length}</em></header>
+          {kind === "scenario" && <p className={styles.castNote}>Recurring characters the story knows in detail. Others appear as the scenario needs them.</p>}
+          <ul className={styles.castList}>
+            {cast.map((member, index) => {
+              const portrait = avatarSource(characterAvatarBucket, member.avatarPath, member.avatarUrl);
+              return <li key={`${member.name}-${index}`} className={styles.castCard}>
+                <span className={styles.castAvatar}>
+                  {portrait ? <img src={portrait} alt="" loading="lazy" /> : initials(member.name)}
+                </span>
+                <div>
+                  <strong>{member.name}</strong>
+                  {member.role && <small>{member.role}</small>}
+                  {/* Only the blurb the creator wrote for readers. A cast
+                      member's definition is prompt material and stays private. */}
+                  {member.tagline && <p>{member.tagline}</p>}
+                </div>
+              </li>;
+            })}
+          </ul>
         </section>}
 
         {character.creator && <section id="creator" className={`${styles.card} ${styles.creatorCard} ${illuminated === "creator" ? styles.illuminate : ""}`}>
@@ -302,7 +347,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         </section>}
 
         {worlds.length > 0 && <section id="world" className={`${styles.card} ${illuminated === "world" ? styles.illuminate : ""}`}>
-          <header><Globe2 size={16} /><h2>World</h2></header>
+          <header><Globe2 size={16} /><h2>{worlds.length === 1 ? "World" : "Worlds"}</h2></header>
           <div className={styles.worldList}>
             {worlds.map((world) => {
               const cover = avatarSource(worldCoverBucket, world.coverPath, world.coverUrl);
@@ -321,7 +366,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         <section id="comments" className={`${styles.card} ${illuminated === "comments" ? styles.illuminate : ""}`}>
           <header><MessageCircle size={16} /><h2>Comments</h2>{comments?.length ? <em className={styles.count}>{comments.length}</em> : null}</header>
           <div className={styles.composer}>
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} maxLength={2000} placeholder={`Share what you think of ${character.name}…`} />
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} maxLength={2000} placeholder={`Share what you think of ${creationSubject(character)}…`} />
             <button className={styles.postButton} disabled={posting || !draft.trim()} onClick={() => void submitComment()}>{posting ? "Posting…" : "Post"}</button>
           </div>
           {comments === null && <p className={styles.quiet}>Loading comments…</p>}

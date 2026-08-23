@@ -94,9 +94,9 @@ export async function POST(request: Request) {
       // Imported characters land private regardless of what the file claimed.
       // Publishing is a deliberate act in the owner's own library.
       await client.query(
-        `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,'private')`,
-        [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath ?? "",c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled],
+        `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,creation_type,title,description,user_role,tags,hashtags,quick_facts)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,'private',$20,$21,$22,$23,$24::text[],$25::text[],$26::jsonb)`,
+        [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath ?? "",c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.creationType,c.title,c.description,c.userRole,c.tags,c.hashtags,JSON.stringify(c.quickFacts)],
       );
       for (const sourceWorldId of c.worldIds) {
         const worldId = worldIds.get(sourceWorldId);

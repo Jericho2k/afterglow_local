@@ -3,12 +3,30 @@ import { characterGenerationPrompt, characterGenerationTokenBudget, continueScen
 import type { Character } from "@/lib/types";
 
 const character: Character = {
-  id: "1", name: "Mara", profileType: "single", tagline: "Art thief", avatarUrl: "", avatarPath: "", accent: "#e879a9",
+  id: "1", name: "Mara", creationType: "character", title: "", profileType: "single", tagline: "Art thief",
+  description: "", userRole: "", avatarUrl: "", avatarPath: "", accent: "#e879a9",
   backstory: "Mara is 31.", cast: [], lorebook: "Paris factions.", personality: "Dry wit.", scenario: "Paris.", greeting: "Hello.", alternateGreetings: [],
   exampleDialogue: "A sample.", responseDirective: "Be vivid.", boundaries: "Respect stop words.",
-  sourceMaterial: "", worldIds: [], tags: [], quickFacts: [], gallery: [],
+  sourceMaterial: "", worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [],
   publicStats: { messages: null, likes: null, chats: null, rank: null, rankCategory: null },
   visibility: "private", ownedByViewer: true, nsfwEnabled: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+};
+
+/**
+ * A scenario-led creation: no primary character, a defined user role, and the
+ * AI responsible for narration and every NPC.
+ */
+const scenario: Character = {
+  ...character,
+  name: "The Final War",
+  creationType: "scenario",
+  title: "The Final War",
+  profileType: "ensemble",
+  userRole: "A sealed asset whose file is classified.",
+  scenario: "U.A. is a fortress now.",
+  personality: "Grim, procedural, exhausted.",
+  responseDirective: "Narrate the world and every NPC.",
+  cast: [],
 };
 
 describe("roleplay prompt", () => {
@@ -46,6 +64,28 @@ describe("roleplay prompt", () => {
     expect(prompt).toContain("Use clipped dialogue.");
     expect(prompt.indexOf("CHARACTER")).toBeLessThan(prompt.indexOf("CURRENT CONTINUITY — DYNAMIC"));
     expect(prompt.indexOf("CHAT-SPECIFIC INSTRUCTIONS")).toBeLessThan(prompt.indexOf("CURRENT CONTINUITY — DYNAMIC"));
+  });
+
+  it("runs a scenario as narrator rather than as a fabricated primary character", () => {
+    const prompt = roleplayPrompt(scenario, "", []);
+    expect(prompt).toContain('You run the roleplay experience "The Final War"');
+    expect(prompt).toContain("SCENARIO");
+    expect(prompt).toContain("Premise / what is happening: U.A. is a fortress now.");
+    expect(prompt).toContain("Tone, atmosphere and narrative style: Grim, procedural, exhausted.");
+    expect(prompt).toContain("THE USER'S ROLE IN THIS STORY");
+    expect(prompt).toContain("A sealed asset whose file is classified.");
+    // With no cast defined the model is told to improvise, never handed an
+    // empty character sheet to fill in.
+    expect(prompt).toContain("IMPORTANT CHARACTERS");
+    expect(prompt).toContain("No individually defined characters");
+    expect(prompt).not.toContain("Card name:");
+  });
+
+  it("keeps the character prompt unchanged for a single character", () => {
+    const prompt = roleplayPrompt(character, "", []);
+    expect(prompt).toContain("You are Mara and portray the living world around them");
+    expect(prompt).toContain("Card name: Mara");
+    expect(prompt).not.toContain("THE USER'S ROLE IN THIS STORY");
   });
 
   it("continues the scene without inventing a user turn", () => {

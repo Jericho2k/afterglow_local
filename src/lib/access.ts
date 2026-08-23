@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { characterFromRow } from "./db";
+import { castMembersFromRow, characterFromRow } from "./db";
 import type { Character } from "./types";
 
 /**
@@ -48,9 +48,9 @@ export async function ownedPersona(client: PoolClient, userId: string, personaId
  * the model and would multiply the row size for no benefit.
  */
 export const snapshotFields = [
-  "name", "profileType", "tagline", "avatarUrl", "avatarPath", "accent", "backstory", "cast", "lorebook",
-  "personality", "scenario", "greeting", "alternateGreetings", "exampleDialogue", "responseDirective",
-  "boundaries", "nsfwEnabled",
+  "name", "creationType", "title", "profileType", "tagline", "userRole", "avatarUrl", "avatarPath", "accent",
+  "backstory", "cast", "lorebook", "personality", "scenario", "greeting", "alternateGreetings", "exampleDialogue",
+  "responseDirective", "boundaries", "nsfwEnabled",
 ] as const;
 
 export function characterSnapshot(character: Character) {
@@ -73,17 +73,22 @@ export function characterFromSnapshot(snapshot: Record<string, unknown>, charact
   return {
     id: characterId,
     name: String(snapshot.name || "Character"),
+    // Snapshots taken before creations existed carry only the ensemble flag.
+    creationType: snapshot.creationType === "cast" || snapshot.creationType === "scenario" || snapshot.creationType === "character"
+      ? snapshot.creationType
+      : snapshot.profileType === "ensemble" ? "cast" : "character",
+    title: String(snapshot.title || ""),
     profileType: snapshot.profileType === "ensemble" ? "ensemble" : "single",
     tagline: String(snapshot.tagline || ""),
+    // The public description is presentation, not part of a frozen roleplay
+    // definition, so a snapshot never carries it.
+    description: "",
+    userRole: String(snapshot.userRole || ""),
     avatarUrl: String(snapshot.avatarUrl || ""),
     avatarPath: String(snapshot.avatarPath || ""),
     accent: String(snapshot.accent || "#e879a9"),
     backstory: String(snapshot.backstory || ""),
-    cast: Array.isArray(snapshot.cast)
-      ? snapshot.cast.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-        .map((item) => ({ name: String(item.name || ""), role: String(item.role || ""), description: String(item.description || "") }))
-        .filter((item) => item.name)
-      : [],
+    cast: castMembersFromRow(snapshot.cast),
     lorebook: String(snapshot.lorebook || ""),
     personality: String(snapshot.personality || ""),
     scenario: String(snapshot.scenario || ""),
@@ -96,6 +101,7 @@ export function characterFromSnapshot(snapshot: Record<string, unknown>, charact
     worldIds: [],
     // Public presentation data is not part of a frozen roleplay definition.
     tags: [],
+    hashtags: [],
     quickFacts: [],
     gallery: [],
     publicStats: { messages: null, likes: null, chats: null, rank: null, rankCategory: null },
@@ -107,6 +113,26 @@ export function characterFromSnapshot(snapshot: Record<string, unknown>, charact
     ownedByViewer: false,
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+/**
+ * The publicly shareable form of a creation.
+ *
+ * The public page shows what the creator wrote for readers; the instruction
+ * fields that steer the model are the creator's working material and are not
+ * part of what publishing shares. Fields the public page legitimately falls
+ * back to for creations written before the description existed — backstory and
+ * personality — are deliberately kept.
+ */
+export function visitorCharacter(character: Character): Character {
+  return {
+    ...character,
+    responseDirective: "",
+    boundaries: "",
+    exampleDialogue: "",
+    sourceMaterial: "",
+    cast: character.cast.map((member) => ({ ...member, description: "" })),
   };
 }
 
