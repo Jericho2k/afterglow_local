@@ -93,7 +93,8 @@ describe("public character detail", () => {
     const body = await (await characterDetail.GET(new Request("http://test"), params(rich))).json();
     expect(body.character.publicStats.messages).toBe(18);
     expect(body.character.publicStats.chats).toBe(7);
-    expect(body.character.publicStats.likes).toBe(3);
+    // Saves are the product's affinity metric; the storage column is still like_count.
+    expect(body.character.publicStats.saves).toBe(3);
     // Ranking has no backend answer yet, so it stays null and renders as unavailable.
     expect(body.character.publicStats.rank).toBeNull();
   });

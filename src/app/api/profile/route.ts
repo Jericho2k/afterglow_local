@@ -15,7 +15,7 @@ export async function GET(request?: Request) {
     const creatorId = String(profile.rows[0].id);
     const result = await client.query(
       `SELECT c.*,p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
-         (mine.character_id IS NOT NULL) liked_by_viewer
+         (mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c JOIN profiles p ON p.id=c.user_id
        LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$1
        WHERE c.user_id=$2 AND c.visibility='public'

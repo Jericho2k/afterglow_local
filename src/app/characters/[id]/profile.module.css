@@ -237,7 +237,17 @@
   display: flex; flex-wrap: wrap; gap: 7px 12px;
   margin: 12px 0 0; padding: 0; list-style: none;
 }
-.hashtagList li { font-size: 12.5px; color: var(--muted); }
+.hashtagList li { font-size: 12.5px; }
+/* Each hashtag opens the feed already searching for it, so it reads as a link
+   and gets a real target size on a phone. */
+.hashtagList a {
+  display: inline-block; padding: 3px 2px;
+  color: var(--muted); text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color .16s, border-color .16s;
+}
+.hashtagList a:hover { color: var(--accent); border-bottom-color: rgba(232, 121, 169, .4); }
+.hashtagList a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
 /* Who the reader plays. Only rendered when the creator defined it. */
 .roleProse {

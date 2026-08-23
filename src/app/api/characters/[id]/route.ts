@@ -11,7 +11,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const detail = await asUser(account.id, async (client) => {
     const result = await client.query(
       `SELECT c.*,p.id creator_id,p.username creator_username,p.display_name creator_display_name,
-         p.avatar_path creator_avatar_path,(mine.character_id IS NOT NULL) liked_by_viewer
+         p.avatar_path creator_avatar_path,(mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c
        LEFT JOIN profiles p ON p.id=c.user_id AND (p.id=$2 OR p.username IS NOT NULL)
        LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$2

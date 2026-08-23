@@ -9,7 +9,7 @@ import type { Character, CharacterCastMember, CharacterGalleryImage, CreationTyp
  */
 export type CreationDraft = Omit<
   Character,
-  "id" | "createdAt" | "updatedAt" | "ownedByViewer" | "likeCount" | "likedByViewer" | "creator" | "gallery" | "publicStats"
+  "id" | "createdAt" | "updatedAt" | "ownedByViewer" | "saveCount" | "savedByViewer" | "creator" | "gallery" | "publicStats"
 > & { gallery: StagedGalleryImage[] };
 
 export type StagedGalleryImage = Pick<CharacterGalleryImage, "storagePath" | "externalUrl" | "caption">;

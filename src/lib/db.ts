@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type Memory, type MemoryArc, type Message, type Persona, type World } from "./types";
+import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type Persona, type World } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -340,7 +340,10 @@ async function schema() {
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'private'");
   // Public character profile enrichment (migration 0009). All optional: a
   // character created through the simple flow simply has a shorter page.
-  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'");
+  // Spelled as an array constructor rather than '{}' so the in-memory engine
+  // the tests run against defaults to a real empty array, exactly as Postgres
+  // does. An existing column keeps whatever default it was created with.
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT ARRAY[]::text[]");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS quick_facts jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS chat_count integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS message_count integer NOT NULL DEFAULT 0");
@@ -352,7 +355,7 @@ async function schema() {
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS user_role text NOT NULL DEFAULT ''");
-  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS hashtags text[] NOT NULL DEFAULT '{}'");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS hashtags text[] NOT NULL DEFAULT ARRAY[]::text[]");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_path text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_url text NOT NULL DEFAULT ''");
   await pool().query(`
@@ -424,6 +427,12 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS core_canon_user_idx ON core_canon_entries (user_id, conversation_id, status)");
   await pool().query("CREATE INDEX IF NOT EXISTS memory_retrieval_runs_user_idx ON memory_retrieval_runs (user_id, conversation_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_user_idx ON character_likes (user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS character_likes_character_idx ON character_likes (character_id)");
+  // One index per discovery ordering, matching the feed's ORDER BY so a page
+  // is a range scan rather than a sort of every public creation.
+  await pool().query("CREATE INDEX IF NOT EXISTS characters_discovery_new_idx ON characters (published_at DESC, created_at DESC, id DESC) WHERE visibility = 'public'");
+  await pool().query("CREATE INDEX IF NOT EXISTS characters_discovery_popular_idx ON characters (like_count DESC, chat_count DESC, id DESC) WHERE visibility = 'public'");
+  await pool().query("CREATE INDEX IF NOT EXISTS characters_discovery_chatted_idx ON characters (chat_count DESC, message_count DESC, id DESC) WHERE visibility = 'public'");
   await pool().query("CREATE INDEX IF NOT EXISTS character_reports_user_idx ON character_reports (user_id, created_at DESC)");
 
   const legacyLorebooks = await pool().query("SELECT id,name,lorebook,user_id FROM characters WHERE lorebook<>''");
@@ -626,7 +635,9 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
     gallery: galleryFromRow(row.gallery),
     publicStats: {
       messages: row.message_count == null ? null : Number(row.message_count),
-      likes: row.like_count == null ? null : Number(row.like_count),
+      // The saves total lives in the `like_count` column, which predates the
+      // rename. The column is the storage name; "saves" is the product name.
+      saves: row.like_count == null ? null : Number(row.like_count),
       chats: row.chat_count == null ? null : Number(row.chat_count),
       // Ranking is not computed yet. Null keeps the slot in the interface and
       // renders as unavailable instead of inventing a position.
@@ -635,10 +646,50 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
     },
     visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as Character["visibility"],
     nsfwEnabled: Boolean(row.nsfw_enabled),
-    likeCount: Number(row.like_count || 0), likedByViewer: Boolean(row.liked_by_viewer),
+    saveCount: Number(row.like_count || 0), savedByViewer: Boolean(row.saved_by_viewer),
     creator: row.creator_id ? { id: String(row.creator_id), username: String(row.creator_username || ""), displayName: String(row.creator_display_name || ""), avatarPath: String(row.creator_avatar_path || "") } : null,
     ownedByViewer,
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+/**
+ * The lean row a discovery card is built from.
+ *
+ * Paired with the column list in `/api/discovery`: nothing hidden is selected
+ * there, and nothing hidden is read here, so a mistake in either place is a
+ * missing field rather than a leaked definition.
+ */
+export function creationSummaryFromRow(row: Record<string, unknown>, viewerId: string): CreationSummary {
+  const profileType = row.profile_type === "ensemble" ? "ensemble" as const : "single" as const;
+  const storedType = String(row.creation_type || "");
+  const type = storedType === "character" || storedType === "cast" || storedType === "scenario"
+    ? storedType as CreationSummary["creationType"]
+    : profileType === "ensemble" ? "cast" : "character";
+  const creatorId = row.creator_id ? String(row.creator_id) : "";
+  return {
+    id: String(row.id),
+    name: String(row.name || ""),
+    title: String(row.title || ""),
+    creationType: type,
+    profileType,
+    tagline: String(row.tagline || ""),
+    avatarUrl: String(row.avatar_url || ""),
+    avatarPath: String(row.avatar_path || ""),
+    accent: String(row.accent || "#e879a9"),
+    tags: textArrayFromRow(row.tags),
+    hashtags: textArrayFromRow(row.hashtags),
+    nsfwEnabled: Boolean(row.nsfw_enabled),
+    messageCount: Number(row.message_count || 0),
+    chatCount: Number(row.chat_count || 0),
+    saveCount: Number(row.like_count || 0),
+    savedByViewer: Boolean(row.saved_by_viewer),
+    creator: creatorId
+      ? { id: creatorId, username: String(row.creator_username || ""), displayName: String(row.creator_display_name || ""), avatarPath: String(row.creator_avatar_path || "") }
+      : null,
+    ownedByViewer: String(row.user_id ?? "") === viewerId,
+    publishedAt: row.published_at ? new Date(String(row.published_at)).toISOString() : null,
+    createdAt: new Date(String(row.created_at)).toISOString(),
   };
 }
 

@@ -85,13 +85,53 @@ export type Character = {
   publicStats: CharacterPublicStats;
   visibility: CharacterVisibility;
   nsfwEnabled: boolean;
-  likeCount?: number;
-  likedByViewer?: boolean;
+  /** Global saves. Same number as `publicStats.saves`, kept for card code. */
+  saveCount?: number;
+  /** Whether the caller has this in their saved library. Never anybody else's. */
+  savedByViewer?: boolean;
   creator?: { id: string; username: string; displayName: string; avatarPath: string } | null;
   /** False when the caller is chatting with a character somebody else published. */
   ownedByViewer: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+/**
+ * The public summary a discovery surface needs, and nothing else.
+ *
+ * Deliberately not a `Character`: the feed must never receive greetings,
+ * personality, response directives, boundaries, cast definitions, world lore
+ * or import source material, so those fields are not merely blanked out for
+ * visitors here — they are never selected. The fields that do appear are the
+ * ones a card renders plus the ones `src/lib/creation.ts` needs to decide a
+ * title, which is why `name`, `title`, `creationType` and `profileType` all
+ * travel together.
+ */
+export type CreationSummary = {
+  id: string;
+  name: string;
+  title: string;
+  creationType: CreationType;
+  profileType: "single" | "ensemble";
+  tagline: string;
+  avatarUrl: string;
+  avatarPath: string;
+  accent: string;
+  /** Platform taxonomy. Never merged with `hashtags`. */
+  tags: string[];
+  /** Creator vocabulary, stored without the leading "#". */
+  hashtags: string[];
+  nsfwEnabled: boolean;
+  /** Global totals across every account. */
+  messageCount: number;
+  chatCount: number;
+  saveCount: number;
+  /** The caller's own save state. Other accounts' libraries are never exposed. */
+  savedByViewer: boolean;
+  creator: { id: string; username: string; displayName: string; avatarPath: string } | null;
+  ownedByViewer: boolean;
+  publishedAt: string | null;
+  createdAt: string;
 };
 
 export type Conversation = {
@@ -144,7 +184,12 @@ export type CharacterGalleryImage = {
  */
 export type CharacterPublicStats = {
   messages: number | null;
-  likes: number | null;
+  /**
+   * Global saves. This is the product's affinity metric; it is stored in the
+   * `characters.like_count` column and the `character_likes` table, which
+   * predate the rename and are deliberately left in place.
+   */
+  saves: number | null;
   chats: number | null;
   rank: number | null;
   rankCategory: string | null;

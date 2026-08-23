@@ -26,7 +26,8 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 - Per-account ownership of every character, world, persona, chat, message, and memory, enforced by PostgreSQL row level security
 - Character visibility model (private / unlisted / public) ready for a creator marketplace, with chats and memories that stay private even when the character is published
 - Public creation pages that render only the sections a creator actually authored, and never expose the hidden prompt fields that steer the model
-- Public discovery, opt-in creator profiles, private per-user likes, and a moderation-report queue
+- Discovery feed with search, platform-tag filtering, three honest orderings and a private per-user saved library
+- Opt-in creator profiles and a moderation-report queue
 - Supabase Storage for profile and character images, scoped to the owning account
 - Complete JSON export/import for profiles, chats, memories, and settings
 - Request throttling, server-only API key, PostgreSQL persistence, local token-usage ledger, and Railway health check
@@ -164,7 +165,50 @@ Two distinctions matter throughout:
 Migration `0011` is additive: `creation_type` is backfilled from
 `profile_type`, `title` and `description` default to empty and fall back to the
 name and the existing backstory text, and no chat, memory, like, comment or
-world link is touched.
+world link is touched. Migration `0012` is index-only.
+
+## Discovery
+
+`/api/discovery` answers one page of public creations per request from a single
+statement. The card summary it returns (`CreationSummary`) carries only public
+presentation data — no greeting, personality, backstory, response directive,
+boundaries, example dialogue, cast definition or import source material is
+selected at all, so there is nothing to blank out for a visitor. Visibility is
+enforced by `characters_select_own_or_published`, by an explicit
+`visibility='public'` predicate, and by there being no code path that adds a
+draft or unlisted row to the list.
+
+Three orderings, each a plain sort over a real, trigger-maintained aggregate:
+
+| Tab | Ordering |
+| --- | --- |
+| Popular | `like_count` (saves) desc, then `chat_count`, then recency |
+| Most chatted | `chat_count` desc, then `message_count`, then recency |
+| New | `published_at` desc |
+
+There is deliberately no "For You": every account receives the same rows for
+the same query, and no personalisation layer exists to make the label true.
+Migration `0012` adds one partial index per ordering plus optional trigram
+indexes for search, and changes no table, column, constraint or policy.
+
+Search covers titles, names, taglines, descriptions, platform tags, creator
+hashtags and creator names. A term written as `#mha` is looked up against
+hashtags exactly rather than as letters inside a title, which keeps the two tag
+systems distinct at query level as well as in storage.
+
+## Saving
+
+Save is the product's only affinity action, and it is one persistence model:
+the `character_likes` relation and the `characters.like_count` counter its
+SECURITY DEFINER trigger maintains. Those storage names predate the rename and
+are kept — introducing a second bookmark table for the same user action would
+be the expensive mistake, not the old column name. `character_likes` is
+readable only by its owner, so the public total is visible to everybody while
+nobody can enumerate who saved what.
+
+Every surface goes through `toggleCreationSave` in `src/lib/saves.ts`, which
+applies the change optimistically, settles on the server's authoritative total,
+and reverts on failure. Likes are no longer a public metric anywhere in the UI.
 
 ## Adult-content boundaries
 

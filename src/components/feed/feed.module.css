@@ -1,0 +1,616 @@
+/*
+ * Discovery feed.
+ *
+ * Same design language as the public creation page: near-black ground with a
+ * warm undertone, faint white edges, one pink→violet accent used sparingly,
+ * serif for titles and sans for everything dense. The artwork supplies the
+ * colour; the chrome stays quiet so a wall of covers does not fight itself.
+ *
+ * The mobile grid is two columns by construction rather than by an auto-fill
+ * minimum, because two cards per row is the composition, not a side effect of
+ * however wide the phone happens to be.
+ */
+
+.feed {
+  --surface: #17131a;
+  --surface-raised: #1c1620;
+  --edge: rgba(255, 255, 255, .07);
+  --edge-strong: rgba(255, 255, 255, .12);
+  --ink: #f6eff4;
+  --muted: #a99cab;
+  --faint: #7b6f7e;
+  --accent: #e879a9;
+  --accent-soft: #b892f0;
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  background: radial-gradient(circle at 72% -6%, rgba(123, 50, 80, .16), transparent 38%), #100d11;
+  color: var(--ink);
+  /* The phone's home indicator and Safari's chrome both live down there. */
+  padding-bottom: calc(28px + env(safe-area-inset-bottom));
+}
+
+/* --------------------------------------------------------------- header --- */
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: calc(16px + env(safe-area-inset-top)) var(--gutter, 16px) 10px;
+}
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: .14em;
+  font-size: 9.5px;
+  color: var(--faint);
+}
+.title {
+  margin: 0;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(30px, 8vw, 40px);
+  font-weight: 600;
+  letter-spacing: -.01em;
+  line-height: 1.05;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.titleSpark { color: var(--accent); flex: none; }
+.lede { display: none; margin: 4px 0 0; max-width: 58ch; color: var(--muted); font-size: 11.5px; line-height: 1.55; }
+
+/*
+ * The controls stay reachable while the grid scrolls under them. Only the
+ * search row and the tabs are sticky — roughly 80px — so the feed keeps the
+ * screen it needs on a phone.
+ */
+.controls {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 8px var(--gutter, 16px) 10px;
+  background: linear-gradient(#100d11 62%, rgba(16, 13, 17, .82));
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid transparent;
+}
+.controlsStuck { border-bottom-color: var(--edge); }
+
+.controlRow { display: flex; align-items: center; gap: 8px; }
+
+.menuButton {
+  display: none;
+  flex: none;
+  width: 40px; height: 40px;
+  place-items: center;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.search {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--faint);
+  transition: border-color .18s, background .18s;
+}
+.search:focus-within { border-color: rgba(232, 121, 169, .42); background: var(--surface-raised); }
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.search input::placeholder { color: var(--faint); }
+.clearSearch {
+  flex: none;
+  display: grid; place-items: center;
+  width: 26px; height: 26px;
+  border: 0; border-radius: 8px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.clearSearch:hover { background: rgba(255, 255, 255, .06); color: var(--ink); }
+
+.filterButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 13px;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .18s, background .18s;
+}
+.filterButton:hover { border-color: var(--edge-strong); background: var(--surface-raised); }
+.filterButtonActive { border-color: rgba(232, 121, 169, .42); background: rgba(232, 121, 169, .1); color: #ffd9ea; }
+.filterCount {
+  display: grid; place-items: center;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent); color: #2a1020;
+  font-size: 10px; font-weight: 700;
+}
+.filterButtonLabel { display: none; }
+
+/* The tab strip scrolls sideways rather than wrapping onto a second line. */
+.tabs {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: 0 calc(var(--gutter, 16px) * -1);
+  padding: 0 var(--gutter, 16px);
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 33px;
+  padding: 0 14px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .18s, border-color .18s, background .18s;
+}
+.tab:hover { color: var(--ink); border-color: var(--edge-strong); }
+.tabActive {
+  color: #ffe2ef;
+  border-color: rgba(232, 121, 169, .4);
+  background: linear-gradient(96deg, rgba(232, 121, 169, .18), rgba(168, 116, 240, .16));
+}
+
+/* Chips summarising what the filter sheet is currently doing. */
+.activeFilters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 var(--gutter, 16px) 12px; }
+.activeChip {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 30px; padding: 0 6px 0 11px;
+  border: 1px solid rgba(232, 121, 169, .3);
+  border-radius: 999px;
+  background: rgba(232, 121, 169, .09);
+  color: #f3d5e4;
+  font-size: 11px;
+  cursor: pointer;
+}
+.activeChip:hover { background: rgba(232, 121, 169, .16); }
+.clearAll {
+  min-height: 30px; padding: 0 11px;
+  border: 1px solid var(--edge); border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 11px; cursor: pointer;
+}
+.clearAll:hover { color: var(--ink); border-color: var(--edge-strong); }
+
+/* ----------------------------------------------------------------- grid --- */
+
+.grid {
+  display: grid;
+  /* Two per row on a phone. Not negotiable by viewport width. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 2px var(--gutter, 16px) 0;
+  align-items: stretch;
+}
+
+/* ----------------------------------------------------------------- card --- */
+
+.card {
+  --accent-card: var(--accent);
+  position: relative;
+  display: flex;
+  min-width: 0;
+  border: 1px solid var(--edge);
+  border-radius: 16px;
+  background: var(--surface);
+  overflow: hidden;
+  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(232, 121, 169, .3);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .38);
+}
+.card:focus-within { border-color: rgba(232, 121, 169, .4); }
+
+.cardLink {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  color: inherit;
+  text-decoration: none;
+}
+.cardLink:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 15px; }
+
+.cover {
+  position: relative;
+  /* Portrait, but not a poster: two of these still leave room for the copy. */
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  background: linear-gradient(150deg, color-mix(in srgb, var(--accent-card) 30%, #2b2028), #141115);
+}
+.cover img {
+  width: 100%;
+  height: 100%;
+  /* Uploaded art is never cropped on disk; the frame crops it, biased upward
+     the way the creation page's hero does, so faces survive a 3:4 window. */
+  object-fit: cover;
+  object-position: 50% 25%;
+  display: block;
+  transition: transform .35s ease;
+}
+.card:hover .cover img { transform: scale(1.035); }
+.coverFallback {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 44px;
+  color: color-mix(in srgb, var(--accent-card) 70%, #ffffff);
+  opacity: .5;
+}
+/* A gradient, not a panel: the badges stay legible and the art stays vivid. */
+.coverScrim {
+  position: absolute; inset: 0;
+  background: linear-gradient(to bottom, rgba(8, 6, 9, .5) 0%, transparent 32%, transparent 62%, rgba(20, 16, 21, .72) 100%);
+  pointer-events: none;
+}
+
+.coverBadges { position: absolute; top: 8px; left: 8px; display: flex; gap: 5px; max-width: calc(100% - 60px); }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 21px; padding: 0 7px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 7px;
+  background: rgba(12, 9, 13, .62);
+  backdrop-filter: blur(10px);
+  font-size: 9.5px; font-style: normal; font-weight: 600; letter-spacing: .04em;
+  color: #e7dbe4;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.badgeAdult { color: #ffc4dd; border-color: rgba(232, 121, 169, .4); background: rgba(48, 14, 31, .66); }
+
+.saveButton {
+  position: absolute;
+  top: 6px; right: 6px;
+  z-index: 2;
+  display: grid; place-items: center;
+  width: 38px; height: 38px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 11px;
+  background: rgba(12, 9, 13, .58);
+  backdrop-filter: blur(10px);
+  color: #ece0e8;
+  cursor: pointer;
+  transition: background .18s, border-color .18s, color .18s, transform .18s;
+}
+.saveButton:hover { background: rgba(232, 121, 169, .2); border-color: rgba(232, 121, 169, .42); color: #ffd9ea; }
+.saveButton:active { transform: scale(.92); }
+.saveButton:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.saveButtonSaved {
+  color: #ffd9ea;
+  border-color: rgba(232, 121, 169, .55);
+  background: linear-gradient(140deg, rgba(232, 121, 169, .34), rgba(168, 116, 240, .28));
+}
+.saveButton svg { transition: transform .18s ease; }
+.saveButtonSaved svg { transform: translateY(-1px); }
+
+.copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 11px 11px;
+}
+
+.byline {
+  display: flex; align-items: center; gap: 5px;
+  min-width: 0;
+  font-size: 9.5px; color: var(--faint);
+}
+.bylineAvatar {
+  flex: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255, 255, 255, .08);
+}
+.bylineName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cardTitle {
+  margin: 0;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 16.5px;
+  font-weight: 600;
+  line-height: 1.22;
+  letter-spacing: -.005em;
+  color: var(--ink);
+  /* Two lines, then an ellipsis: one long title can never push its neighbour
+     out of alignment. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.tagline {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A single row of platform tags, never a wall. The row cannot wrap, so however
+ * many tags a creation carries the card is exactly as tall as it would be with
+ * one.
+ */
+.tags {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin: 1px 0 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+.tags li {
+  /* The first tag keeps its full word; a second one gives way to it rather
+     than both being cut in half. */
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 3px 7px;
+  border: 1px solid rgba(232, 121, 169, .24);
+  border-radius: 999px;
+  background: rgba(232, 121, 169, .09);
+  color: #e5b9cf;
+  font-size: 9.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tags li:first-child { flex-shrink: 0; max-width: 64%; }
+.tagMore { flex: none; border-color: var(--edge) !important; background: rgba(255, 255, 255, .04) !important; color: var(--faint) !important; }
+
+.metrics {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 8px;
+  color: var(--faint);
+  font-size: 10.5px;
+}
+.metric { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.metric svg { flex: none; opacity: .85; }
+.metricSaved { color: var(--accent); }
+/* Visible only to assistive technology: "12.5K" alone says nothing about what
+   was counted, and the icon beside it is decorative. */
+.srOnly {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------------------------------------- skeleton --- */
+
+.skeleton { border: 1px solid var(--edge); border-radius: 16px; background: var(--surface); overflow: hidden; }
+.skeletonCover { aspect-ratio: 3 / 4; background: linear-gradient(150deg, #221b26, #17131a); }
+.skeletonCopy { display: flex; flex-direction: column; gap: 7px; padding: 12px 11px 14px; }
+.skeletonLine { height: 10px; border-radius: 5px; background: rgba(255, 255, 255, .06); }
+.skeletonLineShort { width: 55%; }
+.skeletonLineTall { height: 14px; width: 78%; }
+.shimmer { position: relative; overflow: hidden; }
+.shimmer::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, .05) 50%, transparent 80%);
+  animation: sweep 1.5s linear infinite;
+}
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* --------------------------------------------------------------- states --- */
+
+.state {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  padding: 46px 22px;
+  border: 1px dashed var(--edge);
+  border-radius: 16px;
+  text-align: center;
+}
+.stateIcon { color: var(--accent); opacity: .8; }
+.state h2 { margin: 0; font-family: var(--font-serif), Georgia, serif; font-size: 22px; font-weight: 600; }
+.state p { margin: 0; max-width: 44ch; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.stateAction {
+  margin-top: 4px;
+  min-height: 38px; padding: 0 16px;
+  border: 1px solid rgba(232, 121, 169, .34);
+  border-radius: 11px;
+  background: rgba(232, 121, 169, .1);
+  color: #ffd9ea; font-size: 12px; cursor: pointer;
+}
+.stateAction:hover { background: rgba(232, 121, 169, .17); }
+
+.toast {
+  position: fixed;
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  z-index: 40;
+  display: flex; align-items: center; gap: 10px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 11px 12px 11px 15px;
+  border: 1px solid rgba(232, 121, 169, .28);
+  border-radius: 13px;
+  background: rgba(31, 22, 30, .96);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+  color: var(--ink); font-size: 12px;
+}
+.toast button { border: 0; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+
+.loadMore {
+  display: block;
+  margin: 20px auto 6px;
+  min-height: 42px; padding: 0 22px;
+  border: 1px solid var(--edge); border-radius: 12px;
+  background: var(--surface); color: var(--ink); font-size: 12.5px; cursor: pointer;
+}
+.loadMore:hover { border-color: rgba(232, 121, 169, .34); background: var(--surface-raised); }
+.sentinel { height: 1px; }
+.endNote { margin: 22px 0 4px; text-align: center; color: var(--faint); font-size: 10.5px; }
+
+/* --------------------------------------------------------------- sheet --- */
+
+.sheetBackdrop {
+  position: fixed; inset: 0; z-index: 60;
+  display: grid; align-items: end; justify-items: stretch;
+  background: rgba(6, 4, 7, .72);
+  backdrop-filter: blur(6px);
+}
+.sheet {
+  display: flex; flex-direction: column;
+  max-height: 84dvh;
+  border: 1px solid var(--edge); border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  background: #171319;
+  color: var(--ink);
+  box-shadow: 0 -20px 60px rgba(0, 0, 0, .5);
+  animation: rise .22s ease-out;
+}
+@keyframes rise { from { transform: translateY(14px); opacity: .6; } to { transform: none; opacity: 1; } }
+.sheetHead {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--edge);
+}
+.sheetHead h2 { margin: 0; font-family: var(--font-serif), Georgia, serif; font-size: 23px; font-weight: 600; }
+.sheetClose {
+  display: grid; place-items: center;
+  width: 36px; height: 36px;
+  border: 1px solid var(--edge); border-radius: 10px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.sheetClose:hover { color: var(--ink); border-color: var(--edge-strong); }
+.sheetBody { flex: 1; overflow-y: auto; padding: 16px 18px 4px; display: flex; flex-direction: column; gap: 18px; }
+.sheetGroup { display: flex; flex-direction: column; gap: 8px; }
+.sheetGroup > h3 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.sheetGroup > p { margin: -3px 0 2px; font-size: 11px; line-height: 1.5; color: var(--faint); }
+.chipRow { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip {
+  min-height: 34px; padding: 0 12px;
+  border: 1px solid var(--edge); border-radius: 999px;
+  background: transparent; color: var(--muted);
+  font-size: 12px; cursor: pointer;
+  transition: color .16s, border-color .16s, background .16s;
+}
+.chip:hover { color: var(--ink); border-color: var(--edge-strong); }
+.chipSelected { color: #ffe2ef; border-color: rgba(232, 121, 169, .45); background: rgba(232, 121, 169, .13); }
+.sheetToggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 12px 13px;
+  border: 1px solid var(--edge); border-radius: 13px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.sheetToggle strong { display: block; font-size: 12.5px; font-weight: 600; }
+.sheetToggle small { display: block; margin-top: 3px; color: var(--faint); font-size: 10.5px; line-height: 1.45; }
+.sheetToggle input { width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
+.sheetFoot {
+  display: flex; gap: 10px;
+  padding: 14px 18px calc(16px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--edge);
+  background: rgba(23, 19, 25, .96);
+}
+.sheetFoot button { flex: 1; min-height: 44px; border-radius: 13px; font-size: 13px; cursor: pointer; }
+.sheetReset { border: 1px solid var(--edge); background: transparent; color: var(--muted); }
+.sheetReset:hover { color: var(--ink); border-color: var(--edge-strong); }
+.sheetApply {
+  border: 0;
+  background: linear-gradient(96deg, #ff5fa2 0%, #e879a9 45%, #a874f0 100%);
+  color: #2a1020; font-weight: 650;
+}
+
+/* ---------------------------------------------------------- breakpoints --- */
+
+@media (min-width: 501px) {
+  .feed { --gutter: 22px; }
+}
+
+@media (min-width: 560px) {
+  .lede { display: block; }
+  .grid {
+    /* Above a phone the density follows the container, so the desktop shell's
+       sidebar decides the column count rather than a hard-coded sequence. */
+    grid-template-columns: repeat(auto-fill, minmax(186px, 1fr));
+    gap: 16px;
+  }
+  .cardTitle { font-size: 17.5px; }
+  .tagline { font-size: 11.5px; }
+  .copy { padding: 12px 13px 13px; }
+  .filterButtonLabel { display: inline; }
+}
+
+@media (min-width: 900px) {
+  .feed { --gutter: clamp(24px, 4vw, 56px); }
+  .head { padding-top: 34px; padding-bottom: 6px; }
+  .controls { padding-top: 12px; padding-bottom: 14px; }
+  .sheetBackdrop { place-items: center; padding: 24px; }
+  .sheet { width: min(560px, 100%); border: 1px solid var(--edge); border-radius: 20px; max-height: min(720px, calc(100dvh - 48px)); }
+  .sheetFoot { padding-bottom: 16px; }
+}
+
+/* The drawer trigger belongs to the phone layout, where the shell hides its
+   sidebar. It is the app's existing drawer, not a new navigation. */
+@media (max-width: 500px) {
+  .menuButton { display: grid; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card, .cover img, .saveButton, .saveButton svg { transition: none; }
+  .card:hover { transform: none; }
+  .card:hover .cover img { transform: none; }
+  .shimmer::after { animation: none; }
+  .sheet { animation: none; }
+}

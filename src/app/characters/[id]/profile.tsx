@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Heart, Images,
+  ArrowLeft, BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images,
   MessageCircle, MoreHorizontal, Share2, Sparkles, Tag, UserRound, Users,
 } from "lucide-react";
 import type { Character, CharacterComment, World } from "@/lib/types";
@@ -12,6 +12,8 @@ import {
   castSectionLabel, creationCtaLabel, creationOverview, creationSubject, creationTitle, creationType,
   publicCastMembers,
 } from "@/lib/creation";
+import { compactCount } from "@/lib/format";
+import { toggleCreationSave } from "@/lib/saves";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket, worldCoverBucket } from "@/lib/storage";
 import styles from "./profile.module.css";
 
@@ -27,9 +29,6 @@ type Detail = { character: Character; worlds: World[]; owner: boolean };
  * contents. A scenario with no defined characters renders correctly — the page
  * never invents a primary character so an older layout keeps working.
  */
-function compact(value: number) {
-  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
-}
 function initials(name: string) {
   return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
 }
@@ -140,27 +139,27 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     }
   }, [characterId, router]);
 
-  const toggleLike = useCallback(async () => {
+  /**
+   * Saving, through the same `/api/saves` relation the feed writes. The state
+   * is applied optimistically and reverted if the write fails, so the page can
+   * never sit on a count that never happened.
+   */
+  const toggleSave = useCallback(async () => {
     if (!character) return;
-    const liked = Boolean(character.likedByViewer);
-    const response = await fetch(liked ? `/api/likes?characterId=${character.id}` : "/api/likes", {
-      method: liked ? "DELETE" : "POST",
-      headers: { "Content-Type": "application/json" },
-      ...(liked ? {} : { body: JSON.stringify({ characterId: character.id }) }),
-    });
-    if (!response.ok) return;
-    setDetail((current) => current ? {
-      ...current,
-      character: {
-        ...current.character,
-        likedByViewer: !liked,
-        likeCount: Math.max(0, (current.character.likeCount || 0) + (liked ? -1 : 1)),
-        publicStats: {
-          ...current.character.publicStats,
-          likes: current.character.publicStats.likes === null ? null : Math.max(0, current.character.publicStats.likes + (liked ? -1 : 1)),
+    const failure = await toggleCreationSave(
+      { id: character.id, savedByViewer: Boolean(character.savedByViewer), saveCount: character.saveCount ?? 0 },
+      (state) => setDetail((current) => current ? {
+        ...current,
+        character: {
+          ...current.character,
+          savedByViewer: state.savedByViewer,
+          saveCount: state.saveCount,
+          // The hero stat and the button read one number, never two.
+          publicStats: { ...current.character.publicStats, saves: state.saveCount },
         },
-      },
-    } : current);
+      } : current),
+    );
+    if (failure) setError(failure);
   }, [character]);
 
   const share = useCallback(() => {
@@ -213,8 +212,8 @@ export default function CharacterProfile({ characterId }: { characterId: string 
       <div className={styles.heroBar}>
         <Link href="/" className={styles.circleButton} aria-label="Back to Afterglow"><ArrowLeft size={18} /></Link>
         <div className={styles.heroBarActions}>
-          {!detail.owner && <button className={styles.circleButton} aria-label={character.likedByViewer ? "Remove from favourites" : "Add to favourites"} onClick={() => void toggleLike()}>
-            <Heart size={18} fill={character.likedByViewer ? "currentColor" : "none"} />
+          {!detail.owner && <button className={styles.circleButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
+            <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
           </button>}
           <button className={styles.circleButton} aria-label="Share character" onClick={share}><Share2 size={18} /></button>
           {detail.owner && <Link href={`/characters/${character.id}/edit`} className={styles.circleButton} aria-label="Edit character"><MoreHorizontal size={18} /></Link>}
@@ -233,7 +232,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         {heroTags.length > 0 && <ul className={styles.heroTags}>{heroTags.map((tag) => <li key={tag}>{tag}</li>)}</ul>}
         <p className={styles.byline}>
           {creatorName && <><strong>{creatorName}</strong><span aria-hidden>·</span></>}
-          {stats.chats !== null && <><span>{compact(stats.chats)} chats</span><span aria-hidden>·</span></>}
+          {stats.chats !== null && <><span>{compactCount(stats.chats)} chats</span><span aria-hidden>·</span></>}
           <span>Created {created}</span>
         </p>
 
@@ -241,8 +240,8 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           <button className={styles.primaryCta} onClick={() => void start()} disabled={starting}>
             <Sparkles size={18} />{starting ? "Opening story…" : creationCtaLabel(character)}
           </button>
-          <button className={styles.ghostButton} aria-label="Save creation" onClick={() => void toggleLike()}>
-            <Bookmark size={18} fill={character.likedByViewer ? "currentColor" : "none"} />
+          <button className={styles.ghostButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
+            <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
           </button>
         </div>
 
@@ -250,9 +249,9 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           {/* Ranking is not computed yet, so the slot is absent rather than
               showing a placeholder position. */}
           {stats.rank !== null && <Stat label={stats.rankCategory ? `in ${stats.rankCategory}` : "Rank"} value={`#${stats.rank}`} />}
-          <Stat label="Messages" value={stats.messages === null ? null : compact(stats.messages)} />
-          <Stat label="Likes" value={stats.likes === null ? null : compact(stats.likes)} />
-          <Stat label="Chats" value={stats.chats === null ? null : compact(stats.chats)} />
+          <Stat label="Messages" value={stats.messages === null ? null : compactCount(stats.messages)} />
+          <Stat label="Saves" value={stats.saves === null ? null : compactCount(stats.saves)} />
+          <Stat label="Chats" value={stats.chats === null ? null : compactCount(stats.chats)} />
         </dl>
       </div>
     </div>
@@ -295,8 +294,10 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           {/* Platform taxonomy and creator hashtags are two systems, so they
               are presented as two, never merged into one wall of chips. */}
           {character.tags.length > 0 && <ul className={styles.tagList}>{character.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul>}
+          {/* A hashtag is discovery vocabulary, so it goes somewhere: each one
+              opens the feed already searching for it. */}
           {character.hashtags.length > 0 && <ul className={styles.hashtagList}>
-            {character.hashtags.map((tag) => <li key={tag}>#{tag}</li>)}
+            {character.hashtags.map((tag) => <li key={tag}><Link href={`/?q=%23${encodeURIComponent(tag)}`}>#{tag}</Link></li>)}
           </ul>}
           {character.nsfwEnabled && <p className={styles.adultNote}>This creation may generate mature and explicit content.</p>}
         </section>}
