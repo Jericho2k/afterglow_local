@@ -338,6 +338,38 @@ async function schema() {
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS published_at timestamptz");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS origin_character_id uuid");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'private'");
+  // Public character profile enrichment (migration 0009). All optional: a
+  // character created through the simple flow simply has a shorter page.
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS quick_facts jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS chat_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS message_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_path text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_url text NOT NULL DEFAULT ''");
+  await pool().query(`
+    CREATE TABLE IF NOT EXISTS character_gallery (
+      id uuid PRIMARY KEY,
+      character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      user_id uuid,
+      storage_path text NOT NULL DEFAULT '',
+      external_url text NOT NULL DEFAULT '',
+      caption text NOT NULL DEFAULT '',
+      position integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS character_comments (
+      id uuid PRIMARY KEY,
+      character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      user_id uuid,
+      parent_id uuid,
+      body text NOT NULL,
+      like_count integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+  await pool().query("CREATE INDEX IF NOT EXISTS character_gallery_character_idx ON character_gallery (character_id, position, created_at)");
+  await pool().query("CREATE INDEX IF NOT EXISTS character_comments_character_idx ON character_comments (character_id, created_at DESC)");
   await pool().query("ALTER TABLE personas ADD COLUMN IF NOT EXISTS avatar_path text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS character_snapshot jsonb");
   await pool().query(`
@@ -512,6 +544,31 @@ export async function userQuery<T extends QueryResultRow>(userId: string, text: 
   return asUser(userId, (client) => client.query<T>(text, values));
 }
 
+/** Ordered label/value pairs, bounded so a malformed row cannot flood the page. */
+function quickFactsFromRow(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    .map((item) => ({ label: String(item.label ?? "").trim(), value: String(item.value ?? "").trim() }))
+    .filter((item) => item.label && item.value)
+    .slice(0, 6);
+}
+
+function galleryFromRow(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    .map((item) => ({
+      id: String(item.id ?? ""),
+      storagePath: String(item.storage_path ?? item.storagePath ?? ""),
+      externalUrl: String(item.external_url ?? item.externalUrl ?? ""),
+      caption: String(item.caption ?? ""),
+      position: Number(item.position ?? 0),
+    }))
+    .filter((item) => item.id && (item.storagePath || item.externalUrl))
+    .sort((left, right) => left.position - right.position);
+}
+
 export function characterFromRow(row: Record<string, unknown>, viewerId?: string): Character {
   const ownedByViewer = viewerId ? String(row.user_id ?? "") === viewerId : true;
   const cast = Array.isArray(row.cast_members) ? row.cast_members.filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === "object").map((member) => ({
@@ -529,6 +586,18 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
     // holds private notes. Publishing a character shares the card, not that.
     sourceMaterial: ownedByViewer ? String(row.source_material || "") : "",
     worldIds,
+    tags: textArrayFromRow(row.tags),
+    quickFacts: quickFactsFromRow(row.quick_facts),
+    gallery: galleryFromRow(row.gallery),
+    publicStats: {
+      messages: row.message_count == null ? null : Number(row.message_count),
+      likes: row.like_count == null ? null : Number(row.like_count),
+      chats: row.chat_count == null ? null : Number(row.chat_count),
+      // Ranking is not computed yet. Null keeps the slot in the interface and
+      // renders as unavailable instead of inventing a position.
+      rank: row.rank == null ? null : Number(row.rank),
+      rankCategory: row.rank_category == null ? null : String(row.rank_category),
+    },
     visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as Character["visibility"],
     nsfwEnabled: Boolean(row.nsfw_enabled),
     likeCount: Number(row.like_count || 0), likedByViewer: Boolean(row.liked_by_viewer),
@@ -564,6 +633,7 @@ export function personaFromRow(row: Record<string, unknown>): Persona {
 export function worldFromRow(row: Record<string, unknown>): World {
   return {
     id: String(row.id), name: String(row.name), description: String(row.description || ""), content: String(row.content || ""),
+    coverPath: String(row.cover_path || ""), coverUrl: String(row.cover_url || ""),
     visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as World["visibility"],
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };

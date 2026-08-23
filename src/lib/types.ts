@@ -28,6 +28,13 @@ export type Character = {
   boundaries: string;
   sourceMaterial: string;
   worldIds: string[];
+  /** Canonical public tags. The hero chips and the Tags section share these. */
+  tags: string[];
+  /** Up to six creator-configured public facts, ordered. */
+  quickFacts: CharacterQuickFact[];
+  gallery: CharacterGalleryImage[];
+  /** Public totals across every account, not the viewer's own activity. */
+  publicStats: CharacterPublicStats;
   visibility: CharacterVisibility;
   nsfwEnabled: boolean;
   likeCount?: number;
@@ -72,11 +79,47 @@ export type Persona = {
   updatedAt: string;
 };
 
+/** A generic label/value pair so the six shown labels are a set, not a schema. */
+export type CharacterQuickFact = { label: string; value: string };
+
+export type CharacterGalleryImage = {
+  id: string;
+  storagePath: string;
+  externalUrl: string;
+  caption: string;
+  position: number;
+};
+
+/**
+ * Public character metrics. Every field is nullable because a metric that the
+ * backend cannot answer yet must read as unavailable rather than as zero.
+ */
+export type CharacterPublicStats = {
+  messages: number | null;
+  likes: number | null;
+  chats: number | null;
+  rank: number | null;
+  rankCategory: string | null;
+};
+
+export type CharacterComment = {
+  id: string;
+  characterId: string;
+  parentId: string | null;
+  body: string;
+  likeCount: number;
+  createdAt: string;
+  author: { id: string; username: string; displayName: string; avatarPath: string } | null;
+  authoredByViewer: boolean;
+};
+
 export type World = {
   id: string;
   name: string;
   description: string;
   content: string;
+  coverPath: string;
+  coverUrl: string;
   visibility: CharacterVisibility;
   createdAt: string;
   updatedAt: string;

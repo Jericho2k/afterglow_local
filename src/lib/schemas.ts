@@ -57,6 +57,18 @@ export const characterSchema = z.object({
   boundaries: text(5000).default(""),
   sourceMaterial: text(100000).default(""),
   worldIds: z.preprocess((value) => value == null ? [] : value, z.array(z.string().uuid()).max(50)).default([]),
+  // Canonical public tags. The hero chips and the Tags section read the same
+  // array, so there is never a second tag dataset to drift out of sync.
+  tags: z.preprocess(
+    (value) => Array.isArray(value) ? value : [],
+    z.array(z.string().trim().min(1).max(40)).max(20),
+  ).transform((tags) => Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 20)).default([]),
+  // Generic label/value pairs, capped at six. The labels the design shows are
+  // a starting set rather than a fixed schema.
+  quickFacts: z.preprocess(
+    (value) => Array.isArray(value) ? value : [],
+    z.array(z.object({ label: text(40, 1), value: text(120, 1) })).max(6),
+  ).default([]),
   visibility,
   nsfwEnabled: z.boolean().default(false),
 });
@@ -157,7 +169,24 @@ export const worldSchema = z.object({
   name: text(120, 1),
   description: text(500).default(""),
   content: text(100000, 1),
+  coverPath: storagePath,
+  coverUrl: imageSource,
   visibility,
+});
+
+export const commentSchema = z.object({
+  characterId: z.string().uuid(),
+  body: text(2000, 1),
+  parentId: z.string().uuid().nullable().optional(),
+});
+
+export const gallerySchema = z.object({
+  characterId: z.string().uuid(),
+  images: z.array(z.object({
+    storagePath: storagePath,
+    externalUrl: imageSource,
+    caption: text(200).default(""),
+  })).max(12).default([]),
 });
 
 export const settingsSchema = z.object({

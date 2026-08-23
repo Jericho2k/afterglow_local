@@ -27,8 +27,8 @@ export async function POST(request: Request) {
   if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message || "Invalid world" }, { status: 400 });
   const id = randomUUID(); const value = parsed.data;
   const result = await asUser(account.id, (client) => client.query(
-    "INSERT INTO worlds (id,user_id,name,description,content,visibility) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
-    [id,account.id,value.name,value.description,value.content,value.visibility],
+    "INSERT INTO worlds (id,user_id,name,description,content,visibility,cover_path,cover_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
+    [id,account.id,value.name,value.description,value.content,value.visibility,value.coverPath,value.coverUrl],
   ));
   return Response.json({ world: worldFromRow(result.rows[0]) }, { status: 201 });
 }
