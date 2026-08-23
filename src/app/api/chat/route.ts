@@ -224,25 +224,52 @@ export async function POST(request: Request) {
           await consume(retry,retryStartedAt);
         }
         if (!assistant.trim()) throw new Error("The model returned no text after two attempts. Please try again.");
-        let variants: string[];
-        let selectedVariant: number;
-        if (regenerateTarget) {
-          variants = [...regenerateTarget.variants,assistant]; selectedVariant = variants.length - 1;
-          await asUser(account.id, async (client) => {
-            await client.query("UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[] WHERE id=$6 AND user_id=$7", [assistant,JSON.stringify(variants),selectedVariant,memories.map((memory) => memory.id),arcs.map((arc) => arc.id),assistantId,account.id]);
-            await client.query("UPDATE conversations SET updated_at=now() WHERE id=$1 AND user_id=$2", [conversationId,account.id]);
-          });
-        } else {
-          variants = [assistant]; selectedVariant = 0;
-          await asUser(account.id, async (client) => {
-            await client.query("INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids) VALUES ($1,$2,$3,'assistant',$4,$5::jsonb,0,$6::uuid[],$7::uuid[])", [assistantId,conversationId,account.id,assistant,JSON.stringify(variants),memories.map((memory) => memory.id),arcs.map((arc) => arc.id)]);
-            await client.query("UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1 AND user_id=$2", [conversationId,account.id]);
-          });
+        const variants: string[] = regenerateTarget ? [...regenerateTarget.variants, assistant] : [assistant];
+        const selectedVariant = variants.length - 1;
+        const memoryIds = memories.map((memory) => memory.id);
+        const arcIds = arcs.map((arc) => arc.id);
+
+        // The reply is complete and every field the client needs is already
+        // known here, so the completion event is emitted before the write
+        // rather than after it. Holding it until the database round trips
+        // finished left the text sitting on screen for seconds with its
+        // controls still hidden, which read as a freeze.
+        send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, ...(isAdminAccount(account)?{memoriesUsed: memoryIds, arcsUsed: arcIds, usage}: {}) });
+
+        try {
+          // One statement per transaction: each extra round trip to a pooled
+          // remote database is latency the reader would otherwise wait through.
+          if (regenerateTarget) {
+            await asUser(account.id, (client) => client.query(
+              `WITH saved AS (
+                 UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[]
+                 WHERE id=$6 AND user_id=$7 RETURNING conversation_id
+               )
+               UPDATE conversations SET updated_at=now() WHERE id=(SELECT conversation_id FROM saved) AND user_id=$7`,
+              [assistant,JSON.stringify(variants),selectedVariant,memoryIds,arcIds,assistantId,account.id],
+            ));
+          } else {
+            await asUser(account.id, (client) => client.query(
+              `WITH saved AS (
+                 INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids)
+                 VALUES ($1,$2,$3,'assistant',$4,$5::jsonb,0,$6::uuid[],$7::uuid[]) RETURNING conversation_id
+               )
+               UPDATE conversations SET message_count=message_count+1,updated_at=now()
+               WHERE id=(SELECT conversation_id FROM saved) AND user_id=$3`,
+              [assistantId,conversationId,account.id,assistant,JSON.stringify(variants),memoryIds,arcIds],
+            ));
+          }
+        } catch (error) {
+          // The reader was already told the reply finished, so a failed write
+          // has to be reported rather than swallowed: the text on their screen
+          // would otherwise disappear on the next reload with no explanation.
+          console.error("Reply persistence failed", error);
+          send({ type: "error", error: "That reply could not be saved. Reload the chat before continuing." });
         }
+
         // Accounting must not hold the accepted-message event (and therefore
         // the post-stream controls) behind another database round trip.
         void recordAttemptUsage().catch((error)=>console.error("Usage accounting failed",error));
-        send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, ...(isAdminAccount(account)?{memoriesUsed: memories.map((memory) => memory.id), arcsUsed: arcs.map((arc) => arc.id),usage}: {}) });
         controller.close();
         if (!regenerateTarget) void (async () => {
           await maybeConsolidate(account.id,conversationId);

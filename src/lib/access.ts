@@ -94,6 +94,11 @@ export function characterFromSnapshot(snapshot: Record<string, unknown>, charact
     boundaries: String(snapshot.boundaries || ""),
     sourceMaterial: "",
     worldIds: [],
+    // Public presentation data is not part of a frozen roleplay definition.
+    tags: [],
+    quickFacts: [],
+    gallery: [],
+    publicStats: { messages: null, likes: null, chats: null, rank: null, rankCategory: null },
     visibility: "private",
     nsfwEnabled: Boolean(snapshot.nsfwEnabled),
     likeCount: 0,

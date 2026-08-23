@@ -1,5 +1,7 @@
 export const profileAvatarBucket = "profile-avatars";
 export const characterAvatarBucket = "character-avatars";
+/** Worlds outlive any single character that references them, so covers get their own bucket. */
+export const worldCoverBucket = "world-covers";
 
 /**
  * Where an avatar actually lives.

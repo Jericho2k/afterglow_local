@@ -5,25 +5,28 @@ import {useRouter} from "next/navigation";
 import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, ModelCatalog, Persona, Profile, UsageResponse, World } from "@/lib/types";
 import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
 import { supabaseBrowser, supabaseBrowserConfigured } from "@/lib/supabase/client";
-import { avatarObjectPath, avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
+import { avatarObjectPath, avatarSource, characterAvatarBucket, profileAvatarBucket, worldCoverBucket } from "@/lib/storage";
 import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
 
-type CharacterDraft = Omit<Character, "id" | "createdAt" | "updatedAt" | "ownedByViewer" | "likeCount" | "likedByViewer" | "creator">;
+// Gallery and public metrics belong to the public profile surface, not to
+// the create/edit draft, so the studio does not have to carry them.
+type CharacterDraft = Omit<Character, "id" | "createdAt" | "updatedAt" | "ownedByViewer" | "likeCount" | "likedByViewer" | "creator" | "gallery" | "publicStats">;
 type WorldWithCount = World & { characterCount?: number };
 type AppView = "home" | "chats" | "chat" | "worlds" | "personas" | "profile" | "likes";
 
 const blankCharacter: CharacterDraft = {
   name: "", profileType: "single", tagline: "", avatarUrl: "", avatarPath: "", accent: "#e879a9", backstory: "", cast: [], lorebook: "", personality: "", scenario: "",
-  greeting: "", alternateGreetings: [], exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "", worldIds: [], visibility: "private", nsfwEnabled: false,
+  greeting: "", alternateGreetings: [], exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "", worldIds: [], tags: [], quickFacts: [], visibility: "private", nsfwEnabled: false,
 };
 
-function characterDraft(character?: Character | null): CharacterDraft {
+function characterDraft(character?: (CharacterDraft & Partial<Character>) | null): CharacterDraft {
   if (!character) return { ...blankCharacter, cast: [], alternateGreetings: [], worldIds: [] };
   return {
     name: character.name, profileType: character.profileType, tagline: character.tagline, avatarUrl: character.avatarUrl, avatarPath: character.avatarPath, accent: character.accent,
     backstory: character.backstory, cast: character.cast.map((member) => ({ ...member })), lorebook: character.lorebook, personality: character.personality,
     scenario: character.scenario, greeting: character.greeting, alternateGreetings: [...character.alternateGreetings], exampleDialogue: character.exampleDialogue,
     responseDirective: character.responseDirective, boundaries: character.boundaries, sourceMaterial: character.sourceMaterial, worldIds: [...character.worldIds],
+    tags: [...(character.tags ?? [])], quickFacts: (character.quickFacts ?? []).map((fact) => ({ ...fact })),
     visibility: character.visibility, nsfwEnabled: character.nsfwEnabled,
   };
 }
@@ -453,7 +456,7 @@ export default function Home() {
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`} style={editingMessageId === message.id && editWidth ? { width: editWidth } : undefined}>
                     {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
                   </div>
-                  {message.content && !streaming && editingMessageId !== message.id && <div className="message-actions"><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?"◌ Creating…":"⑂ Branch here"}</button>{isAdmin && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {message.memoryIds.length + message.arcIds.length ? `${message.memoryIds.length + message.arcIds.length} recalled` : "Context"}</button>}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
+                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?"◌ Creating…":"⑂ Branch here"}</button>{isAdmin && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {message.memoryIds.length + message.arcIds.length ? `${message.memoryIds.length + message.arcIds.length} recalled` : "Context"}</button>}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
                 </div>
               </article>
             ))}
@@ -496,7 +499,10 @@ export default function Home() {
 
 function Logo() { return <div className="logo"><span className="logo-mark">A</span><span>Afterglow</span></div>; }
 
-function Avatar({ character, large = false }: { character: Character; large?: boolean }) {
+// Only the fields an avatar actually renders, so a draft preview does not
+// have to fabricate public profile data to satisfy the type.
+type AvatarSubject = Pick<Character, "name" | "accent" | "avatarUrl" | "avatarPath">;
+function Avatar({ character, large = false }: { character: AvatarSubject; large?: boolean }) {
   const source = avatarSource(characterAvatarBucket, character.avatarPath, character.avatarUrl);
   return <div className={`avatar ${large ? "large" : ""}`} style={{ "--accent": character.accent } as React.CSSProperties}>{source ? <img src={source} alt="" /> : <span>{initials(character.name)}</span>}</div>;
 }
@@ -609,7 +615,7 @@ function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, 
   }
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><section className="studio modal"><header><div><span className="eyebrow">{character ? "Character details" : "Character studio"}</span><h2>{character ? `View or edit ${character.name}` : "Bring someone to life"}</h2></div><button className="icon-button" onClick={onClose}>×</button></header>
     {!character && <div className="generator"><div className="generator-tabs"><button className={generatorMode === "idea" ? "active" : ""} onClick={() => setGeneratorMode("idea")}>Quick idea</button><button className={generatorMode === "dump" ? "active" : ""} onClick={() => setGeneratorMode("dump")}>Paste everything</button></div><div><label>{generatorMode === "dump" ? "Dump all your character material" : "Start with an idea"}<small>{generatorMode === "dump" ? "Paste up to 100,000 characters. Afterglow detects multiple-character cards, separates reusable world material, creates opening options, and keeps the untouched source for review." : "Describe one character or a complete cast/story concept."}</small></label><textarea maxLength={100000} value={idea} onChange={(e) => setIdea(e.target.value)} placeholder={generatorMode === "dump" ? "Paste the complete card, descriptions, dialogue, scenarios, lorebooks, rules, and notes here…" : "A sharp-witted art thief in her thirties who meets me at a rain-soaked Paris café…"} rows={generatorMode === "dump" ? 12 : 3} /></div><div className="generator-row"><ChoiceField label="Tone" value={tone} onChange={setTone} options={[{value:"dramatic",label:"Dramatic"},{value:"romantic",label:"Romantic"},{value:"playful",label:"Playful"},{value:"adventurous",label:"Adventurous"},{value:"comforting",label:"Comforting"},{value:"custom",label:"Preserve supplied tone"}]} compact/><span className="character-count">{idea.length.toLocaleString()} / 100,000</span><button className="magic-button" disabled={busy || idea.trim().length < 8} onClick={() => void generate()}>✦ {busy ? (generatorMode === "dump" ? "Mapping characters & worlds…" : "Dreaming…") : (generatorMode === "dump" ? "Import and organize" : "Generate profile")}</button></div></div>}
-    <div className="character-card-preview"><Avatar character={{ ...form, id: "preview", ownedByViewer: true, createdAt: "", updatedAt: "" }} large /><div><span className="eyebrow">{form.profileType === "ensemble" ? "Multiple characters" : "Character card"}</span><strong>{form.name || "Untitled character"}</strong><p>{form.profileType === "ensemble" ? `${form.cast.length} recurring characters` : "Single-character roleplay"}</p><div><span>{form.cast.length} cast</span><span>{openings.filter(Boolean).length} openings</span><span>{form.worldIds.length + (form.lorebook.trim() ? 1 : 0)} worlds</span></div></div></div>
+    <div className="character-card-preview"><Avatar character={form} large /><div><span className="eyebrow">{form.profileType === "ensemble" ? "Multiple characters" : "Character card"}</span><strong>{form.name || "Untitled character"}</strong><p>{form.profileType === "ensemble" ? `${form.cast.length} recurring characters` : "Single-character roleplay"}</p><div><span>{form.cast.length} cast</span><span>{openings.filter(Boolean).length} openings</span><span>{form.worldIds.length + (form.lorebook.trim() ? 1 : 0)} worlds</span></div></div></div>
     {generated && <div className="import-summary"><strong>Import mapped without discarding the source.</strong><span>{form.profileType === "ensemble" ? "Multiple characters detected" : "Single character detected"} · {form.cast.length} cast entries · {openings.filter(Boolean).length} openings · {form.sourceMaterial.length.toLocaleString()} source characters retained</span></div>}
     <nav className="studio-sections"><button className={section === "identity" ? "active" : ""} onClick={() => setSection("identity")}>General</button><button className={section === "definition" ? "active" : ""} onClick={() => setSection("definition")}>Definition</button><button className={section === "world" ? "active" : ""} onClick={() => setSection("world")}>World & openings</button></nav>
     <div className="form-grid">
@@ -621,6 +627,7 @@ function CharacterStudio({ character, worlds, startSection, onOpenWorldLibrary, 
         <div className="avatar-source wide"><div><strong>Character image</strong><small>Upload from your media library or use a direct image link.</small></div><div className="avatar-source-actions"><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (e) => { const file=e.target.files?.[0]; if(!file) return; try { field("avatarPath",await uploadAvatar(file,characterAvatarBucket)); } catch(err) { setError(err instanceof Error ? err.message : "Image upload failed"); } finally { e.target.value=""; } }} /></label>{(form.avatarPath || form.avatarUrl) && <button className="secondary" onClick={() => { field("avatarPath",""); field("avatarUrl",""); }}>Remove</button>}</div><input aria-label="Character image URL" value={form.avatarUrl.startsWith("data:") ? "" : form.avatarUrl} onChange={(e) => field("avatarUrl", e.target.value)} placeholder="https://… (optional)" /></div>
         <label className="toggle-row wide"><span><strong>Adult mode</strong><small>Allows consensual explicit roleplay between fictional adults.</small></span><input type="checkbox" checked={form.nsfwEnabled} onChange={(e) => field("nsfwEnabled", e.target.checked)} /></label>
         <div className="visibility-row wide"><span><strong>Who can see this character</strong><small>Your chats, memories, and story stay private either way. Publishing shares only the character card.</small></span><ChoiceField label="Visibility" value={form.visibility} onChange={(value)=>field("visibility",value as CharacterDraft["visibility"])} options={[{value:"private",label:"Private — only me"},{value:"unlisted",label:"Unlisted — anyone with the link"},{value:"public",label:"Public — listed for others"}]} compact/></div>
+        <PublicProfileFields form={form} field={field} />
       </>}
       {section === "definition" && <>
         <label className="wide">Backstory & durable premise<textarea value={form.backstory} onChange={(e) => field("backstory", e.target.value)} rows={fieldRows(form.backstory, 7)} placeholder="History, relationships, formative events, timeline…" /></label>
@@ -698,9 +705,13 @@ function AccountProfile({ profile, onSaved }: { profile: Profile | null; onSaved
 
 function WorldLibrary({ worlds, onChange }: { worlds: WorldWithCount[]; onChange: () => void }) {
   const [editing,setEditing] = useState<World | null | "new">(null); const [name,setName] = useState(""); const [description,setDescription] = useState(""); const [content,setContent] = useState(""); const [busy,setBusy] = useState(false); const [error,setError] = useState("");
-  function open(world?: World) { setEditing(world ?? "new"); setName(world?.name ?? ""); setDescription(world?.description ?? ""); setContent(world?.content ?? ""); setError(""); }
-  async function save() { setBusy(true); setError(""); try { await api(editing === "new" ? "/api/worlds" : `/api/worlds/${editing!.id}`,{method:editing === "new"?"POST":"PATCH",body:JSON.stringify({name,description,content})}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Could not save world"); } finally { setBusy(false); } }
-  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Reusable canon</span><h1>World</h1><p>Write lore once, then attach the same document to any characters that live there.</p></div><button className="primary" onClick={() => open()}>＋ New world</button></header><div className="document-grid">{worlds.map((world) => <article key={world.id} className="document-card"><span className="document-icon">▤</span><div><strong>{world.name}</strong><p>{world.description || compactMessagePreview(world.content,140)}</p><small>{world.content.length.toLocaleString()} characters · used by {world.characterCount ?? 0} cards</small></div><button onClick={() => open(world)}>Edit</button></article>)}{!worlds.length && <div className="empty-library-note">No worlds yet. Create lore, rules, locations, factions, or setting documents here.</div>}</div>{editing && <div className="modal-backdrop" onMouseDown={(e) => { if(e.currentTarget===e.target)setEditing(null); }}><section className="modal document-editor"><header><div><span className="eyebrow">World document</span><h2>{editing === "new" ? "Create a reusable world" : `Edit ${editing.name}`}</h2></div><button className="icon-button" onClick={() => setEditing(null)}>×</button></header><div className="document-form"><label>World name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tower of Babel" /></label><label>Short description<input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Setting, rules, factions, locations…" /></label><label>World canon<textarea value={content} onChange={(e) => setContent(e.target.value)} rows={18} maxLength={100000} placeholder="Everything characters should consistently know about this world…" /></label><small>{content.length.toLocaleString()} / 100,000</small>{error && <div className="form-error">{error}</div>}</div><footer>{editing !== "new" && <button className="danger-button" disabled={busy} onClick={async () => { if(!window.confirm(`Delete “${editing.name}”? It will detach from every character.`))return; setBusy(true); try { await api(`/api/worlds/${editing.id}`,{method:"DELETE"}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Delete failed"); setBusy(false); } }}>⌫ Delete</button>}<span className="footer-spacer"/><button className="secondary" onClick={() => setEditing(null)}>Cancel</button><button className="primary" disabled={busy||!name.trim()||!content.trim()} onClick={() => void save()}>{busy?"Saving…":"Save world"}</button></footer></section></div>}</section>;
+  // Cover art is optional: existing worlds without one keep working and the
+  // public card simply renders its gradient instead of an image.
+  const [coverPath,setCoverPath] = useState(""); const [coverUrl,setCoverUrl] = useState("");
+  const coverPreview = avatarSource(worldCoverBucket, coverPath, coverUrl);
+  function open(world?: World) { setEditing(world ?? "new"); setName(world?.name ?? ""); setDescription(world?.description ?? ""); setContent(world?.content ?? ""); setCoverPath(world?.coverPath ?? ""); setCoverUrl(world?.coverUrl ?? ""); setError(""); }
+  async function save() { setBusy(true); setError(""); try { await api(editing === "new" ? "/api/worlds" : `/api/worlds/${editing!.id}`,{method:editing === "new"?"POST":"PATCH",body:JSON.stringify({name,description,content,coverPath,coverUrl})}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Could not save world"); } finally { setBusy(false); } }
+  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Reusable canon</span><h1>World</h1><p>Write lore once, then attach the same document to any characters that live there.</p></div><button className="primary" onClick={() => open()}>＋ New world</button></header><div className="document-grid">{worlds.map((world) => <article key={world.id} className="document-card"><span className="document-icon">▤</span><div><strong>{world.name}</strong><p>{world.description || compactMessagePreview(world.content,140)}</p><small>{world.content.length.toLocaleString()} characters · used by {world.characterCount ?? 0} cards</small></div><button onClick={() => open(world)}>Edit</button></article>)}{!worlds.length && <div className="empty-library-note">No worlds yet. Create lore, rules, locations, factions, or setting documents here.</div>}</div>{editing && <div className="modal-backdrop" onMouseDown={(e) => { if(e.currentTarget===e.target)setEditing(null); }}><section className="modal document-editor"><header><div><span className="eyebrow">World document</span><h2>{editing === "new" ? "Create a reusable world" : `Edit ${editing.name}`}</h2></div><button className="icon-button" onClick={() => setEditing(null)}>×</button></header><div className="document-form"><div className="persona-image-row"><div className="world-cover-preview">{coverPreview?<img src={coverPreview} alt=""/>:<span>▤</span>}</div><label className="secondary file-button">↑ Cover image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{setCoverPath(await uploadAvatar(file,worldCoverBucket));}catch(err){setError(err instanceof Error?err.message:"Image upload failed");}finally{e.target.value="";}}}/></label>{coverPath&&<button className="secondary" onClick={()=>setCoverPath("")}>Remove</button>}</div><label>World name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tower of Babel" /></label><label>Short description<input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Setting, rules, factions, locations…" /></label><label>World canon<textarea value={content} onChange={(e) => setContent(e.target.value)} rows={18} maxLength={100000} placeholder="Everything characters should consistently know about this world…" /></label><small>{content.length.toLocaleString()} / 100,000</small>{error && <div className="form-error">{error}</div>}</div><footer>{editing !== "new" && <button className="danger-button" disabled={busy} onClick={async () => { if(!window.confirm(`Delete “${editing.name}”? It will detach from every character.`))return; setBusy(true); try { await api(`/api/worlds/${editing.id}`,{method:"DELETE"}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Delete failed"); setBusy(false); } }}>⌫ Delete</button>}<span className="footer-spacer"/><button className="secondary" onClick={() => setEditing(null)}>Cancel</button><button className="primary" disabled={busy||!name.trim()||!content.trim()} onClick={() => void save()}>{busy?"Saving…":"Save world"}</button></footer></section></div>}</section>;
 }
 
 function WorldPicker({character,worlds,onClose,onCreated,onSaved}:{character:Character;worlds:WorldWithCount[];onClose:()=>void;onCreated:(world:WorldWithCount)=>void;onSaved:(character:Character)=>void}) {
@@ -778,4 +789,48 @@ function SettingsDrawer({ isAdmin, settings, models, catalog, onClose, onSaved, 
     </div>
     <footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={() => void save()}>{busy?"Working…":"Save settings"}</button></footer>
   </aside></div>;
+}
+
+
+/**
+ * Optional public-profile enrichment.
+ *
+ * Everything here can be left empty: the public page hides a section it has no
+ * data for rather than showing a placeholder, so a casual creator is never
+ * pushed through a long form to get a working character.
+ */
+function PublicProfileFields({ form, field }: { form: CharacterDraft; field: <K extends keyof CharacterDraft>(key: K, value: CharacterDraft[K]) => void }) {
+  const [tagDraft, setTagDraft] = useState("");
+  const addTag = () => {
+    const tag = tagDraft.trim().slice(0, 40);
+    if (!tag || form.tags.includes(tag) || form.tags.length >= 20) { setTagDraft(""); return; }
+    field("tags", [...form.tags, tag]);
+    setTagDraft("");
+  };
+  const setFact = (index: number, key: "label" | "value", value: string) => {
+    field("quickFacts", form.quickFacts.map((fact, position) => position === index ? { ...fact, [key]: value } : fact));
+  };
+
+  return <section className="structured-editor wide">
+    <div className="structured-heading"><span><strong>Public profile</strong><small>Optional. Shown on the public character page; empty sections are hidden rather than left blank.</small></span></div>
+
+    <label>Tags<small>Used both beside the name and in the Tags section.</small>
+      <div className="tag-input-row">
+        <input value={tagDraft} maxLength={40} placeholder="Enemies to lovers" onChange={(event) => setTagDraft(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addTag(); } }} />
+        <button className="secondary" type="button" disabled={!tagDraft.trim() || form.tags.length >= 20} onClick={addTag}>Add</button>
+      </div>
+    </label>
+    {form.tags.length > 0 && <div className="tag-chip-row">{form.tags.map((tag) => (
+      <button key={tag} type="button" className="tag-chip" onClick={() => field("tags", form.tags.filter((item) => item !== tag))} aria-label={`Remove ${tag}`}>{tag}<span aria-hidden>×</span></button>
+    ))}</div>}
+
+    <div className="structured-heading"><span><strong>Quick facts</strong><small>Up to six. Any label you like — Age, Height, Occupation, or your own.</small></span>
+      <button className="secondary" type="button" disabled={form.quickFacts.length >= 6} onClick={() => field("quickFacts", [...form.quickFacts, { label: "", value: "" }])}>＋ Add fact</button></div>
+    {form.quickFacts.map((fact, index) => <article key={index}><div>
+      <input value={fact.label} maxLength={40} placeholder="Label" onChange={(event) => setFact(index, "label", event.target.value)} />
+      <input value={fact.value} maxLength={120} placeholder="Value" onChange={(event) => setFact(index, "value", event.target.value)} />
+      <button type="button" aria-label="Remove fact" onClick={() => field("quickFacts", form.quickFacts.filter((_, position) => position !== index))}>×</button>
+    </div></article>)}
+  </section>;
 }

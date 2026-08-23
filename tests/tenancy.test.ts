@@ -122,6 +122,54 @@ describeTenancy("multi-tenant isolation", () => {
     expect(await visibleCount(pool, alice, "character_reports", "id=$1",[report])).toBe(0);
   });
 
+  it("keeps a gallery readable where its character is and writable only by its owner", async () => {
+    const image = "51515151-5151-4151-8151-515151515151";
+    await asAccount(pool, alice, (run) => run(
+      "INSERT INTO character_gallery (id,character_id,user_id,storage_path) VALUES ($1,$2,$3,'users/a/g/1.png')",
+      [image, alicePublicCharacter, alice],
+    ));
+    // Bob can see the published character's gallery but cannot alter it.
+    expect(await visibleCount(pool, bob, "character_gallery", "id=$1", [image])).toBe(1);
+    await asAccount(pool, bob, async (run) => {
+      expect((await run("UPDATE character_gallery SET caption='hijacked' WHERE id=$1", [image])).rowCount).toBe(0);
+      expect((await run("DELETE FROM character_gallery WHERE id=$1", [image])).rowCount).toBe(0);
+    });
+    // And a private character's gallery is not visible at all.
+    const privateImage = "52525252-5252-4252-8252-525252525252";
+    await asAccount(pool, alice, (run) => run(
+      "INSERT INTO character_gallery (id,character_id,user_id,storage_path) VALUES ($1,$2,$3,'users/a/g/2.png')",
+      [privateImage, alicePrivateCharacter, alice],
+    ));
+    expect(await visibleCount(pool, bob, "character_gallery", "id=$1", [privateImage])).toBe(0);
+  });
+
+  it("keeps comments public with the character and editable only by their author", async () => {
+    const comment = "53535353-5353-4353-8353-535353535353";
+    await asAccount(pool, bob, (run) => run(
+      "INSERT INTO character_comments (id,character_id,user_id,body) VALUES ($1,$2,$3,'Great character')",
+      [comment, alicePublicCharacter, bob],
+    ));
+    expect(await visibleCount(pool, alice, "character_comments", "id=$1", [comment])).toBe(1);
+    // Alice owns the character, so she may remove a comment from her page but
+    // must not be able to rewrite what somebody else said.
+    await asAccount(pool, alice, async (run) => {
+      expect((await run("UPDATE character_comments SET body='rewritten' WHERE id=$1", [comment])).rowCount).toBe(0);
+    });
+    await asAccount(pool, bob, async (run) => {
+      expect((await run("UPDATE character_comments SET body='edited by author' WHERE id=$1", [comment])).rowCount).toBe(1);
+    });
+    await asAccount(pool, alice, async (run) => {
+      expect((await run("DELETE FROM character_comments WHERE id=$1", [comment])).rowCount).toBe(1);
+    });
+  });
+
+  it("refuses to attach a gallery image to a character the account does not own", async () => {
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO character_gallery (id,character_id,user_id,storage_path) VALUES (gen_random_uuid(),$1,$2,'users/b/g/1.png')",
+      [alicePublicCharacter, bob],
+    ))).rejects.toThrow(/foreign key constraint|row-level security/i);
+  });
+
   it("keeps per-account settings separate", async () => {
     expect(await visibleCount(pool, bob, "user_settings", "user_id=$1", [alice])).toBe(0);
     expect(await visibleCount(pool, bob, "user_settings", "user_id=$1", [bob])).toBe(1);
