@@ -252,6 +252,12 @@ export type Memory = {
   lastRecalledAt: string | null;
   recallCount: number;
   sourceMessageCount: number;
+  /**
+   * Lightweight grounding for when/where this happened in the story. Absent on
+   * memories written before Scene State existed, which is expected and fine:
+   * an un-annotated memory is simply presented without a chronology tag.
+   */
+  scene?: SceneStamp | null;
   createdAt: string;
 };
 
@@ -262,6 +268,11 @@ export type MemoryArc = {
   keywords: string[];
   startMessageCount: number;
   endMessageCount: number;
+  /** Approximate story-day span, when Scene State observed one. */
+  storyDayStart?: number | null;
+  storyDayEnd?: number | null;
+  /** The distinct places the arc passed through, most recent last. */
+  locations?: string[];
   createdAt: string;
 };
 
@@ -286,6 +297,74 @@ export type CoreCanonEntry = {
   curationVersion: number;
   createdAt: string;
   updatedAt: string;
+};
+
+/**
+ * Scene State — where/when/who/what is happening RIGHT NOW.
+ *
+ * Deliberately separate from Core Canon (permanent facts), the rolling summary
+ * (compressed recent narrative) and episodic memories (durable past events).
+ * Every field is allowed to be unknown: a story that never named a date must
+ * not be given one merely because the schema has a slot for it.
+ */
+export type SceneDateKind = "exact" | "relative" | "unknown";
+export type SceneLocationConfidence = "stated" | "inferred" | "unknown";
+export type SceneStateStatus = "ok" | "failed";
+
+export type SceneLocation = {
+  /** The containing place: "Maya's apartment", "U.A. dormitory". */
+  place: string;
+  /** The specific spot inside it: "bedroom", "common room". Optional. */
+  sub: string;
+  confidence: SceneLocationConfidence;
+};
+
+export type SceneState = {
+  id: string;
+  conversationId: string;
+  /** Lineage position, counted exactly like memories.source_message_count. */
+  throughMessageCount: number;
+  throughMessageId: string | null;
+  /**
+   * Content fingerprint of the newest message this state was derived through.
+   * A provisional row is trusted only while it still matches, so a regenerated
+   * or edited reply can never leave its scene behind.
+   */
+  throughMessageFingerprint: string;
+  /** True while the newest assistant reply can still be replaced. */
+  provisional: boolean;
+  status: SceneStateStatus;
+  /** Relative chronology. Null means the story has not established one. */
+  storyDay: number | null;
+  dateKind: SceneDateKind;
+  /** "2026-10-17" for exact, "the day after the festival" for relative. */
+  dateText: string;
+  /** A broad period: morning, afternoon, late evening. Empty means unknown. */
+  timeOfDay: string;
+  /** An exact in-story time only when the fiction stated one. */
+  timeText: string;
+  location: SceneLocation;
+  presentCharacters: string[];
+  /** A few immediate unresolved beats. Never a second rolling summary. */
+  activeSituation: string[];
+  /** Which fields the last update actually changed. Diagnostics only. */
+  changedFields: string[];
+  extractionModel: string;
+  extractionProvider: string;
+  extractionLatencyMs: number;
+  failureReason: string;
+  tokenCount: number;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** The compact grounding a memory or arc keeps about when/where it happened. */
+export type SceneStamp = {
+  storyDay: number | null;
+  timeOfDay: string;
+  location: string;
+  present: string[];
 };
 
 export type Profile = {

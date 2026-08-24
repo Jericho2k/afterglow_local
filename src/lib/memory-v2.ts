@@ -68,12 +68,22 @@ function clipTokens(value: string, maximum: number) {
   return `${value.slice(0,Math.max(1,maximum * 4 - 1)).trimEnd()}…`;
 }
 
-/** Latest intent is primary; the immediately preceding exchange adds compact scene/entity cues. */
-export function focusedRetrievalQuery(messages: Message[], fallback = "") {
+/**
+ * Latest intent is primary; the immediately preceding exchange adds compact
+ * scene/entity cues.
+ *
+ * `sceneCue` is an optional, flag-gated addition from Scene State. It is empty
+ * by default so retrieval stays exactly as relevance-driven as it is today.
+ */
+export function focusedRetrievalQuery(messages: Message[], fallback = "", sceneCue = "") {
   const lastUserIndex = [...messages].map((message) => message.role).lastIndexOf("user");
   const latest = lastUserIndex >= 0 ? messages[lastUserIndex].content : fallback;
   const scene = messages.slice(Math.max(0,lastUserIndex - 2),lastUserIndex).map((message) => message.content).join("\n");
-  return [`LATEST USER INTENT:\n${clipTokens(latest || fallback,700)}`,scene ? `IMMEDIATE SCENE CUES:\n${clipTokens(scene,350)}` : ""].filter(Boolean).join("\n\n");
+  return [
+    `LATEST USER INTENT:\n${clipTokens(latest || fallback,700)}`,
+    scene ? `IMMEDIATE SCENE CUES:\n${clipTokens(scene,350)}` : "",
+    sceneCue ? clipTokens(sceneCue,120) : "",
+  ].filter(Boolean).join("\n\n");
 }
 
 export function packCoreCanon(entries: CoreCanonEntry[], budget = 1200) {

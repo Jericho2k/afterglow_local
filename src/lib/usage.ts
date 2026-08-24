@@ -3,7 +3,7 @@ import { userQuery } from "./db";
 import type { LLMUsage } from "./llm";
 import type { ResponseLength } from "./types";
 
-export type UsageKind = "chat" | "regenerate" | "continue" | "memory_consolidation" | "memory_curation" | "character_generation" | "embedding";
+export type UsageKind = "chat" | "regenerate" | "continue" | "memory_consolidation" | "memory_curation" | "scene_state" | "character_generation" | "embedding";
 
 // Official USD prices per one million tokens, checked against DeepSeek's
 // Models & Pricing page on 2026-08-18. Historical events store their estimate

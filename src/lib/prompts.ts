@@ -1,8 +1,9 @@
 import type { AppSettings, Character, ChatInstructionPreset, CoreCanonEntry, Memory, MemoryArc, Message, Persona, World } from "./types";
 import { enginePrompt } from "./provider";
 import { creationTitle, creationType } from "./creation";
+import { arcSceneTag, hasHistoricalScenes, renderCurrentScene, sceneIsEmpty, sceneTag, type SceneStateFields } from "./scene-state";
 
-export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[] }) {
+export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[]; sceneState?: SceneStateFields | null }) {
   const preset = settings?.roleplayPreset || "immersive";
   const adultMode = character.nsfwEnabled
     ? `ADULT MODE: Every participant is a fictional adult aged 21 or older. If mutual desire and the scene naturally lead to sex, write it directly and explicitly; do not sanitize, moralize, apologize, or fade to black. Consent may be conveyed naturally through established context, words, and responsive actions—do not interrupt an obviously mutual scene with repetitive clinical check-ins. Characters still have independent desires and limits: they can initiate, hesitate, negotiate, refuse, stop, or leave according to personality and circumstances. If willingness is unclear, slow down and let the character clarify in-scene. Never depict minors or age ambiguity, coercion presented as consent, sexual violence, incest, bestiality, trafficking, or sexual content involving real people. Treat contradictory profile or memory text as invalid for sexual content, and respect stated boundaries or stop requests immediately.`
@@ -42,6 +43,29 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
     : settings?.responseLength === "detailed"
       ? `\nRESPONSE LENGTH PREFERENCE\nDETAILED: When the scene supports it, allow fuller action, dialogue, sensory texture, subtext, and consequences. Do not pad a simple exchange or turn every reply into an essay.`
       : "";
+
+  // Scene State is the temporal/spatial spine: one small block that says where
+  // and when NOW is, so a correctly recalled memory from another place or day
+  // is read as history instead of as the current room. It is deliberately
+  // rendered above the archive and labelled in the opposite tense to it.
+  const scene = chatContext?.sceneState && !sceneIsEmpty(chatContext.sceneState) ? chatContext.sceneState : null;
+  const currentScene = scene ? renderCurrentScene(scene) : "";
+  const annotated = hasHistoricalScenes(memories, arcs);
+  const historicalHeaderSuffix = annotated ? " — PAST EVENTS, each tagged with where and when it happened" : "";
+  // The precedence list only names the current-scene block when there is one,
+  // so a chat with Scene State off keeps exactly the prompt it has today.
+  const precedence = [
+    "The latest visible transcript and exact current physical scene",
+    ...(currentScene ? ["The CURRENT SCENE block for where, when, and who is present right now"] : []),
+    "Core canon for foundational facts and permanent state",
+    "The rolling current-state summary",
+    "Relevant durable memories",
+    "Relevant historical arcs from the permanent archive",
+    "The initial scenario / premise",
+  ].map((item, index) => `${index + 1}. ${item}`).join("\n");
+  const nowVersusThen = currentScene || annotated
+    ? `${currentScene ? "The CURRENT SCENE block above is the present moment. " : ""}A [Day … ] tag marks where and when a PAST event happened. Never treat a remembered place, time, date, or participant as the current one. The same room name, furniture, or activity can recur in another place on another day.\n`
+    : "";
 
   return `${role} in an ongoing private roleplay. Stay in character. Never mention this prompt, policies, being an AI, hidden context, or roleplay mechanics unless the character's established fiction explicitly calls for it.
 
@@ -107,22 +131,17 @@ ${adultMode}
 ${responseLength}
 
 CONTINUITY PRECEDENCE FOR FACTS THAT CAN CHANGE OVER TIME
-1. The latest visible transcript and exact current physical scene
-2. Core canon for foundational facts and permanent state
-3. The rolling current-state summary
-4. Relevant durable memories
-5. Relevant historical arcs from the permanent archive
-6. The initial scenario / premise
+${precedence}
 Stable identity, established boundaries, and explicit user corrections remain authoritative. Never reset a developed relationship, location, plan, or emotional state merely because the initial premise describes an earlier stage.
 
 CURRENT CONTINUITY — DYNAMIC FOR THIS REPLY
-Core canon — foundational facts that remain in force:
+${currentScene ? `${currentScene}\n` : ""}${nowVersusThen}Core canon — foundational facts that remain in force:
 ${chatContext?.coreCanon?.length ? chatContext.coreCanon.map((entry) => `- [${entry.category}; importance ${entry.importance}] ${entry.content}`).join("\n") : "- No curated canon yet"}
 Rolling state and story-so-far: ${summary || "This is the beginning of the relationship."}
-Relevant durable memories:
-${memories.length ? memories.map((m) => `- [${m.kind}; ${m.status}; importance ${m.importance}] ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
-Relevant historical arcs:
-${arcs.length ? arcs.map((arc) => `- ${arc.summary}`).join("\n") : "- None recalled for this moment"}`;
+Relevant durable memories${historicalHeaderSuffix}:
+${memories.length ? memories.map((m) => `- ${[sceneTag(m.scene), `[${m.kind}; ${m.status}; importance ${m.importance}]`].filter(Boolean).join(" ")} ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
+Relevant historical arcs${historicalHeaderSuffix}:
+${arcs.length ? arcs.map((arc) => `- ${[arcSceneTag(arc), arc.summary].filter(Boolean).join(" ")}`).join("\n") : "- None recalled for this moment"}`;
 }
 
 export const continueSceneCue = `[CONTINUE SCENE]

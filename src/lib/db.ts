@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type Persona, type World } from "./types";
+import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type Persona, type SceneStamp, type SceneState, type World } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -144,6 +144,35 @@ async function schema() {
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS conversation_scene_states (
+      id uuid PRIMARY KEY,
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      through_message_count integer NOT NULL DEFAULT 0,
+      through_message_id uuid,
+      through_message_fingerprint text NOT NULL DEFAULT '',
+      provisional boolean NOT NULL DEFAULT false,
+      status text NOT NULL DEFAULT 'ok',
+      story_day integer,
+      date_kind text NOT NULL DEFAULT 'unknown',
+      date_text text NOT NULL DEFAULT '',
+      time_of_day text NOT NULL DEFAULT '',
+      time_text text NOT NULL DEFAULT '',
+      location_place text NOT NULL DEFAULT '',
+      location_sub text NOT NULL DEFAULT '',
+      location_confidence text NOT NULL DEFAULT 'unknown',
+      present_characters text[] NOT NULL DEFAULT ARRAY[]::text[],
+      active_situation text[] NOT NULL DEFAULT ARRAY[]::text[],
+      changed_fields text[] NOT NULL DEFAULT ARRAY[]::text[],
+      extraction_model text NOT NULL DEFAULT '',
+      extraction_provider text NOT NULL DEFAULT '',
+      extraction_latency_ms integer NOT NULL DEFAULT 0,
+      failure_reason text NOT NULL DEFAULT '',
+      token_count integer NOT NULL DEFAULT 0,
+      version integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS conversation_scene_states_position_idx ON conversation_scene_states(conversation_id,through_message_count);
     CREATE TABLE IF NOT EXISTS usage_events (
       id uuid PRIMARY KEY,
       conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,
@@ -261,6 +290,16 @@ async function schema() {
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS recall_count integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_message_count integer NOT NULL DEFAULT 0");
   await pool().query("CREATE INDEX IF NOT EXISTS memories_conversation_status_idx ON memories(conversation_id, status, kind)");
+  // Scene State grounding on the permanent archive (migration 0013). Empty by
+  // design on everything written earlier: an un-annotated memory is presented
+  // without a chronology tag rather than being given an invented one.
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS scene_story_day integer");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS scene_time_of_day text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS scene_location text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS scene_present text[] NOT NULL DEFAULT ARRAY[]::text[]");
+  await pool().query("ALTER TABLE memory_arcs ADD COLUMN IF NOT EXISTS story_day_start integer");
+  await pool().query("ALTER TABLE memory_arcs ADD COLUMN IF NOT EXISTS story_day_end integer");
+  await pool().query("ALTER TABLE memory_arcs ADD COLUMN IF NOT EXISTS scene_locations text[] NOT NULL DEFAULT ARRAY[]::text[]");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS usage_type text NOT NULL DEFAULT 'chat'");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
   await pool().query("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS rp_engine_id text NOT NULL DEFAULT 'immersive'");
@@ -329,7 +368,7 @@ async function schema() {
   // policies. This block keeps a plain PostgreSQL (and the in-memory test
   // database, which supports neither roles nor RLS) on the identical column
   // set so the application's SQL is the same everywhere.
-  for (const table of ["characters","worlds","personas","conversations","messages","memories","memory_arcs","core_canon_entries","memory_retrieval_runs","memory_job_leases","usage_events"]) {
+  for (const table of ["characters","worlds","personas","conversations","messages","memories","memory_arcs","core_canon_entries","memory_retrieval_runs","memory_job_leases","conversation_scene_states","usage_events"]) {
     await pool().query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS user_id uuid`);
   }
   await pool().query("CREATE INDEX IF NOT EXISTS messages_canonical_user_event_idx ON messages(user_id,authored_event_id) WHERE role='user' AND generation_started_at IS NOT NULL");
@@ -426,6 +465,7 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS usage_events_user_idx ON usage_events (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS core_canon_user_idx ON core_canon_entries (user_id, conversation_id, status)");
   await pool().query("CREATE INDEX IF NOT EXISTS memory_retrieval_runs_user_idx ON memory_retrieval_runs (user_id, conversation_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS conversation_scene_states_current_idx ON conversation_scene_states (user_id, conversation_id, through_message_count DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_user_idx ON character_likes (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_character_idx ON character_likes (character_id)");
   // One index per discovery ordering, matching the feed's ORDER BY so a page
@@ -755,15 +795,69 @@ export function memoryFromRow(row: Record<string, unknown>): Memory {
     pinned: Boolean(row.pinned), status: (["active","resolved","superseded"].includes(storedStatus) ? storedStatus : "active") as Memory["status"],
     resolution: String(row.resolution || ""), resolvedAt: row.resolved_at ? new Date(String(row.resolved_at)).toISOString() : null,
     lastRecalledAt: row.last_recalled_at ? new Date(String(row.last_recalled_at)).toISOString() : null,
-    recallCount: Number(row.recall_count || 0), sourceMessageCount: Number(row.source_message_count || 0), createdAt: new Date(String(row.created_at)).toISOString(),
+    recallCount: Number(row.recall_count || 0), sourceMessageCount: Number(row.source_message_count || 0),
+    scene: sceneStampFromRow(row.scene_story_day,row.scene_time_of_day,row.scene_location,row.scene_present),
+    createdAt: new Date(String(row.created_at)).toISOString(),
   };
+}
+
+/**
+ * The compact when/where a memory or arc kept, or null when it kept none.
+ *
+ * A row written before Scene State existed has every field empty, and that has
+ * to stay distinguishable from "day 0 at an unnamed place" so the prompt can
+ * simply omit the tag instead of asserting an unknown chronology.
+ */
+function sceneStampFromRow(day: unknown, timeOfDay: unknown, location: unknown, present: unknown): SceneStamp | null {
+  const storyDay = day == null || day === "" ? null : Number(day);
+  const stamp: SceneStamp = {
+    storyDay: Number.isFinite(storyDay) ? storyDay : null,
+    timeOfDay: String(timeOfDay || ""),
+    location: String(location || ""),
+    present: textArrayFromRow(present),
+  };
+  return stamp.storyDay === null && !stamp.timeOfDay && !stamp.location && !stamp.present.length ? null : stamp;
 }
 
 export function memoryArcFromRow(row: Record<string, unknown>): MemoryArc {
   return {
     id: String(row.id), conversationId: String(row.conversation_id), summary: String(row.summary),
     keywords: textArrayFromRow(row.keywords), startMessageCount: Number(row.start_message_count),
-    endMessageCount: Number(row.end_message_count), createdAt: new Date(String(row.created_at)).toISOString(),
+    endMessageCount: Number(row.end_message_count),
+    storyDayStart: row.story_day_start == null ? null : Number(row.story_day_start),
+    storyDayEnd: row.story_day_end == null ? null : Number(row.story_day_end),
+    locations: textArrayFromRow(row.scene_locations),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/** A persisted Scene State row. Unknown stays unknown: no field is defaulted. */
+export function sceneStateFromRow(row: Record<string, unknown>): SceneState {
+  const dateKind = String(row.date_kind || "unknown");
+  const confidence = String(row.location_confidence || "unknown");
+  const status = String(row.status || "ok");
+  return {
+    id: String(row.id), conversationId: String(row.conversation_id),
+    throughMessageCount: Number(row.through_message_count || 0),
+    throughMessageId: row.through_message_id ? String(row.through_message_id) : null,
+    throughMessageFingerprint: String(row.through_message_fingerprint || ""),
+    provisional: Boolean(row.provisional),
+    status: (status === "failed" ? "failed" : "ok") as SceneState["status"],
+    storyDay: row.story_day == null ? null : Number(row.story_day),
+    dateKind: (["exact","relative","unknown"].includes(dateKind) ? dateKind : "unknown") as SceneState["dateKind"],
+    dateText: String(row.date_text || ""),
+    timeOfDay: String(row.time_of_day || ""), timeText: String(row.time_text || ""),
+    location: {
+      place: String(row.location_place || ""), sub: String(row.location_sub || ""),
+      confidence: (["stated","inferred","unknown"].includes(confidence) ? confidence : "unknown") as SceneState["location"]["confidence"],
+    },
+    presentCharacters: textArrayFromRow(row.present_characters),
+    activeSituation: textArrayFromRow(row.active_situation),
+    changedFields: textArrayFromRow(row.changed_fields),
+    extractionModel: String(row.extraction_model || ""), extractionProvider: String(row.extraction_provider || ""),
+    extractionLatencyMs: Number(row.extraction_latency_ms || 0), failureReason: String(row.failure_reason || ""),
+    tokenCount: Number(row.token_count || 0), version: Number(row.version || 1),
+    createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
 

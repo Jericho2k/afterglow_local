@@ -80,3 +80,13 @@ html,body{max-width:100%;overflow-x:hidden}.library-view,.memory-drawer,.setting
 
 
 
+
+/* Administrator-only Scene State diagnostics. Never rendered for a reader. */
+.scene-state-block {
+  margin: 0.35rem 0 0.5rem;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  opacity: 0.92;
+}

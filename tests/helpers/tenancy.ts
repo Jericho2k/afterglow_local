@@ -37,6 +37,7 @@ export async function migratedPool() {
     await client.query(sql("supabase/migrations/0007_productization_sprint_1.sql"));
     await client.query(sql("supabase/migrations/0008_canonical_generated_user_messages.sql"));
     await client.query(sql("supabase/migrations/0009_public_character_profile.sql"));
+    await client.query(sql("supabase/migrations/0013_scene_state.sql"));
   } finally {
     client.release();
   }
