@@ -127,6 +127,36 @@ export function resolveBack(depth: number, fallback: string): BackDestination {
   return canGoBack(depth) ? { type: "history" } : { type: "fallback", href: fallback };
 }
 
+/**
+ * Marks the creation page a publish just landed on.
+ *
+ * One deliberate exception to "Back is history". Publishing walks forward
+ * through a form and ends on the finished creation; the page behind it is the
+ * form that was just completed, and returning into it is never what anybody
+ * means. So the arrival replaces the studio's entry and claims root depth,
+ * which makes Back take the fallback — Discovery — rather than history.
+ *
+ * Editing deliberately does not use this. Saving an edit returns the creator
+ * to wherever they were managing from, which is ordinary history.
+ */
+export const justCreatedParam = "created";
+
+/** True when this entry is the landing after a publish. */
+export function isJustCreated(search: string | URLSearchParams) {
+  const params = typeof search === "string" ? new URLSearchParams(search) : search;
+  return params.get(justCreatedParam) === "1";
+}
+
+/**
+ * Where Back should go for a page that may have been arrived at by publishing.
+ *
+ * Reads as one decision rather than two, because the exception is easy to
+ * apply in one place and easy to forget in several.
+ */
+export function resolveBackAfterCreate(depth: number, fallback: string, justCreated: boolean): BackDestination {
+  return justCreated ? { type: "fallback", href: fallback } : resolveBack(depth, fallback);
+}
+
 /** Where a page sends a reader who arrived at it directly. */
 export const backFallbacks = {
   /** Discovery, which is the home of the app shell. */
@@ -135,4 +165,8 @@ export const backFallbacks = {
   world: "/?view=worlds",
   /** The owner's management list, which is where editing is reached from. */
   creations: "/?view=creations",
+  /** The Worlds hub, for a world's own page and its sub-surfaces. */
+  worlds: "/?view=worlds",
+  /** A cast member belongs to its creation, so that is where Back goes. */
+  castMember: (creationId: string) => `/characters/${creationId}`,
 } as const;

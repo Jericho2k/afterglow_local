@@ -18,6 +18,7 @@ const aliceConversation = "cccccccc-0000-4000-8000-000000000001";
 const aliceMessage = "dddddddd-0000-4000-8000-000000000001";
 const aliceMemory = "eeeeeeee-0000-4000-8000-000000000001";
 const aliceArc = "ffffffff-0000-4000-8000-000000000001";
+const alicePublicWorld = "aaaaaaaa-0000-4000-8000-000000000021";
 const aliceWorld = "12121212-0000-4000-8000-000000000001";
 const alicePersona = "13131313-0000-4000-8000-000000000001";
 const aliceCanon = "14141414-0000-4000-8000-000000000001";
@@ -35,6 +36,7 @@ describeTenancy("multi-tenant isolation", () => {
     await asAccount(pool, alice, async (run) => {
       await run("INSERT INTO characters (id,name,user_id,visibility) VALUES ($1,'Alice Private',$3,'private'),($2,'Alice Public',$3,'public')", [alicePrivateCharacter, alicePublicCharacter, alice]);
       await run("INSERT INTO worlds (id,name,content,user_id) VALUES ($1,'Alice World','Secret canon',$2)", [aliceWorld, alice]);
+      await run("INSERT INTO worlds (id,name,content,user_id,visibility) VALUES ($1,'Alice Public World','Published canon',$2,'public')", [alicePublicWorld, alice]);
       await run("INSERT INTO personas (id,name,user_id,is_default) VALUES ($1,'Alice Persona',$2,true)", [alicePersona, alice]);
       await run("INSERT INTO conversations (id,character_id,user_id,title) VALUES ($1,$2,$3,'Alice private chat')", [aliceConversation, alicePrivateCharacter, alice]);
       await run("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'user','Alice said something private')", [aliceMessage, aliceConversation, alice]);
@@ -238,6 +240,95 @@ describeTenancy("multi-tenant isolation", () => {
     await expect(asAccount(pool, bob, (run) =>
       run("INSERT INTO conversation_scene_states (id,conversation_id,user_id,through_message_count) VALUES (gen_random_uuid(),$1,$2,1)", [aliceConversation, alice]),
     )).rejects.toThrow(/row-level security/i);
+  });
+
+
+  /**
+   * Worlds V2.
+   *
+   * A world is now a public object with its own saves and its own discussion,
+   * so it needs the same isolation guarantees a creation has: published canon
+   * is readable by everybody, private canon by nobody but its owner, and the
+   * two social relations behind it are private to whoever wrote them.
+   */
+  it("lets another account read a published world and never a private one", async () => {
+    expect(await visibleCount(pool, bob, "worlds", "id=$1", [alicePublicWorld])).toBe(1);
+    expect(await visibleCount(pool, bob, "worlds", "id=$1", [aliceWorld])).toBe(0);
+  });
+
+  it("lets the owner read their own private world", async () => {
+    expect(await visibleCount(pool, alice, "worlds", "id=$1", [aliceWorld])).toBe(1);
+  });
+
+  it("refuses to let another account edit or delete a world", async () => {
+    await asAccount(pool, bob, (run) => run("UPDATE worlds SET name='Hijacked' WHERE id=$1", [alicePublicWorld]));
+    await asAccount(pool, bob, (run) => run("DELETE FROM worlds WHERE id=$1", [alicePublicWorld]));
+    const rows = await asAccount(pool, alice, (run) => run("SELECT name FROM worlds WHERE id=$1", [alicePublicWorld]));
+    expect(rows.rows[0]?.name).toBe("Alice Public World");
+  });
+
+  it("keeps a saved-worlds library private to the account that saved", async () => {
+    await asAccount(pool, bob, (run) => run("INSERT INTO world_saves (user_id,world_id) VALUES ($1,$2)", [bob, alicePublicWorld]));
+    expect(await visibleCount(pool, bob, "world_saves", "world_id=$1", [alicePublicWorld])).toBe(1);
+    // Not even the world's own creator can see who saved it — only the total,
+    // which lives on the world row and is maintained by the trigger.
+    expect(await visibleCount(pool, alice, "world_saves", "world_id=$1", [alicePublicWorld])).toBe(0);
+    const total = await asAccount(pool, alice, (run) => run("SELECT save_count FROM worlds WHERE id=$1", [alicePublicWorld]));
+    expect(Number(total.rows[0]?.save_count)).toBe(1);
+  });
+
+  it("refuses to record a save in somebody else's name", async () => {
+    await expect(asAccount(pool, bob, (run) =>
+      run("INSERT INTO world_saves (user_id,world_id) VALUES ($1,$2)", [alice, alicePublicWorld]),
+    )).rejects.toThrow(/row-level security/i);
+  });
+
+  it("keeps world comments public with the world and editable only by their author", async () => {
+    const comment = "bbbbbbbb-0000-4000-8000-000000000031";
+    await asAccount(pool, bob, (run) =>
+      run("INSERT INTO world_comments (id,world_id,user_id,body) VALUES ($1,$2,$3,'Great setting')", [comment, alicePublicWorld, bob]));
+    expect(await visibleCount(pool, alice, "world_comments", "id=$1", [comment])).toBe(1);
+
+    await asAccount(pool, alice, (run) => run("UPDATE world_comments SET body='Rewritten' WHERE id=$1", [comment]));
+    const rows = await asAccount(pool, bob, (run) => run("SELECT body FROM world_comments WHERE id=$1", [comment]));
+    expect(rows.rows[0]?.body).toBe("Great setting");
+  });
+
+  it("refuses a comment on a world the account cannot read", async () => {
+    await expect(asAccount(pool, bob, (run) =>
+      run("INSERT INTO world_comments (id,world_id,user_id,body) VALUES (gen_random_uuid(),$1,$2,'Peeking')", [aliceWorld, bob]),
+    )).rejects.toThrow(/row-level security/i);
+  });
+
+  it("lets a world's owner remove a comment from their own page", async () => {
+    const comment = "bbbbbbbb-0000-4000-8000-000000000032";
+    await asAccount(pool, bob, (run) =>
+      run("INSERT INTO world_comments (id,world_id,user_id,body) VALUES ($1,$2,$3,'To be removed')", [comment, alicePublicWorld, bob]));
+    await asAccount(pool, alice, (run) => run("DELETE FROM world_comments WHERE id=$1", [comment]));
+    expect(await visibleCount(pool, bob, "world_comments", "id=$1", [comment])).toBe(0);
+  });
+
+  it("keeps Discovery preferences on the account rather than shared", async () => {
+    await asAccount(pool, alice, (run) =>
+      run(`UPDATE user_settings SET discovery_preferences='{"tags":["Fantasy"]}'::jsonb WHERE user_id=$1`, [alice]));
+    const mine = await asAccount(pool, alice, (run) => run("SELECT discovery_preferences FROM user_settings WHERE user_id=$1", [alice]));
+    expect(mine.rows[0]?.discovery_preferences).toMatchObject({ tags: ["Fantasy"] });
+    // Bob cannot read Alice's row at all, so her filters can never reach him.
+    expect(await visibleCount(pool, bob, "user_settings", "user_id=$1", [alice])).toBe(0);
+  });
+
+  it("does not let an account write another account's preferences", async () => {
+    await asAccount(pool, bob, (run) =>
+      run(`UPDATE user_settings SET discovery_preferences='{"tags":["Horror"]}'::jsonb WHERE user_id=$1`, [alice]));
+    const mine = await asAccount(pool, alice, (run) => run("SELECT discovery_preferences FROM user_settings WHERE user_id=$1", [alice]));
+    expect(mine.rows[0]?.discovery_preferences).toMatchObject({ tags: ["Fantasy"] });
+  });
+
+  it("does not let another account read rich content belonging to a private world", async () => {
+    await asAccount(pool, alice, (run) =>
+      run(`UPDATE worlds SET content_rich='[{"type":"image","path":"users/a/secret-map.png","url":"","caption":"The hidden route"}]'::jsonb WHERE id=$1`, [aliceWorld]));
+    const rows = await asAccount(pool, bob, (run) => run("SELECT content_rich FROM worlds WHERE id=$1", [aliceWorld]));
+    expect(rows.rowCount).toBe(0);
   });
 
   it("gives every account its own default persona", async () => {

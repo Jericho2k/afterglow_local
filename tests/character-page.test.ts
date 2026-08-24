@@ -169,7 +169,7 @@ describe("world pages", () => {
     const body = await (await worldDetail.GET(new Request("http://test"), params(world))).json();
     expect(body.world.name).toBe("Nocturne City");
     expect(body.owner).toBe(false);
-    expect(body.characters.map((entry: { id: string }) => entry.id)).toContain(rich);
+    expect(body.creations.map((entry: { id: string }) => entry.id)).toContain(rich);
   });
 
   it("keeps a private world unreachable by another account", async () => {

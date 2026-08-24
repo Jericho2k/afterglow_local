@@ -1,0 +1,122 @@
+/*
+ * The Worlds hub.
+ *
+ * The same visual language as Discovery and Your Creations — near-black
+ * ground, thin borders, serif editorial heading, restrained rose — over the
+ * world card that already exists. A world looks like a world here, on a
+ * creation page and on its own page, because all three render the same card.
+ *
+ * The grid is one column on a phone rather than two: a world card is a wide
+ * landscape cover with a title over it, and two of those side by side on a
+ * 375px screen would be unreadable.
+ */
+
+.page {
+  --edge: rgba(255, 255, 255, .07);
+  --ink: #f6eff4;
+  --muted: #a99cab;
+  --faint: #7b6f7e;
+  --accent: #e879a9;
+  --gutter: 16px;
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  background: radial-gradient(circle at 72% -6%, rgba(123, 50, 80, .16), transparent 38%), #100d11;
+  color: var(--ink);
+  padding-bottom: calc(28px + env(safe-area-inset-bottom));
+}
+
+.head { display: flex; flex-direction: column; gap: 3px; padding: calc(16px + env(safe-area-inset-top)) var(--gutter) 12px; }
+.menuButton {
+  display: none; place-items: center;
+  width: 38px; height: 38px; margin-bottom: 8px;
+  border: 1px solid var(--edge); border-radius: 12px;
+  background: rgba(255, 255, 255, .03); color: var(--ink); cursor: pointer;
+}
+.eyebrow { text-transform: uppercase; letter-spacing: .14em; font-size: 9.5px; color: var(--faint); }
+.title {
+  margin: 0;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(30px, 8vw, 40px); font-weight: 600; letter-spacing: -.01em; line-height: 1.05;
+}
+.lede { margin: 4px 0 0; max-width: 58ch; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+.createButton {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 7px;
+  margin-top: 14px; min-height: 40px; padding: 0 16px;
+  border: 1px solid rgba(232, 121, 169, .3); border-radius: 12px;
+  background: rgba(232, 121, 169, .12);
+  color: #ffd7e6; font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background .18s;
+}
+.createButton:hover { background: rgba(232, 121, 169, .2); }
+
+.tabs { display: flex; gap: 7px; padding: 4px var(--gutter) 14px; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: 0 0 auto;
+  min-height: 34px; padding: 0 13px;
+  border: 1px solid var(--edge); border-radius: 11px;
+  background: rgba(255, 255, 255, .03);
+  color: var(--muted); font-size: 12.5px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.tabActive { border-color: rgba(232, 121, 169, .34); background: rgba(232, 121, 169, .14); color: #ffd7e6; }
+
+.grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 2px var(--gutter) 0; }
+.cell { position: relative; min-width: 0; }
+
+.visibility { display: inline-flex; align-items: center; gap: 4px; }
+
+.cardMenuButton {
+  display: grid; place-items: center;
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(12, 9, 13, .68);
+  backdrop-filter: blur(10px);
+  color: #e7dbe4; cursor: pointer;
+  transition: background .16s, border-color .16s;
+}
+.cardMenuButton:hover { background: rgba(232, 121, 169, .22); border-color: rgba(232, 121, 169, .4); }
+
+.skeleton { border: 1px solid var(--edge); border-radius: 20px; background: #17131a; aspect-ratio: 16 / 9; }
+
+.state {
+  margin: 8px var(--gutter) 0;
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
+  padding: 44px 22px;
+  border: 1px solid var(--edge); border-radius: 18px;
+  background: rgba(255, 255, 255, .022);
+  color: var(--muted);
+}
+.state svg { color: var(--accent); }
+.state h2 { margin: 4px 0 0; font-family: var(--font-serif), Georgia, serif; font-size: 20px; font-weight: 600; color: var(--ink); }
+.state p { margin: 0; max-width: 46ch; font-size: 12.5px; line-height: 1.6; }
+.stateAction {
+  margin-top: 8px; min-height: 40px; padding: 0 18px;
+  border: 1px solid rgba(232, 121, 169, .3); border-radius: 12px;
+  background: rgba(232, 121, 169, .12);
+  color: #ffd7e6; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 40;
+  display: flex; align-items: center; gap: 10px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 11px 12px 11px 15px;
+  border: 1px solid rgba(232, 121, 169, .28); border-radius: 13px;
+  background: rgba(31, 22, 30, .96);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+  color: var(--ink); font-size: 12px;
+}
+.toast button { border: 0; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+
+@media (min-width: 501px) { .page { --gutter: 22px; } }
+@media (min-width: 720px) { .grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); } }
+@media (min-width: 900px) { .page { --gutter: clamp(24px, 4vw, 56px); } .head { padding-top: 34px; } }
+@media (max-width: 500px) { .menuButton { display: grid; } }
+@media (prefers-reduced-motion: reduce) { .createButton, .cardMenuButton { transition: none; } }

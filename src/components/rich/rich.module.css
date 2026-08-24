@@ -1,0 +1,64 @@
+/*
+ * Rich content.
+ *
+ * Editorial rather than decorative: an image sits in the measure of the text
+ * around it, at the text's own width, with a thin border and the same corner
+ * radius as every other surface in the product. Mobile is the primary target,
+ * so the default is full content width and nothing is ever wider than that.
+ */
+
+.content { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.paragraph {
+  margin: 0;
+  /* The creator's line breaks are theirs. Preserved by layout, never by
+     turning their prose into markup. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.figure {
+  margin: 2px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.figure img {
+  display: block;
+  width: 100%;
+  /* Never wider than its column, and never taller than a screenful: a portrait
+     image must not push the text that follows it off the page. */
+  max-width: 100%;
+  max-height: 72vh;
+  height: auto;
+  object-fit: contain;
+  border-radius: 14px;
+  border: 1px solid var(--line, rgba(255, 255, 255, .085));
+  background: rgba(255, 255, 255, .02);
+}
+.figure figcaption {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted, #a99cab);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* Inside an already-narrow column — a chat bubble — an image reads better
+   inset than edge to edge. */
+.inset img { max-height: 52vh; }
+
+@media (min-width: 900px) {
+  .figure img { max-height: 60vh; }
+}
+
+/*
+ * An image inside a chat message.
+ *
+ * Narrower and tighter than one in a page: a message bubble is already a
+ * column inside a column, and a full-bleed image would break the rhythm of
+ * the conversation around it.
+ */
+.messageFigure { margin: 10px 0 4px; }
+.messageFigure img { max-height: 44vh; border-radius: 12px; }

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  backFallbacks, canGoBack, claimDepth, currentDepth, navigationDepthKey, nextDepth,
-  readLastDepth, resolveBack, rootDepth, stampedDepth, takeClaimedDepth, withDepth, writeLastDepth,
+  backFallbacks, canGoBack, claimDepth, currentDepth, isJustCreated, justCreatedParam,
+  navigationDepthKey, nextDepth, readLastDepth, resolveBack, resolveBackAfterCreate, rootDepth,
+  stampedDepth, takeClaimedDepth, withDepth, writeLastDepth,
 } from "@/lib/back-navigation";
 
 /**
@@ -247,6 +248,126 @@ describe("Discovery → Your Creations → Back", () => {
   });
 });
 
+/**
+ * The shell's own views are real history entries.
+ *
+ * This is the fix for the complaint that survived the previous sprint. Views
+ * used to be React state and nothing else, so opening Your Creations changed
+ * what rendered while leaving the address bar on "/" — and a creation opened
+ * from there had "/" underneath it, which is Discovery. Nothing was guessing;
+ * the origin had never been recorded. Now each view is a URL, so the journeys
+ * below are ordinary history.
+ */
+describe("Your Creations → Creation → Back", () => {
+  it("returns to Your Creations rather than to Discovery", () => {
+    const session = tab().visit("/?view=creations").visit("/characters/aaaa");
+    expect(session.press(backFallbacks.creation)).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/?view=creations");
+  });
+
+  it("does the same from any other shell view", () => {
+    for (const view of ["/?view=saved", "/?view=worlds", "/?view=profile", "/?view=chats"]) {
+      const session = tab().visit(view).visit("/characters/aaaa");
+      expect(session.press(backFallbacks.creation)).toEqual({ type: "history" });
+      session.back();
+      expect(session.url()).toBe(view);
+    }
+  });
+});
+
+describe("World → Creation → Back", () => {
+  it("returns to the world the creation was opened from", () => {
+    const session = tab().visit("/?view=worlds").visit("/worlds/bbbb").visit("/characters/aaaa");
+    expect(session.press(backFallbacks.creation)).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/worlds/bbbb");
+    // And once more, back to the hub it was browsed from.
+    session.back();
+    expect(session.url()).toBe("/?view=worlds");
+  });
+});
+
+describe("Saved Worlds → World → Back", () => {
+  it("returns to the hub, which restores its own tab", () => {
+    const session = tab().visit("/?view=worlds").visit("/worlds/bbbb");
+    expect(session.press(backFallbacks.worlds)).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/?view=worlds");
+  });
+
+  it("falls back to the hub for a world opened cold", () => {
+    const session = tab().visit("/worlds/bbbb");
+    expect(session.press(backFallbacks.worlds)).toEqual({ type: "fallback", href: "/?view=worlds" });
+  });
+});
+
+describe("Creation → Cast member → Back", () => {
+  it("returns to the creation the member belongs to", () => {
+    const session = tab().visit("/").visit("/characters/aaaa").visit("/characters/aaaa/cast/maya");
+    expect(session.press(backFallbacks.castMember("aaaa"))).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/characters/aaaa");
+  });
+
+  it("falls back to its own creation rather than to the feed for a member opened cold", () => {
+    // A cast member is part of a creation, so that is the page underneath it —
+    // not Discovery, which it was never browsed from.
+    const session = tab().visit("/characters/aaaa/cast/maya");
+    expect(session.press(backFallbacks.castMember("aaaa"))).toEqual({ type: "fallback", href: "/characters/aaaa" });
+  });
+});
+
+describe("Creator profile → Creation → Back", () => {
+  it("returns to the profile", () => {
+    const session = tab().visit("/").visit("/?view=creator&creator=nova").visit("/characters/aaaa");
+    expect(session.press(backFallbacks.creation)).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/?view=creator&creator=nova");
+  });
+});
+
+/**
+ * Publishing, the one deliberate exception.
+ *
+ * Back is history everywhere except here. A publish walks forward through a
+ * form and ends on the finished creation, so the page underneath is the form
+ * that was just completed — and returning into it is never what anybody means.
+ */
+describe("Create → Publish → new Creation → Back", () => {
+  it("goes to Discovery rather than back into the completed form", () => {
+    const session = tab().visit("/").visit("/?view=creations");
+    // Publishing replaces the studio's entry and claims root depth, so the
+    // landing page has nothing of ours beneath it.
+    claimDepth(session.storage, rootDepth);
+    session.replace(`/characters/aaaa?${justCreatedParam}=1`, { keepState: false });
+    expect(isJustCreated(`?${justCreatedParam}=1`)).toBe(true);
+    expect(resolveBackAfterCreate(session.depth(), backFallbacks.creation, true))
+      .toEqual({ type: "fallback", href: backFallbacks.creation });
+  });
+
+  it("takes the exception even when history would otherwise be available", () => {
+    // Belt and braces: the marker decides, so a stray history entry beneath
+    // the landing page cannot send the creator back into their own form.
+    expect(resolveBackAfterCreate(5, backFallbacks.creation, true))
+      .toEqual({ type: "fallback", href: backFallbacks.creation });
+  });
+
+  it("does not apply the exception to an ordinary creation page", () => {
+    expect(isJustCreated("")).toBe(false);
+    expect(isJustCreated("?q=poetry")).toBe(false);
+    expect(resolveBackAfterCreate(2, backFallbacks.creation, false)).toEqual({ type: "history" });
+  });
+
+  it("does not apply it to an edit, which is not a publish", () => {
+    // Your Creations → Edit → Save → the creation. Back is history, because
+    // the page underneath is the management list rather than a finished form.
+    const session = tab().visit("/?view=creations").visit("/characters/aaaa/edit").visit("/characters/aaaa");
+    expect(isJustCreated(new URLSearchParams(""))).toBe(false);
+    expect(resolveBackAfterCreate(session.depth(), backFallbacks.creation, false)).toEqual({ type: "history" });
+  });
+});
+
 describe("deep links", () => {
   it("gives a creation opened cold a safe in-app destination", () => {
     const session = tab().visit("/characters/aaaa");
@@ -364,7 +485,12 @@ describe("the depth stamp itself", () => {
   });
 
   it("keeps every fallback inside the app", () => {
-    for (const fallback of Object.values(backFallbacks)) {
+    // A fallback may be a route or a function of the subject it belongs to —
+    // a cast member's fallback is its own creation — and either way it must
+    // never be a destination outside Afterglow.
+    const routes = Object.values(backFallbacks).map((fallback) =>
+      typeof fallback === "function" ? fallback("aaaa") : fallback);
+    for (const fallback of routes) {
       expect(fallback.startsWith("/")).toBe(true);
       expect(fallback.startsWith("//")).toBe(false);
     }

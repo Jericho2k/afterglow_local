@@ -96,9 +96,11 @@ describe("one card, both surfaces", () => {
     expect(creationCss).not.toContain(".worldScrim");
     expect(creationCss).not.toContain(".worldCard");
 
-    // And so did the Worlds page, as generic document rows.
+    // And so did the Worlds page, as generic document rows. It is now the
+    // Worlds hub, which renders the same card on all three of its tabs.
+    const hub = readFileSync(new URL("../src/components/worlds/WorldsHub.tsx", import.meta.url), "utf8");
+    expect(hub).toContain("<WorldCard");
     const shell = readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
-    expect(shell).toContain("<WorldCard");
     expect(shell).not.toContain("document-card\"><span className=\"document-icon\">▤</span>");
   });
 });
@@ -207,24 +209,26 @@ describe("responsive and accessible", () => {
 
 describe("the page is called Worlds", () => {
   const shell = readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
+  const hub = readFileSync(new URL("../src/components/worlds/WorldsHub.tsx", import.meta.url), "utf8");
   const worldPage = readFileSync(new URL("../src/app/worlds/[id]/profile.tsx", import.meta.url), "utf8");
 
   it("names the collection in the navigation and in its own heading", () => {
     expect(shell).toContain("<strong>Worlds</strong>");
-    expect(shell).toContain("<h1>Worlds</h1>");
+    expect(hub).toContain(">Worlds</h1>");
     // The singular heading it replaced is gone from both.
     expect(shell).not.toContain("<strong>World</strong>");
-    expect(shell).not.toContain("<h1>World</h1>");
+    expect(hub).not.toContain(">World</h1>");
   });
 
   it("does not call it a library, lore or anything else", () => {
     for (const wrong of ["World Library", "World library", "Lore</h1>", "Worldbuilding"]) {
       expect(shell).not.toContain(wrong);
+      expect(hub).not.toContain(wrong);
     }
   });
 
   it("sends a reader on a world page back to Worlds rather than to the app root", () => {
-    expect(worldPage).toContain("backFallbacks.world");
+    expect(worldPage).toContain("backFallbacks.worlds");
     expect(worldPage).toContain("Return to Worlds");
     // No page composes its own Back route any more.
     expect(worldPage).not.toContain('href="/" className={styles.circleButton}');

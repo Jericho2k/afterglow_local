@@ -4,7 +4,7 @@ import type { Character } from "@/lib/types";
 
 const character: Character = {
   id: "1", name: "Mara", creationType: "character", title: "", profileType: "single", tagline: "Art thief",
-  description: "", userRole: "", avatarUrl: "", avatarPath: "", accent: "#e879a9",
+  description: "", descriptionRich: [], greetingRich: [], alternateGreetingsRich: [], userRole: "", avatarUrl: "", avatarPath: "", accent: "#e879a9",
   backstory: "Mara is 31.", cast: [], lorebook: "Paris factions.", personality: "Dry wit.", scenario: "Paris.", greeting: "Hello.", alternateGreetings: [],
   exampleDialogue: "A sample.", responseDirective: "Be vivid.", boundaries: "Respect stop words.",
   sourceMaterial: "", worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [],
@@ -55,7 +55,7 @@ describe("roleplay prompt", () => {
   it("injects only the selected persona, attached worlds, and chat instructions", () => {
     const prompt = roleplayPrompt(character,"",[],[],{ownerName:"Fallback",ownerProfile:"",roleplayPreset:"immersive"},{
       persona:{id:"persona",name:"Alex",description:"A private detective",avatarUrl:"",avatarPath:"",accent:"#e879a9",isDefault:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()},
-      worlds:[{id:"world",name:"Paris Underground",description:"Secret city",content:"The Glass Guild controls the tunnels.",coverPath:"",coverUrl:"",visibility:"private",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}],
+      worlds:[{id:"world",name:"Paris Underground",description:"Secret city",content:"The Glass Guild controls the tunnels.",contentRich:[],coverPath:"",coverUrl:"",visibility:"private",saveCount:0,savedByViewer:false,ownedByViewer:true,creator:null,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}],
       instructionPresets:["reduce_repetition"], customInstructions:"Use clipped dialogue.",
     });
     expect(prompt).toContain("Name: Alex");

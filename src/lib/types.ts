@@ -1,4 +1,16 @@
+import type { RichBlock } from "./rich-content";
+
 export type CharacterCastMember = {
+  /**
+   * A stable identifier for this member, used by its own public page.
+   *
+   * Absent on every member written before cast pages existed, which is why
+   * nothing may depend on it directly: `castMemberKey` in `src/lib/cast.ts`
+   * resolves an addressable key for a member with or without one. An array
+   * index would have been the obvious choice and the wrong one — reordering
+   * the cast would silently repoint every link.
+   */
+  id?: string;
   name: string;
   role: string;
   /** The full definition. Hidden: it feeds the prompt, never the public page. */
@@ -48,6 +60,15 @@ export type Character = {
   tagline: string;
   /** Public premise/description. Never the hidden AI definition. */
   description: string;
+  /**
+   * The description's structured blocks, when the creator placed images in it.
+   *
+   * Empty means the creation is plain text, which is what every record written
+   * before rich content looks like. `description` above always holds the text
+   * either way, so nothing that reads it needs to know this field exists —
+   * including, deliberately, everything that builds a model prompt.
+   */
+  descriptionRich: RichBlock[];
   /** Who {{user}} plays. Optional, and mostly used by cast and scenario. */
   userRole: string;
   /** An imported card's external image URL, or a legacy inline data URI. */
@@ -61,7 +82,11 @@ export type Character = {
   personality: string;
   scenario: string;
   greeting: string;
+  /** The opening's blocks, when it contains images. Text stays in `greeting`. */
+  greetingRich: RichBlock[];
   alternateGreetings: string[];
+  /** Index-aligned with `alternateGreetings`. An empty entry means plain text. */
+  alternateGreetingsRich: RichBlock[][];
   exampleDialogue: string;
   responseDirective: string;
   boundaries: string;
@@ -212,7 +237,10 @@ export type CharacterPublicStats = {
 
 export type CharacterComment = {
   id: string;
+  /** The creation this belongs to. Empty for a comment on a world. */
   characterId: string;
+  /** The world this belongs to. Empty for a comment on a creation. */
+  worldId?: string;
   parentId: string | null;
   body: string;
   likeCount: number;
@@ -221,15 +249,71 @@ export type CharacterComment = {
   authoredByViewer: boolean;
 };
 
+/**
+ * A reusable world.
+ *
+ * Worlds are settings, not scenarios: "My Hero Academia" is a world and "The
+ * Final War" is a creation set in one. The same world document can back any
+ * number of creations, which is why it owns its own page, its own cover, its
+ * own saves and its own comments rather than living inside whichever creation
+ * happens to reference it.
+ */
 export type World = {
   id: string;
   name: string;
   description: string;
+  /** The lore as text. Always populated, and always what a prompt reads. */
   content: string;
+  /** The lore's blocks, when the creator placed images in it. */
+  contentRich: RichBlock[];
   coverPath: string;
   coverUrl: string;
   visibility: CharacterVisibility;
+  /** Global saves across every account. */
+  saveCount: number;
+  /** The caller's own save state. Never anybody else's. */
+  savedByViewer: boolean;
+  ownedByViewer: boolean;
+  creator: { id: string; username: string; displayName: string; avatarPath: string } | null;
   createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * A world a viewer is not allowed to open.
+ *
+ * A public creation may be built on a private world, and hiding the
+ * association entirely would misrepresent the creation — the world is part of
+ * what it is. So the card is shown and locked: enough identity to read as
+ * deliberate, and nothing whatsoever of the lore, the description, the
+ * comments or the creator's notes. This type is the exhaustive list of what
+ * leaves the server for such a world, which is what makes that reviewable.
+ */
+export type LockedWorldPreview = {
+  id: string;
+  name: string;
+  coverPath: string;
+  coverUrl: string;
+  locked: true;
+};
+
+/** Either a world the viewer may open, or the locked stand-in for one they may not. */
+export type AttachedWorld = (World & { locked?: false }) | LockedWorldPreview;
+
+/** The lean row a world card is built from. Never carries lore. */
+export type WorldSummary = {
+  id: string;
+  name: string;
+  description: string;
+  coverPath: string;
+  coverUrl: string;
+  visibility: CharacterVisibility;
+  saveCount: number;
+  savedByViewer: boolean;
+  ownedByViewer: boolean;
+  /** How many creations use it, where the surface shows that. */
+  creationCount: number;
+  creator: { id: string; username: string; displayName: string; avatarPath: string } | null;
   updatedAt: string;
 };
 

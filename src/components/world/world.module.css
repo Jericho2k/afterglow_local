@@ -124,3 +124,61 @@
   .card { transition: none; }
   .card:hover { transform: none; }
 }
+
+/* ------------------------------------------------------ locked and saving */
+
+/*
+ * A world the viewer may not open.
+ *
+ * It keeps its cover and its name so the association on a public creation
+ * still reads as intentional, and it loses everything else — including, most
+ * importantly, its link. The card is dimmed slightly rather than greyed out:
+ * this is a world that exists and is private, not a broken one.
+ */
+.locked .link { cursor: default; }
+.locked .media img { opacity: .55; filter: saturate(.7); }
+
+.lockBadge {
+  position: absolute; top: 10px; right: 10px; z-index: 2;
+  display: grid; place-items: center;
+  width: 28px; height: 28px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  background: rgba(12, 9, 13, .72);
+  backdrop-filter: blur(10px);
+  color: #e7dbe4;
+}
+
+.lockedNote {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: rgba(232, 216, 228, .72);
+}
+
+.saveButton {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 34px;
+  padding: 0 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(12, 9, 13, .68);
+  backdrop-filter: blur(10px);
+  color: #e7dbe4;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  transition: background .16s, border-color .16s, color .16s;
+}
+.saveButton:hover { background: rgba(232, 121, 169, .2); border-color: rgba(232, 121, 169, .4); }
+.saveButtonSaved { color: #ffc4dd; border-color: rgba(232, 121, 169, .45); background: rgba(48, 14, 31, .72); }
+
+.srOnly {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .saveButton { transition: none; }
+}

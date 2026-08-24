@@ -9,6 +9,9 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 - Creations: one flow that publishes a single character, a defined cast, or a scenario/RPG with no primary character at all
 - Adaptive Creation Studio with progressive disclosure, autosaved drafts, platform tags and creator hashtags, reusable Worlds, and long-form openings
 - Two AI accelerators that produce the same canonical draft as manual authoring: Quick Idea generates one from a sentence, Paste Everything imports and organises existing work without rewriting it
+- Creator-placed images inside creation descriptions, world lore and opening messages — decoration for readers, never model input
+- Worlds as first-class reusable settings: public or private, saveable, commentable, with Discover / Saved / Your Worlds
+- Cast members with portraits and lightweight pages of their own, addressable by a key that survives reordering
 - Visible, resumable drafts on the Create screen, and a dedicated Your Creations page for managing everything you own
 - Detailed backstory, personality, scenario, greeting, example voice, response directive, and boundaries
 - Optional avatar URL and per-character visual accent
@@ -282,6 +285,102 @@ reads `/api/characters?scope=manage`, which selects card columns only — a page
 of cards never carries a page of hidden definitions — and offers View, Edit and
 Delete, each of which is authorised server-side rather than by the client.
 
+## Rich content
+
+Creators can place images inside three text surfaces — a creation's public
+description, a world's lore and an opening message — through one primitive in
+`src/lib/rich-content.ts`. Three unrelated image systems would have been three
+sets of bugs.
+
+The rule the whole design exists to guarantee: **embedded images are decoration
+for people and never model input.** That is enforced structurally rather than
+by care. Each rich surface is a pair of columns — `description` and
+`description_rich`, `content` and `content_rich`, and so on — where the plain
+text column stays canonical and `richToText` is what writes it. Every consumer
+that already reads the text column (the roleplay prompt, the conversation
+snapshot, the backup export, the discovery summary) keeps reading it and keeps
+receiving words with no images in them. There is no code path from a block to a
+prompt, so an image cannot leak into one by somebody forgetting a case.
+
+The block model is deliberately tiny — text and image, nothing else — and it is
+its own sanitiser: no field can carry markup, and the one field that carries a
+URL accepts `http(s)` and nothing else. Nothing in this feature uses
+`dangerouslySetInnerHTML` at any layer. A malformed block is dropped on the way
+in and on the way out rather than failing a save or blanking a page.
+
+Existing rows need no migration: every one of them is plain text, which
+`renderableBlocks` presents as a single text block through the same renderer.
+
+## Worlds
+
+A world is a reusable setting — "My Hero Academia" — as distinct from a
+creation set in one — "The Final War". The same world document can back any
+number of creations, which is why it owns its own page, cover, saves and
+comments rather than living inside whichever creation references it.
+
+`/?view=worlds` is a hub with three views of one table: **Discover** (published
+worlds from everybody, the caller's own included), **Saved**, and **Your
+Worlds** (owned, private ones included). Each answers in one statement and each
+selects card columns only — a listing never carries lore, so a page of world
+cards cannot become a page of canon documents.
+
+Visibility reuses the creation model exactly (`private` / `unlisted` /
+`public`). The case worth stating is a **public creation built on a private
+world**: the association is shown rather than hidden, because it is part of
+what the creation is, and the card is locked — id, name and cover, and nothing
+else. That reduction happens in SQL rather than by trimming a fully-selected
+row afterwards, so there is no full row to forget to trim. The world is not a
+link for anybody who cannot open it.
+
+Saves and comments are `world_saves` and `world_comments`, mirroring
+`character_likes` and `character_comments` rather than replacing both with one
+polymorphic table — those two carry a SECURITY DEFINER counter trigger, a
+composite key and a foreign key into `characters`, and rewriting a working
+load-bearing relation for tidiness is the expensive mistake. Sharing happens
+above the table instead: one comment route serves both, and one save contract
+drives both clients.
+
+Deleting a world never deletes the creations built on it. The
+`character_worlds` rows cascade and those creations simply stop having a world
+attached; the count is reported before the fact so the confirmation can say it.
+
+## Cast members
+
+A cast member has an optional portrait and a lightweight page of its own at
+`/characters/{id}/cast/{memberKey}` — a subresource of its creation, never a
+creation of its own. It is not discoverable, not chattable and not published
+separately, and it is readable exactly where its parent is, so a draft's cast
+has no public page.
+
+Its address is `member.id` when it has one and a slug of its name when it does
+not, which is what makes reordering the cast safe: an array index would have
+silently repointed every shared link. Members gain real ids through ordinary
+saving rather than through a migration that rewrites every jsonb column in the
+product at once.
+
+The page shows the public half only — name, role, blurb, portrait. A member's
+`description` is the definition that steers the model, and it is not selected
+into the response at all rather than being blanked out afterwards.
+
+## Accent colour
+
+The studio has always let creators pick one, and the product showed it in two
+rules that only rendered when a creation had no cover art. It is now real, and
+bounded by two rules.
+
+It is a seed, not a theme: the accent tints a card edge, an ambient hero glow,
+section heading icons and one gradient endpoint on the primary button. It never
+becomes body text, a page background or a whole control, so a grid of cards in
+eight colours still reads as one grid and the product still looks like
+Afterglow at every value.
+
+It cannot make anything unreadable. Only the chosen colour is stored; every
+variant is derived at render time in `src/lib/accent.ts`, and the one variant
+text is ever drawn in is lifted toward white until it carries against a
+near-black surface. The input accepts three- or six-digit hex and nothing else,
+which is what keeps `url(...)`, `var(...)` and a smuggled second declaration
+out of CSS.
+
 ## Discovery
 
 `/api/discovery` answers one page of public creations per request from a single
@@ -314,10 +413,40 @@ the same query, and no personalisation layer exists to make the label true.
 Migration `0012` adds one partial index per ordering plus optional trigram
 indexes for search, and changes no table, column, constraint or policy.
 
+Filters persist per account. What somebody is looking at right now lives in
+the URL, where Back restores it; what they generally want to see lives in
+`user_settings.discovery_preferences`, where a new session picks it up. The URL
+always wins on arrival — a shared link or a Back must never be overwritten by a
+preference — and only a bare Discovery applies the saved one. The free-text
+search term is deliberately never stored: a search is an action, not a
+preference. Clearing is stored as cleared, so Clear does not appear to undo
+itself on the next visit.
+
 Search covers titles, names, taglines, descriptions, platform tags, creator
 hashtags and creator names. A term written as `#mha` is looked up against
 hashtags exactly rather than as letters inside a title, which keeps the two tag
 systems distinct at query level as well as in storage.
+
+## Navigation
+
+Back returns to the page the reader actually came from. The mechanism is a
+depth stamp on each history entry (`src/lib/back-navigation.ts`) so the app can
+tell whether going back would leave Afterglow, and the router decides
+everything else — which is what preserves the previous page's own filters,
+results and scroll.
+
+The remaining defect this sprint fixed was upstream of that: the shell's views
+were React state and nothing else, so opening Your Creations changed what
+rendered while leaving the address bar on `/`. A creation opened from there had
+`/` underneath it, which is Discovery. Nothing was guessing the origin — the
+origin had never been recorded. Each view is now a real URL and a real history
+entry.
+
+There is exactly one deliberate exception. A publish walks forward through a
+form and ends on the finished creation, so the entry underneath is the form
+that was just completed; the arrival replaces it, claims root depth and carries
+a `created=1` marker, and Back goes to Discovery. Editing is not a publish and
+does not use it.
 
 ## Saving
 

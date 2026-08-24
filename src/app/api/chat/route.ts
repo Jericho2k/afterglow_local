@@ -57,7 +57,7 @@ export async function POST(request: Request) {
       row,
       character,
       settings,
-      worlds: worldResult.rows.map(worldFromRow),
+      worlds: worldResult.rows.map((row) => worldFromRow(row)),
       persona: personaResult.rows[0] ? personaFromRow(personaResult.rows[0]) : null,
     };
   });

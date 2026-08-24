@@ -230,12 +230,19 @@
   overflow: hidden;
   transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
 }
+/*
+ * The creation's accent on hover and focus.
+ *
+ * A tinted edge rather than a tinted card: the accent says which creation this
+ * is without competing with its artwork, and a grid of cards in eight
+ * different colours still reads as one grid.
+ */
 .card:hover {
   transform: translateY(-3px);
-  border-color: rgba(232, 121, 169, .3);
+  border-color: var(--creation-accent-border, rgba(232, 121, 169, .3));
   box-shadow: 0 18px 40px rgba(0, 0, 0, .38);
 }
-.card:focus-within { border-color: rgba(232, 121, 169, .4); }
+.card:focus-within { border-color: var(--creation-accent-border, rgba(232, 121, 169, .4)); }
 
 .cardLink {
   flex: 1;

@@ -17,7 +17,7 @@ import type { SceneStateFields } from "@/lib/scene-state";
 
 export const benchmarkCharacter: Character = {
   id: "character", name: "Uki", creationType: "character", title: "Uki", profileType: "single", tagline: "",
-  description: "", userRole: "", avatarUrl: "", avatarPath: "", accent: "#e879a9",
+  description: "", descriptionRich: [], greetingRich: [], alternateGreetingsRich: [], userRole: "", avatarUrl: "", avatarPath: "", accent: "#e879a9",
   backstory: "", cast: [], lorebook: "", personality: "", scenario: "A quiet evening together.", greeting: "", alternateGreetings: [],
   exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "", worldIds: [], tags: [], hashtags: [],
   quickFacts: [], gallery: [],
