@@ -9,6 +9,7 @@ import { estimateTokens } from "./context";
 import { providerModelId, taskModelSelection } from "./provider";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled } from "./memory-flags";
+import { invalidateSceneStatesAfter, sceneSpanBetween, sceneStampAt } from "./scene-state-store";
 import type { PoolClient } from "pg";
 
 const stopWords = new Set(["the", "and", "that", "this", "with", "from", "have", "your", "you", "are", "was", "for", "but", "not", "they", "she", "him", "her", "his", "our"]);
@@ -29,6 +30,10 @@ export async function invalidateDerivedContinuity(client: PoolClient, conversati
   const owner = userId ?? null;
   await client.query("DELETE FROM memories WHERE conversation_id=$1 AND source_message_count > $2 AND ($3::uuid IS NULL OR user_id=$3)",[conversationId,position,owner]);
   await client.query("DELETE FROM memory_arcs WHERE conversation_id=$1 AND end_message_count > $2 AND ($3::uuid IS NULL OR user_id=$3)",[conversationId,position,owner]);
+  // Scene State shares this lineage: a branch or an edit that discards a future
+  // must also discard the location, day, cast and open loops that future
+  // established, or the story keeps a room it never moved into.
+  await invalidateSceneStatesAfter(client,conversationId,position,owner ?? undefined);
   const v2Enabled=Boolean(userId&&memoryRetrievalV2Enabled(userId));
   if (v2Enabled) {
     // Canon is derived from the permanent archive. A branch/edit supersedes
@@ -252,11 +257,17 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
         "UPDATE conversations SET summary = $1, last_consolidated_count = GREATEST(last_consolidated_count,$2), updated_at = now() WHERE id = $3 AND user_id = $4",
         [data.summary!.slice(0, 12000), batchEnd, conversationId, userId],
       );
+      // Whatever Scene State observed across this window is stamped onto the
+      // derived rows, so a recalled event can later be presented with the day
+      // and place it happened rather than as something happening now. Nothing
+      // is inferred here: an unobserved window simply stamps nothing.
+      const arcSpan = await sceneSpanBetween(client,userId,conversationId,previousCount,batchEnd);
+      const stamp = await sceneStampAt(client,userId,conversationId,batchEnd);
       if (data.arcSummary?.trim()) {
         const arcId=randomUUID(); const arcContent=data.arcSummary.trim().slice(0,4000);
         await client.query(
-          "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-          [arcId,conversationId,userId,arcContent,(data.arcKeywords ?? []).slice(0,12),previousCount + 1,batchEnd],
+          "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count,story_day_start,story_day_end,scene_locations) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+          [arcId,conversationId,userId,arcContent,(data.arcKeywords ?? []).slice(0,12),previousCount + 1,batchEnd,arcSpan.storyDayStart,arcSpan.storyDayEnd,arcSpan.locations],
         );
         records.push({type:"arc",id:arcId,content:arcContent});
       }
@@ -284,8 +295,11 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
         seenContent.push(content);
         const memoryId=randomUUID();
         await client.query(
-          "INSERT INTO memories (id, character_id, conversation_id, user_id, content, kind, importance, keywords, source_message_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-          [memoryId, conversation.character_id, conversationId, userId, content.slice(0, 3000), kind, Math.min(5, Math.max(1, Number(item.importance) || 3)), (item.keywords ?? []).slice(0, 12), batchEnd],
+          `INSERT INTO memories (id, character_id, conversation_id, user_id, content, kind, importance, keywords, source_message_count,
+             scene_story_day, scene_time_of_day, scene_location, scene_present)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          [memoryId, conversation.character_id, conversationId, userId, content.slice(0, 3000), kind, Math.min(5, Math.max(1, Number(item.importance) || 3)), (item.keywords ?? []).slice(0, 12), batchEnd,
+            stamp?.storyDay ?? null, stamp?.timeOfDay ?? "", stamp?.location ?? "", stamp?.present ?? []],
         );
         records.push({type:"memory",id:memoryId,content:content.slice(0,3000)});
       }

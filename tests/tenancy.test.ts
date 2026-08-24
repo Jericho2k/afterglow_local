@@ -22,6 +22,7 @@ const aliceWorld = "12121212-0000-4000-8000-000000000001";
 const alicePersona = "13131313-0000-4000-8000-000000000001";
 const aliceCanon = "14141414-0000-4000-8000-000000000001";
 const aliceRetrieval = "15151515-0000-4000-8000-000000000001";
+const aliceScene = "16161616-0000-4000-8000-000000000001";
 
 describeTenancy("multi-tenant isolation", () => {
   let pool: Pool;
@@ -41,6 +42,10 @@ describeTenancy("multi-tenant isolation", () => {
       await run("INSERT INTO memory_arcs (id,conversation_id,user_id,summary) VALUES ($1,$2,$3,'Alice arc')", [aliceArc, aliceConversation, alice]);
       await run("INSERT INTO core_canon_entries (id,conversation_id,character_id,user_id,content) VALUES ($1,$2,$3,$4,'Alice foundational canon')",[aliceCanon,aliceConversation,alicePrivateCharacter,alice]);
       await run("INSERT INTO memory_retrieval_runs (id,conversation_id,user_id,recalled_memory_ids) VALUES ($1,$2,$3,$4)",[aliceRetrieval,aliceConversation,alice,[aliceMemory]]);
+      await run(
+        "INSERT INTO conversation_scene_states (id,conversation_id,user_id,through_message_count,story_day,location_place,location_sub,present_characters,active_situation) VALUES ($1,$2,$3,4,7,'Alice private apartment','bedroom',$4,$5)",
+        [aliceScene,aliceConversation,alice,["Alice","Maya"],["They are still arguing."]],
+      );
       await run("INSERT INTO usage_events (id,user_id,model,usage_type,estimated_cost_usd) VALUES (gen_random_uuid(),$1,'deepseek-v4-flash','chat',1.25)", [alice]);
     });
   });
@@ -206,6 +211,33 @@ describeTenancy("multi-tenant isolation", () => {
     await expect(asAccount(pool, alice, (run) =>
       run("DELETE FROM characters WHERE id=$1", [alicePublicCharacter]),
     )).rejects.toThrow(/character_in_use_by_other_accounts/);
+  });
+
+  it("O — hides one account's scene state from another", async () => {
+    expect(await visibleCount(pool, bob, "conversation_scene_states")).toBe(0);
+    expect(await visibleCount(pool, bob, "conversation_scene_states", "id=$1", [aliceScene])).toBe(0);
+    expect(await visibleCount(pool, alice, "conversation_scene_states", "id=$1", [aliceScene])).toBe(1);
+  });
+
+  it("O — refuses to let another account read, rewrite, or delete a scene", async () => {
+    await asAccount(pool, bob, async (run) => {
+      const leaked = await run("SELECT location_place FROM conversation_scene_states WHERE id=$1", [aliceScene]);
+      expect(leaked.rowCount).toBe(0);
+      const updated = await run("UPDATE conversation_scene_states SET location_place='hijacked' WHERE id=$1", [aliceScene]);
+      expect(updated.rowCount).toBe(0);
+      const deleted = await run("DELETE FROM conversation_scene_states WHERE id=$1", [aliceScene]);
+      expect(deleted.rowCount).toBe(0);
+    });
+    expect(await visibleCount(pool, alice, "conversation_scene_states", "location_place='Alice private apartment'")).toBe(1);
+  });
+
+  it("O — refuses to write a scene into another account's conversation", async () => {
+    await expect(asAccount(pool, bob, (run) =>
+      run("INSERT INTO conversation_scene_states (id,conversation_id,user_id,through_message_count) VALUES (gen_random_uuid(),$1,$2,1)", [aliceConversation, bob]),
+    )).rejects.toThrow(/foreign key constraint/i);
+    await expect(asAccount(pool, bob, (run) =>
+      run("INSERT INTO conversation_scene_states (id,conversation_id,user_id,through_message_count) VALUES (gen_random_uuid(),$1,$2,1)", [aliceConversation, alice]),
+    )).rejects.toThrow(/row-level security/i);
   });
 
   it("gives every account its own default persona", async () => {

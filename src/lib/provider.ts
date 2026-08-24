@@ -1,6 +1,6 @@
 import type { ModelCatalog, ModelDefinition, ProviderDefinition, RoleplayEngineDefinition, RoleplayEngineId } from "./types";
 
-export type InferenceTask = "rp_generation" | "memory_consolidation" | "memory_curation" | "character_import";
+export type InferenceTask = "rp_generation" | "memory_consolidation" | "memory_curation" | "scene_state" | "character_import";
 export type InferenceSelection = { providerId: string; modelId: string };
 type InternalModelDefinition = ModelDefinition & { providerModelId: string };
 
@@ -179,6 +179,7 @@ export function providerModelId(providerId: string, modelId: string) {
 const taskRouteEnvironment: Record<Exclude<InferenceTask,"rp_generation">, string> = {
   memory_consolidation: "MEMORY_CONSOLIDATION_MODEL_ROUTE",
   memory_curation: "MEMORY_CURATION_MODEL_ROUTE",
+  scene_state: "SCENE_STATE_MODEL_ROUTE",
   character_import: "CHARACTER_IMPORT_MODEL_ROUTE",
 };
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { asUser } from "./db";
 
-export type MemoryJobType = "consolidation" | "curation" | "embedding_backfill";
+export type MemoryJobType = "consolidation" | "curation" | "embedding_backfill" | "scene_state";
 
 /** Cross-worker lease. One active memory-maintenance job is allowed per chat. */
 export async function acquireMemoryJobLease(userId:string,conversationId:string,jobType:MemoryJobType,seconds=300) {

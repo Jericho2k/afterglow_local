@@ -37,6 +37,7 @@ const discovery = await import("@/app/api/discovery/route");
 const conversations = await import("@/app/api/conversations/route");
 const memories = await import("@/app/api/memories/route");
 const consolidate = await import("@/app/api/memories/consolidate/route");
+const sceneState = await import("@/app/api/scene-state/route");
 const backup = await import("@/app/api/backup/route");
 const usage = await import("@/app/api/usage/route");
 
@@ -188,6 +189,31 @@ describe("cross-account access", () => {
     const own=await memories.GET(new Request(`http://test/api/memories?characterId=${aliceCharacter}&conversationId=${aliceConversation}`));
     expect(own.status).toBe(200);
     expect((await own.json()).memories).toHaveLength(1);
+  });
+
+  it("keeps scene state admin-only, account-scoped, and never user-facing", async () => {
+    account = { id: bob, email: null };
+    const denied = await Promise.all([
+      sceneState.GET(new Request(`http://test/api/scene-state?conversationId=${aliceConversation}`)),
+      sceneState.POST(post("http://test/api/scene-state",{conversationId:aliceConversation})),
+    ]);
+    expect(denied.map((item)=>item.status)).toEqual([403,403]);
+
+    // Administrator or not, another account's conversation resolves to nothing.
+    process.env.AFTERGLOW_ADMIN_USER_IDS=`${alice},${bob}`;
+    const foreign = await sceneState.GET(new Request(`http://test/api/scene-state?conversationId=${aliceConversation}`));
+    expect(foreign.status).toBe(404);
+    process.env.AFTERGLOW_ADMIN_USER_IDS=alice;
+
+    account = { id: alice, email: null };
+    const own = await sceneState.GET(new Request(`http://test/api/scene-state?conversationId=${aliceConversation}`));
+    expect(own.status).toBe(200);
+    const body = await own.json();
+    expect(body.enabled).toBe(false);
+    expect(body.current).toBeNull();
+    expect(body.history).toEqual([]);
+    // A disabled account cannot spend tokens on an extraction either.
+    expect((await sceneState.POST(post("http://test/api/scene-state",{conversationId:aliceConversation}))).status).toBe(409);
   });
 
   it("refuses to hang a memory off another account's conversation", async () => {

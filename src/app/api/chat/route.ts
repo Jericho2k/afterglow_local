@@ -5,6 +5,9 @@ import { streamCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { focusedRetrievalQuery, maybeBackfillMemoryEmbeddings, maybeCurateCanon, memoryRetrievalV2Enabled, retrieveContinuityV2 } from "@/lib/memory-v2";
 import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
+import { sceneStateEnabled, sceneStateRetrievalHintEnabled } from "@/lib/memory-flags";
+import { sceneFieldsOf, sceneRetrievalCue } from "@/lib/scene-state";
+import { currentSceneState, dropSceneStateForMessage, maybeUpdateSceneState } from "@/lib/scene-state-store";
 import { recallText, selectRecentMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
@@ -83,6 +86,7 @@ export async function POST(request: Request) {
   // recent transcript already carries the newest accepted turns, while the
   // rolling summary is updated in the background after successful replies.
   const currentSummary = String(row.summary || "");
+  const sceneEnabled = sceneStateEnabled(account.id);
 
   const staged = await asUser(account.id, async (client) => {
     let regenerateTarget: ReturnType<typeof messageFromRow> | null = null;
@@ -99,6 +103,10 @@ export async function POST(request: Request) {
     } else if (action === "regenerate") {
       const last = await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1", [conversationId, account.id]);
       if (last.rows[0]?.role === "assistant") regenerateTarget = messageFromRow(last.rows[0]);
+      // The reply about to be replaced may have moved the scene. Dropping the
+      // state read out of it here means the discarded generation cannot leave
+      // its location, cast, or open loops behind, whatever happens next.
+      if (regenerateTarget && sceneEnabled) await dropSceneStateForMessage(client,conversationId,regenerateTarget.id,account.id);
     }
 
     const historyResult = await client.query(
@@ -109,10 +117,16 @@ export async function POST(request: Request) {
     const history = selectRecentMessages(availableHistory, settings.contextMessages, settings.contextTokenBudget);
     const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
     const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
-    return { regenerateTarget, userMessageId, history, lastUserInput, recallContext };
+    // Where and when this reply happens. Read after any regeneration cleanup so
+    // a replaced generation's scene is already out of the way.
+    const sceneState = sceneEnabled ? await currentSceneState(client,account.id,conversationId) : null;
+    return { regenerateTarget, userMessageId, history, lastUserInput, recallContext, sceneState };
   });
 
-  const { regenerateTarget, userMessageId, history, lastUserInput, recallContext } = staged;
+  const { regenerateTarget, userMessageId, history, lastUserInput, recallContext, sceneState } = staged;
+  // Selection stays relevance-driven. The cue is opt-in and additive so an
+  // A/B comparison can separate grounding from ranking.
+  const sceneRetrievalHint = sceneState && sceneStateRetrievalHintEnabled() ? sceneRetrievalCue(sceneFieldsOf(sceneState)) : "";
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
 
   let memories; let arcs; let coreCanon = [] as Awaited<ReturnType<typeof retrieveContinuityV2>>["coreCanon"];
@@ -120,7 +134,7 @@ export async function POST(request: Request) {
     try {
       const continuity = await retrieveContinuityV2({
         userId:account.id,characterId:row.character_id,conversationId,
-        query:focusedRetrievalQuery(history,lastUserInput || character.scenario || character.name),
+        query:focusedRetrievalQuery(history,lastUserInput || character.scenario || character.name,sceneRetrievalHint),
         messageId:userMessageId,limit:settings.memoryLimit,tokenBudget:settings.memoryTokenBudget,
       });
       ({memories,arcs,coreCanon}=continuity);
@@ -134,10 +148,16 @@ export async function POST(request: Request) {
     ({memories,arcs}=await asUser(account.id,(client)=>relevantContinuity(client,account.id,row.character_id,conversationId,recallContext,settings.memoryLimit,settings.memoryTokenBudget)));
   }
 
-  const system = roleplayPrompt(character, currentSummary, memories, arcs, { ...settings, roleplayPreset: engineId, responseLength }, {
+  // With the layer off, the writer prompt is byte-identical to today's: no
+  // scene block, and no historical tags even on memories stamped while it was
+  // on. That is what makes an enabled/disabled comparison mean something.
+  const groundedMemories = sceneEnabled ? memories : memories.map((memory) => ({ ...memory, scene: null }));
+  const groundedArcs = sceneEnabled ? arcs : arcs.map((arc) => ({ ...arc, storyDayStart: null, storyDayEnd: null, locations: [] }));
+  const system = roleplayPrompt(character, currentSummary, groundedMemories, groundedArcs, { ...settings, roleplayPreset: engineId, responseLength }, {
     worlds,
     persona,
     coreCanon,
+    sceneState: sceneState ? sceneFieldsOf(sceneState) : null,
     instructionPresets: Array.isArray(row.instruction_presets) ? row.instruction_presets : [],
     customInstructions: String(row.custom_instructions || ""),
   });
@@ -271,7 +291,12 @@ export async function POST(request: Request) {
         // the post-stream controls) behind another database round trip.
         void recordAttemptUsage().catch((error)=>console.error("Usage accounting failed",error));
         controller.close();
-        if (!regenerateTarget) void (async () => {
+        void (async () => {
+          // Scene State first: consolidation stamps the memories it creates
+          // with whatever the scene ledger knows by then. A failure in either
+          // is logged and dropped — the reply has already been delivered.
+          await maybeUpdateSceneState(account.id,conversationId);
+          if (regenerateTarget) return;
           await maybeConsolidate(account.id,conversationId);
           await maybeCurateCanon(account.id,conversationId);
           await maybeBackfillMemoryEmbeddings(account.id,conversationId);

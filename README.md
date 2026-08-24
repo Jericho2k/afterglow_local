@@ -64,6 +64,8 @@ psql "$DATABASE_URL" -f supabase/migrations/0008_canonical_generated_user_messag
 psql "$DATABASE_URL" -f supabase/migrations/0009_public_character_profile.sql
 psql "$DATABASE_URL" -f supabase/migrations/0010_world_covers_storage.sql
 psql "$DATABASE_URL" -f supabase/migrations/0011_creation_model.sql
+psql "$DATABASE_URL" -f supabase/migrations/0012_discovery_feed.sql
+psql "$DATABASE_URL" -f supabase/migrations/0013_scene_state.sql
 ```
 
 Every file is idempotent, so re-running them is safe. `0002_storage.sql` touches the `storage` schema and only applies to Supabase.
@@ -132,7 +134,55 @@ With Memory Retrieval V2 enabled for an allowlisted account, each reply receives
 
 At the configured consolidation interval, the independently configured maintenance model condenses recent events into the summary and extracts a small set of atomic durable memories. Around every 100 messages, a separate conservative curation pass may promote, merge, supersede, or demote Core Canon entries. It never deletes the underlying episodic memories or historical arcs. Passwords, API keys, payment data, addresses, and explicit sexual mechanics are specifically excluded from automatic memory extraction.
 
-This avoids continuously sending the entire chat history, improving continuity while controlling token cost. `memory_retrieval_runs` records selected IDs, tier token counts, deterministic score components and semantic fallback reasons; `usage_events` separately records RP, consolidation, curation and embedding cost metadata.
+This avoids continuously sending the entire chat history, improving continuity while controlling token cost. `memory_retrieval_runs` records selected IDs, tier token counts, deterministic score components and semantic fallback reasons; `usage_events` separately records RP, consolidation, curation, scene and embedding cost metadata.
+
+### Scene State
+
+Retrieval answers *what happened*. Scene State answers *where and when we are
+now*, because a correctly recalled memory can still be misread as the present:
+the same couch in another house, yesterday's argument treated as this morning's,
+somebody who left the room still speaking. It is a small ledger — story day,
+date only if the fiction stated one, time of day, location as place plus the
+spot inside it, who is present, and a few unresolved beats — and nothing more.
+It is not an RPG state engine: there is no inventory, no stats, no quest log.
+
+Four rules keep it honest.
+
+- **State persists until narrative evidence changes it.** Fifty messages of
+  dialogue in one room are still that room, and still the same day. Message
+  count is never story time.
+- **Unknown stays unknown.** A story that never named a date does not get one.
+  Relative chronology ("day 12", "three days later") is the primary mechanism;
+  a calendar date appears only when the story stated one.
+- **Selection stays relevance-driven.** Scene State changes how a retrieved
+  memory is *presented*, not whether it is retrieved. The optional retrieval
+  cue is behind its own flag and off by default.
+- **Failure is invisible.** A failed extraction leaves the last good state in
+  place, records a diagnostic row, and never touches the reply.
+
+The writer receives a `CURRENT SCENE — THIS IS NOW` block above the archive,
+and each recalled memory or arc that kept grounding is tagged with where and
+when it happened (`[Day 4 · afternoon · university courtyard]`), so NOW and
+THEN are labelled in opposite tenses. Measured over the benchmark fixtures the
+block itself is 26–72 tokens and the whole addition to the writer prompt —
+block, the NOW/THEN instruction and every history tag — averages 163 tokens.
+
+One cheap background extraction runs after each reply on the independently
+routed maintenance model — never the RP writer, never on the request path, and
+never in the streamed text. Its static instructions sit in the system message
+as one cacheable ~730-token prefix, leaving roughly 300 varying input tokens
+and ~150 output tokens per turn. Its cost is recorded separately in
+`usage_events` as `scene_state` and works out to roughly $0.011 per 100 user
+messages on DeepSeek V4 Flash with prefix caching, or about $0.019 without it.
+
+Scene rows are keyed by the same integer message position that memories use, so
+a branch inherits only what was true at its branch point and an edit or rewind
+discards the scene the abandoned future established. The state read through the
+newest assistant reply also stores a fingerprint of that reply: a regenerated or
+edited message no longer matches, so a discarded generation cannot leave its
+location or cast behind. Scene State is internal metadata — it never appears in
+a reply, and it is inspectable only through the admin-only `/api/scene-state`
+diagnostics.
 
 ## Creation model
 
