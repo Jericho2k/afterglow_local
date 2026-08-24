@@ -1,0 +1,141 @@
+/*
+ * A cast member's page.
+ *
+ * Deliberately shorter than a creation page and deliberately built from the
+ * same materials: the same near-black ground, the same thin borders, the same
+ * serif heading over sans-serif copy, and the parent creation's accent rather
+ * than one of its own. It should read as a page inside a creation, not as an
+ * unrelated profile that happens to share a colour scheme.
+ *
+ * The hero is capped well below a full screen. A portrait that filled the
+ * viewport would push the name and role below the fold, which on a phone is
+ * the whole page.
+ */
+
+.page {
+  --edge: rgba(255, 255, 255, .08);
+  --ink: #f6eff4;
+  --muted: #a99cab;
+  --faint: #7b6f7e;
+  --accent: #e879a9;
+  min-height: 100dvh;
+  background: radial-gradient(circle at 70% -4%, rgba(123, 50, 80, .16), transparent 36%), #0b080d;
+  color: var(--ink);
+  padding-bottom: calc(40px + env(safe-area-inset-bottom));
+}
+
+.hero { position: relative; }
+
+.heroMedia {
+  position: relative;
+  width: 100%;
+  /* Tall enough to be a portrait, short enough that the name is on screen. */
+  height: min(58vh, 460px);
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 32%, color-mix(in srgb, var(--creation-accent, #e879a9) 24%, #1a1220), #0b080d 70%);
+}
+.heroMedia img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 22%; display: block; }
+.heroFallback {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 76px;
+  color: color-mix(in srgb, var(--creation-accent, #e879a9) 34%, #ffffff);
+  opacity: .55;
+}
+.heroGlow {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: radial-gradient(120% 55% at 50% 100%, var(--creation-accent-glow, transparent), transparent 72%);
+}
+.heroScrim {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(11, 8, 13, .55) 0%, transparent 26%, transparent 44%, #0b080d 97%);
+}
+
+.heroBar {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 3;
+  display: flex; align-items: center;
+  padding: max(12px, env(safe-area-inset-top)) 16px 0;
+}
+.circleButton {
+  display: grid; place-items: center; width: 38px; height: 38px;
+  border-radius: 50%; border: 1px solid var(--edge);
+  background: rgba(14, 10, 16, .58); backdrop-filter: blur(14px);
+  color: var(--ink); cursor: pointer; transition: background .18s, transform .18s;
+}
+.circleButton:hover { background: rgba(232, 121, 169, .16); }
+.circleButton:active { transform: scale(.94); }
+
+.heroCopy {
+  position: relative; z-index: 2;
+  margin-top: -96px;
+  padding: 0 16px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  text-transform: uppercase; letter-spacing: .13em; font-size: 9.5px;
+  color: var(--creation-accent-readable, var(--accent));
+}
+.heroCopy h1 {
+  margin: 0;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(30px, 8.5vw, 42px);
+  font-weight: 600; line-height: 1.05; letter-spacing: -.01em;
+  overflow-wrap: anywhere;
+}
+.role { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--muted); }
+
+.body {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 22px 16px 0;
+  /* A comfortable measure on a wide screen rather than a full-width column of
+     text nobody can track across. */
+  max-width: 720px; margin: 0 auto;
+}
+
+.card {
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .022);
+  padding: 16px;
+}
+.card > header {
+  display: flex; align-items: center; gap: 9px; margin: 0 0 12px;
+  color: var(--creation-accent-readable, var(--accent));
+}
+.card h2 { margin: 0; font-size: 13px; font-weight: 620; letter-spacing: .01em; color: var(--ink); }
+.prose { margin: 0; font-size: 14px; line-height: 1.68; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.parentLink {
+  display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  padding: 12px; border-radius: 14px;
+  border: 1px solid var(--edge); background: rgba(255, 255, 255, .022);
+  color: inherit; text-decoration: none;
+}
+.parentLink:hover { background: rgba(232, 121, 169, .08); border-color: var(--creation-accent-border, rgba(232, 121, 169, .3)); }
+.parentLink span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.parentLink strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.parentLink small { font-size: 11.5px; color: var(--muted); }
+.parentLink svg { flex: none; color: var(--creation-accent-readable, var(--accent)); }
+
+.state {
+  min-height: 100dvh;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 40px 24px; text-align: center;
+  background: #0b080d; color: var(--muted, #a99cab);
+}
+.state svg { color: #e879a9; }
+.state h1 { margin: 0; font-family: var(--font-serif), Georgia, serif; font-size: 24px; font-weight: 600; color: #f6eff4; }
+.state a { color: #f5a8c6; }
+.spin { animation: spin 1.4s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (min-width: 900px) {
+  .heroMedia { height: min(52vh, 520px); }
+  .body { padding-left: 24px; padding-right: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .circleButton { transition: none; }
+  .spin { animation: none; }
+}

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { normalizeBlocks } from "./rich-content";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type SceneStamp, type SceneState, type World } from "./types";
+import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type SceneStamp, type SceneState, type World, type WorldSummary } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -466,6 +467,37 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS core_canon_user_idx ON core_canon_entries (user_id, conversation_id, status)");
   await pool().query("CREATE INDEX IF NOT EXISTS memory_retrieval_runs_user_idx ON memory_retrieval_runs (user_id, conversation_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS conversation_scene_states_current_idx ON conversation_scene_states (user_id, conversation_id, through_message_count DESC)");
+  // Worlds V2: saves, comments and the rich-content columns. Mirrors
+  // migrations 0014-0016 so the in-memory test database matches production.
+  await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS save_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS content_rich jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS description_rich jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS greeting_rich jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS alternate_greetings_rich jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS discovery_preferences jsonb NOT NULL DEFAULT '{}'::jsonb");
+  await pool().query(`
+    CREATE TABLE IF NOT EXISTS world_saves (
+      user_id uuid NOT NULL,
+      world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, world_id)
+    );
+  `);
+  await pool().query("CREATE INDEX IF NOT EXISTS world_saves_user_idx ON world_saves (user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS world_saves_world_idx ON world_saves (world_id)");
+  await pool().query(`
+    CREATE TABLE IF NOT EXISTS world_comments (
+      id uuid PRIMARY KEY,
+      world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL,
+      parent_id uuid,
+      body text NOT NULL,
+      like_count integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+  await pool().query("CREATE INDEX IF NOT EXISTS world_comments_world_idx ON world_comments (world_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_user_idx ON character_likes (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_character_idx ON character_likes (character_id)");
   // One index per discovery ordering, matching the feed's ORDER BY so a page
@@ -637,6 +669,7 @@ export function castMembersFromRow(value: unknown): Character["cast"] {
     .filter((member): member is Record<string, unknown> => Boolean(member) && typeof member === "object")
     .map((member) => ({
       name: String(member.name || ""),
+      id: String(member.id || ""),
       role: String(member.role || ""),
       description: String(member.description || ""),
       tagline: String(member.tagline || ""),
@@ -663,6 +696,14 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
     description: String(row.description || ""), userRole: String(row.user_role || ""),
     avatarUrl: String(row.avatar_url), avatarPath: String(row.avatar_path || ""), accent: String(row.accent), backstory: String(row.backstory),
     cast, lorebook: String(row.lorebook || ""), personality: String(row.personality), scenario: String(row.scenario), greeting: String(row.greeting), alternateGreetings,
+    // Blocks are presentation. The text columns beside them are what every
+    // prompt, snapshot and backup reads, so an illustrated creation reaches a
+    // model as words alone without any caller having to know that.
+    descriptionRich: normalizeBlocks(row.description_rich),
+    greetingRich: normalizeBlocks(row.greeting_rich),
+    alternateGreetingsRich: Array.isArray(row.alternate_greetings_rich)
+      ? row.alternate_greetings_rich.map((entry) => normalizeBlocks(entry))
+      : [],
     exampleDialogue: String(row.example_dialogue), responseDirective: String(row.response_directive),
     boundaries: String(row.boundaries),
     // The original import paste is the creator's working material and often
@@ -771,12 +812,52 @@ export function personaFromRow(row: Record<string, unknown>): Persona {
   };
 }
 
-export function worldFromRow(row: Record<string, unknown>): World {
+export function worldFromRow(row: Record<string, unknown>, viewerId?: string): World {
+  const creatorId = row.creator_id ? String(row.creator_id) : "";
   return {
-    id: String(row.id), name: String(row.name), description: String(row.description || ""), content: String(row.content || ""),
-    coverPath: String(row.cover_path || ""), coverUrl: String(row.cover_url || ""),
-    visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as World["visibility"],
-    createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+    id: String(row.id),
+    name: String(row.name),
+    description: String(row.description || ""),
+    content: String(row.content || ""),
+    contentRich: normalizeBlocks(row.content_rich),
+    coverPath: String(row.cover_path || ""),
+    coverUrl: String(row.cover_url || ""),
+    visibility: (["private", "unlisted", "public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as World["visibility"],
+    saveCount: Number(row.save_count || 0),
+    savedByViewer: Boolean(row.saved_by_viewer),
+    ownedByViewer: viewerId ? String(row.user_id ?? "") === viewerId : true,
+    creator: creatorId
+      ? { id: creatorId, username: String(row.creator_username || ""), displayName: String(row.creator_display_name || ""), avatarPath: String(row.creator_avatar_path || "") }
+      : null,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+/**
+ * The lean row a world card is built from.
+ *
+ * Paired with the column lists in the world routes: lore is never selected for
+ * a listing, so a page of world cards cannot carry a page of canon documents,
+ * and a private world's content has no path to a public surface.
+ */
+export function worldSummaryFromRow(row: Record<string, unknown>, viewerId: string): WorldSummary {
+  const creatorId = row.creator_id ? String(row.creator_id) : "";
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    description: String(row.description || ""),
+    coverPath: String(row.cover_path || ""),
+    coverUrl: String(row.cover_url || ""),
+    visibility: (["private", "unlisted", "public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as WorldSummary["visibility"],
+    saveCount: Number(row.save_count || 0),
+    savedByViewer: Boolean(row.saved_by_viewer),
+    ownedByViewer: String(row.user_id ?? "") === viewerId,
+    creationCount: Number(row.creation_count || 0),
+    creator: creatorId
+      ? { id: creatorId, username: String(row.creator_username || ""), displayName: String(row.creator_display_name || ""), avatarPath: String(row.creator_avatar_path || "") }
+      : null,
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
   };
 }
 

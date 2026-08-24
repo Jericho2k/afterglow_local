@@ -1,17 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images, Link2,
   MessageCircle, Pencil, Share2, Sparkles, Tag, Trash2, UserRound, Users,
 } from "lucide-react";
-import type { Character, CharacterComment, World } from "@/lib/types";
+import type { AttachedWorld, Character, CharacterComment } from "@/lib/types";
 import {
   castSectionLabel, creationCtaLabel, creationOverview, creationSubject, creationTitle, creationType,
   publicCastMembers,
 } from "@/lib/creation";
+import { accentVariables } from "@/lib/accent";
+import { castMemberKey } from "@/lib/cast";
+import { imageCount } from "@/lib/rich-content";
+import { RichContent } from "@/components/rich";
 import { creationActions, creationEditHref } from "@/lib/creation-actions";
 import { compactCount } from "@/lib/format";
 import { toggleCreationSave } from "@/lib/saves";
@@ -21,7 +25,13 @@ import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
 import { WorldCard } from "@/components/world";
 import styles from "./profile.module.css";
 
-type Detail = { character: Character; worlds: World[]; owner: boolean };
+/**
+ * `worlds` may contain a locked stand-in for a world this viewer cannot open.
+ * A public creation built on a private world still shows the association —
+ * hiding it would misrepresent what the creation is — so the card renders with
+ * its identity and without its content or its link.
+ */
+type Detail = { character: Character; worlds: AttachedWorld[]; owner: boolean };
 
 /**
  * Public creation page.
@@ -81,6 +91,9 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   // The public description only. Internal prompt engineering — response
   // directives, boundaries, example dialogue — never appears here.
   const overview = useMemo(() => (character ? creationOverview(character) : ""), [character]);
+  // Only a description the creator actually placed an image in is "rich": a
+  // plain one keeps its clamp and its Show more, exactly as before.
+  const illustrated = useMemo(() => imageCount(character?.descriptionRich) > 0, [character]);
   const cast = useMemo(() => (character ? publicCastMembers(character.cast) : []), [character]);
 
   useEffect(() => {
@@ -232,6 +245,17 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const titleLead = titleWords.slice(0, -1).join(" ");
   const titleTail = titleWords[titleWords.length - 1] ?? title;
   const stats = character.publicStats;
+  /*
+   * Messages, saves and chats — the three totals the database actually
+   * maintains. There is no rank here because rank is not computed, and no
+   * likes because saving replaced liking; inventing either to fill the row
+   * would be the wrong kind of polish.
+   */
+  const visibleStats = [
+    { label: "Messages", icon: <MessageCircle size={11} aria-hidden />, value: stats.messages === null ? null : compactCount(stats.messages) },
+    { label: "Saves", icon: <Bookmark size={11} aria-hidden />, value: stats.saves === null ? null : compactCount(stats.saves) },
+    { label: "Chats", icon: <Sparkles size={11} aria-hidden />, value: stats.chats === null ? null : compactCount(stats.chats) },
+  ];
   const heroTags = character.tags.slice(0, 6);
   // Which actions exist is decided in one place, so the menu here and any
   // other surface that grows one cannot disagree about what ownership allows.
@@ -250,10 +274,11 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     onSelect: menuHandlers[action.id],
   }));
 
-  return <main className={styles.page} style={{ "--character-accent": character.accent } as React.CSSProperties}>
+  return <main className={styles.page} style={accentVariables(character.accent) as React.CSSProperties}>
     <div className={styles.hero}>
       <div className={styles.heroMedia}>
         {image ? <img src={image} alt="" /> : <span className={styles.heroFallback}>{initials(character.name)}</span>}
+        <div className={styles.heroGlow} />
         <div className={styles.heroScrim} />
       </div>
 
@@ -298,13 +323,10 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           </button>
         </div>
 
-        <dl className={styles.stats}>
-          {/* Ranking is not computed yet, so the slot is absent rather than
-              showing a placeholder position. */}
-          {stats.rank !== null && <Stat label={stats.rankCategory ? `in ${stats.rankCategory}` : "Rank"} value={`#${stats.rank}`} />}
-          <Stat label="Messages" value={stats.messages === null ? null : compactCount(stats.messages)} />
-          <Stat label="Saves" value={stats.saves === null ? null : compactCount(stats.saves)} />
-          <Stat label="Chats" value={stats.chats === null ? null : compactCount(stats.chats)} />
+        {/* Sized to what it actually contains. Ranking is not computed, so
+            there is no rank cell and no empty column where one would go. */}
+        <dl className={styles.stats} style={{ "--stat-count": visibleStats.length } as React.CSSProperties}>
+          {visibleStats.map((stat) => <Stat key={stat.label} icon={stat.icon} label={stat.label} value={stat.value} />)}
         </dl>
       </div>
     </div>
@@ -331,10 +353,19 @@ export default function CharacterProfile({ characterId }: { characterId: string 
 
         {overview && <section id="overview" className={`${styles.card} ${illuminated === "overview" ? styles.illuminate : ""}`}>
           <header><Sparkles size={16} /><h2>{kind === "character" ? `About ${creationSubject(character)}` : "Overview"}</h2></header>
-          <p ref={overviewRef} className={`${styles.prose} ${expanded ? styles.proseOpen : ""}`}>{overview}</p>
-          {(overflowing || expanded) && <button className={styles.showMore} onClick={() => setExpanded((value) => !value)}>
-            {expanded ? "Show less" : "Show more"}<ChevronDown size={15} className={expanded ? styles.flip : ""} />
-          </button>}
+          {/* A description the creator illustrated renders as blocks; one they
+              did not renders as the paragraph it has always been. The clamp
+              only applies to the plain case, because collapsing a column that
+              contains artwork reads as a broken image rather than as more
+              text. */}
+          {illustrated
+            ? <RichContent blocks={character.descriptionRich} text={overview} bucket={characterAvatarBucket} />
+            : <>
+              <p ref={overviewRef} className={`${styles.prose} ${expanded ? styles.proseOpen : ""}`}>{overview}</p>
+              {(overflowing || expanded) && <button className={styles.showMore} onClick={() => setExpanded((value) => !value)}>
+                {expanded ? "Show less" : "Show more"}<ChevronDown size={15} className={expanded ? styles.flip : ""} />
+              </button>}
+            </>}
         </section>}
 
         {character.userRole.trim() && <section id="role" className={`${styles.card} ${illuminated === "role" ? styles.illuminate : ""}`}>
@@ -368,17 +399,26 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           <ul className={styles.castList}>
             {cast.map((member, index) => {
               const portrait = avatarSource(characterAvatarBucket, member.avatarPath, member.avatarUrl);
-              return <li key={`${member.name}-${index}`} className={styles.castCard}>
+              const key = castMemberKey(member);
+              const body = <>
                 <span className={styles.castAvatar}>
                   {portrait ? <img src={portrait} alt="" loading="lazy" /> : initials(member.name)}
                 </span>
-                <div>
+                <span className={styles.castCopy}>
                   <strong>{member.name}</strong>
                   {member.role && <small>{member.role}</small>}
                   {/* Only the blurb the creator wrote for readers. A cast
                       member's definition is prompt material and stays private. */}
                   {member.tagline && <p>{member.tagline}</p>}
-                </div>
+                </span>
+              </>;
+              // A member with no addressable key — no id yet and a name that
+              // does not survive slugging — is shown without a link rather
+              // than linked to a page that cannot resolve it.
+              return <li key={key || `${member.name}-${index}`} className={styles.castCard}>
+                {key
+                  ? <Link href={`/characters/${character.id}/cast/${encodeURIComponent(key)}`} className={styles.castLink}>{body}</Link>
+                  : <span className={styles.castLink}>{body}</span>}
               </li>;
             })}
           </ul>
@@ -440,10 +480,17 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   </main>;
 }
 
-/** A metric with no backend answer yet renders as unavailable, never as zero. */
-function Stat({ label, value }: { label: string; value: string | null }) {
+/**
+ * One metric.
+ *
+ * A metric the backend cannot answer renders as unavailable rather than as
+ * zero — those are different facts. A metric that is genuinely zero renders as
+ * "0", aligned exactly like every other value, so a creation published a
+ * minute ago looks new rather than broken.
+ */
+function Stat({ icon, label, value }: { icon: ReactNode; label: string; value: string | null }) {
   return <div className={styles.stat}>
-    <dt>{label}</dt>
+    <dt className={styles.statLabel}>{icon}<span>{label}</span></dt>
     <dd>{value ?? <span className={styles.unavailable}>—</span>}</dd>
   </div>;
 }

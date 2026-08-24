@@ -107,3 +107,119 @@
   .card { padding: 22px; }
   .characters { grid-template-columns: 1fr 1fr; }
 }
+
+/* --------------------------------------------------------- Worlds V2 ---- */
+
+/*
+ * The page grew from "a cover and a wall of lore" into a real detail page, so
+ * it needs the pieces a detail page has: an action bar, a byline, a save CTA,
+ * a creator panel and comments. Everything below is built from the same
+ * materials the creation page uses — thin borders, near-black surfaces,
+ * restrained rose — so the two read as the same product rather than as two
+ * pages that happen to share a background colour.
+ */
+
+.heroBar { justify-content: space-between; }
+.heroBarActions { display: flex; gap: 8px; }
+
+.byline {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+  margin: 2px 0 0;
+  font-size: 12px; color: var(--muted, #a99cab);
+}
+.byline strong { font-weight: 600; color: var(--ink, #f6eff4); }
+.visibility { display: inline-flex; align-items: center; gap: 5px; }
+
+.ctaRow { display: flex; gap: 10px; margin-top: 14px; }
+.primaryCta {
+  display: inline-flex; align-items: center; gap: 9px;
+  min-height: 46px; padding: 0 20px;
+  border: 1px solid rgba(232, 121, 169, .3); border-radius: 14px;
+  background: linear-gradient(102deg, #ffd9ea 4%, #e879a9 42%, #b892f0 96%);
+  color: #1a0d14; font-size: 14px; font-weight: 640;
+  cursor: pointer;
+}
+.primaryCta[aria-pressed="true"] {
+  background: rgba(232, 121, 169, .14);
+  color: #ffd7e6;
+}
+.primaryCta em { font-style: normal; font-size: 12px; opacity: .75; }
+
+.count {
+  margin-left: auto;
+  font-style: normal; font-size: 11px; font-weight: 600;
+  color: var(--muted, #a99cab);
+}
+
+/* Lore is long-form, so it gets a comfortable measure rather than the full
+   width of a desktop window. */
+.prose { max-width: 68ch; }
+
+.creatorCard .creator { display: flex; align-items: center; gap: 12px; }
+.creatorAvatar {
+  display: grid; place-items: center;
+  width: 44px; height: 44px; flex: none;
+  border-radius: 50%; overflow: hidden;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .08));
+  background: rgba(232, 121, 169, .12);
+  color: #ffd7e6; font-size: 14px; font-weight: 600;
+}
+.creatorAvatar img { width: 100%; height: 100%; object-fit: cover; }
+.creatorCard strong { font-size: 14px; font-weight: 600; }
+.creatorCard small { display: block; font-size: 11.5px; color: var(--muted, #a99cab); }
+
+.composer { display: flex; flex-direction: column; gap: 9px; margin-bottom: 14px; }
+.composer textarea {
+  width: 100%;
+  border-radius: 13px;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .08));
+  background: rgba(8, 6, 9, .5);
+  color: var(--ink, #f6eff4);
+  font: inherit; font-size: 13px; line-height: 1.6;
+  padding: 11px 13px; resize: vertical;
+}
+.postButton {
+  align-self: flex-end;
+  min-height: 38px; padding: 0 18px;
+  border: 1px solid rgba(232, 121, 169, .3); border-radius: 11px;
+  background: rgba(232, 121, 169, .13);
+  color: #ffd7e6; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.postButton:disabled { opacity: .45; cursor: default; }
+
+.quiet { margin: 0; font-size: 12.5px; color: var(--faint, #7b6f7e); }
+
+.comments { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.comments li { display: flex; gap: 11px; min-width: 0; }
+.commentAvatar {
+  display: grid; place-items: center;
+  width: 34px; height: 34px; flex: none;
+  border-radius: 50%; overflow: hidden;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .08));
+  background: rgba(232, 121, 169, .1);
+  color: #ffd7e6; font-size: 11px; font-weight: 600;
+}
+.commentAvatar img { width: 100%; height: 100%; object-fit: cover; }
+.commentMeta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0 0 3px; }
+.commentMeta strong { font-size: 12.5px; font-weight: 600; }
+.commentMeta time { font-size: 11px; color: var(--faint, #7b6f7e); }
+.commentBody { margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted, #a99cab); overflow-wrap: anywhere; }
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 40;
+  display: flex; align-items: center; gap: 10px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 11px 12px 11px 15px;
+  border: 1px solid rgba(232, 121, 169, .28); border-radius: 13px;
+  background: rgba(31, 22, 30, .96);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+  color: var(--ink, #f6eff4); font-size: 12px;
+}
+.toast button { border: 0; background: transparent; color: var(--muted, #a99cab); font-size: 16px; line-height: 1; cursor: pointer; }
+
+@media (min-width: 900px) {
+  /* Lore is the reason to be here, so it keeps a readable measure while the
+     page itself uses the width. */
+  .body { max-width: 860px; margin: 0 auto; }
+}

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { creationTypes, responseLengths, roleplayEngineIds } from "./types";
+import { discoverySorts } from "./discovery";
 import { adultTagsIn, canonicalTag, maxHashtags, maxTags, normalizeHashtag } from "./tags";
+import { maxBlockText, maxBlocks, maxCaption } from "./rich-content";
 
 const text = (max: number, min = 0) => z.preprocess(
   (value) => value == null ? "" : typeof value === "string" ? value : String(value),
@@ -33,7 +35,47 @@ const storagePath = z.union([
 
 const visibility = z.enum(["private", "unlisted", "public"]).default("private");
 
+/**
+ * A rich content block.
+ *
+ * The schema is the sanitiser. There is no field here that can carry markup,
+ * no field that can carry a script, and exactly one field that carries a URL —
+ * which accepts an http(s) address and nothing else. A block cannot express an
+ * injection because the format has nowhere to put one.
+ */
+const richBlockSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: text(maxBlockText) }),
+  z.object({
+    type: z.literal("image"),
+    path: storagePath,
+    url: z.union([
+      z.literal(""),
+      z.string().url().max(1500).refine((value) => /^https?:\/\//i.test(value), "Image URL must use HTTP or HTTPS"),
+    ]).default(""),
+    caption: text(maxCaption).default(""),
+  }).refine((block) => Boolean(block.path || block.url), "An image block needs an image"),
+]);
+
+/**
+ * A block list, with unusable blocks dropped rather than rejected.
+ *
+ * A single malformed block must not fail an entire save. A creator who has
+ * written two thousand words around three images should not lose the save
+ * because one image lost its path somewhere between the browser and here —
+ * the block goes, the writing stays. This mirrors `normalizeBlocks`, which
+ * applies the same rule on the way back out, so a value that survives one
+ * survives both.
+ */
+const richContent = z.preprocess(
+  (value) => (Array.isArray(value) ? value : []).filter((block) => richBlockSchema.safeParse(block).success),
+  z.array(richBlockSchema).max(maxBlocks),
+).default([]);
+
 export const characterCastMemberSchema = z.object({
+  // Optional because every member written before cast pages existed has none.
+  // `castMemberKey` resolves an addressable identity either way, so a member
+  // without one is a member with a name-derived URL rather than a broken link.
+  id: z.union([z.literal(""), z.string().max(64).regex(/^[A-Za-z0-9_-]+$/, "Unsupported member id")]).default(""),
   name: text(120, 1),
   role: text(240).default(""),
   /** The AI definition. Never rendered publicly. */
@@ -57,6 +99,9 @@ const characterFields = z.object({
   tagline: text(300).default(""),
   /** Public premise. Kept apart from the hidden definition on purpose. */
   description: text(6000).default(""),
+  // Presentation blocks for the three rich surfaces. The text fields beside
+  // them stay canonical and stay what every prompt reads.
+  descriptionRich: richContent,
   /** Who {{user}} plays. Optional for every creation type. */
   userRole: text(4000).default(""),
   avatarUrl: imageSource,
@@ -68,7 +113,12 @@ const characterFields = z.object({
   personality: text(12000).default(""),
   scenario: text(12000).default(""),
   greeting: text(8000).default(""),
+  greetingRich: richContent,
   alternateGreetings: z.preprocess((value) => value == null ? [] : value, z.array(text(8000, 1)).max(12)).default([]),
+  alternateGreetingsRich: z.preprocess(
+    (value) => Array.isArray(value) ? value : [],
+    z.array(richContent).max(12),
+  ).default([]),
   exampleDialogue: text(12000).default(""),
   responseDirective: text(8000).default(""),
   boundaries: text(5000).default(""),
@@ -230,16 +280,50 @@ export const worldSchema = z.object({
   name: text(120, 1),
   description: text(500).default(""),
   content: text(100000, 1),
+  contentRich: richContent,
   coverPath: storagePath,
   coverUrl: imageSource,
   visibility,
 });
 
+export const worldSaveSchema = z.object({ worldId: z.string().uuid() });
+
+/**
+ * Persisted Discovery preferences.
+ *
+ * What a creator generally wants to see when they open Discovery, as opposed
+ * to what they happen to be looking at right now. The free-text search term is
+ * deliberately absent: a search is an action, not a preference.
+ */
+export const discoveryPreferencesSchema = z.object({
+  sort: z.enum(discoverySorts).optional(),
+  tags: z.preprocess(
+    (value) => Array.isArray(value) ? value : [],
+    z.array(z.string().trim().min(1).max(40)).max(maxTags),
+  ).transform((tags) => Array.from(new Set(tags.map(canonicalTag).filter(Boolean)))).optional(),
+  types: z.preprocess(
+    (value) => Array.isArray(value) ? value : [],
+    z.array(z.enum(creationTypes)).max(creationTypes.length),
+  ).transform((types) => Array.from(new Set(types))).optional(),
+  includeAdult: z.boolean().optional(),
+});
+
+/**
+ * A comment on a creation or on a world.
+ *
+ * Exactly one target, which the refinement enforces rather than trusting the
+ * caller to send only one. The two are separate tables with separate policies;
+ * this is the one place the route needs to know which it is talking about.
+ */
 export const commentSchema = z.object({
-  characterId: z.string().uuid(),
+  characterId: z.string().uuid().optional(),
+  worldId: z.string().uuid().optional(),
   body: text(2000, 1),
   parentId: z.string().uuid().nullable().optional(),
-});
+}).refine(
+  (value) => Boolean(value.characterId) !== Boolean(value.worldId),
+  "Comment on a creation or on a world, not both",
+);
 
 export const gallerySchema = z.object({
   characterId: z.string().uuid(),

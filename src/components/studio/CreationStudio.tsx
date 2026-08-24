@@ -51,7 +51,12 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
   worlds: StudioWorld[];
   startStep?: string;
   onClose: () => void;
-  onSaved: (character: Character) => void;
+  /**
+   * `created` is true only when this save brought the creation into
+   * existence. Publishing and editing end in different places, and this is
+   * the one bit of information that distinguishes them.
+   */
+  onSaved: (character: Character, context: { created: boolean }) => void;
   onDeleted: () => void;
   onLibrariesChanged: () => void;
 }) {
@@ -280,6 +285,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
       }
 
       const complete: Character = { ...saved.character, gallery: stored ?? saved.character.gallery };
+      const created = !record;
       clearStoredDraft();
       storageKey.current = draftStorageKey(complete.id);
       setRecord(complete);
@@ -291,7 +297,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
       setDraft(settled);
       setRestored(false);
       restoredRef.current = false;
-      if (close) { onSaved(complete); return; }
+      if (close) { onSaved(complete, { created }); return; }
       setNotice(complete.visibility === "public" ? "Saved and published." : "Draft saved to your library.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not save this creation");
@@ -387,7 +393,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
                 onWorldCreated={(world) => { setLocalWorlds((current) => [world, ...current]); onLibrariesChanged(); }}
                 onError={setError}
               />
-                : step.id === "opening" ? <OpeningStep draft={draft} update={update} />
+                : step.id === "opening" ? <OpeningStep draft={draft} update={update} onError={setError} />
                   : <PublishStep
                     draft={draft}
                     update={update}

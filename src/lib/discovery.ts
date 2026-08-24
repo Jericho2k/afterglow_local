@@ -137,3 +137,58 @@ export function isFilteredQuery(query: Pick<DiscoveryQuery, "search" | "hashtag"
 export function activeFilterCount(query: Pick<DiscoveryQuery, "tags" | "types" | "includeAdult">) {
   return query.tags.length + query.types.length + (query.includeAdult ? 1 : 0);
 }
+
+/**
+ * Persisted Discovery preferences.
+ *
+ * Deliberately a subset of the query: the ordering and the structured filters,
+ * and never the search term. A search is something somebody is doing right
+ * now — turning it into a saved preference would mean re-running last week's
+ * search every time they open the app.
+ */
+export type DiscoveryPreferences = {
+  sort?: DiscoverySort;
+  tags: string[];
+  types: CreationType[];
+  includeAdult: boolean;
+};
+
+export const emptyDiscoveryPreferences: DiscoveryPreferences = { tags: [], types: [], includeAdult: false };
+
+/** The part of a query worth remembering for next time. */
+export function preferencesFromQuery(query: DiscoveryQuery): DiscoveryPreferences {
+  return { sort: query.sort, tags: [...query.tags], types: [...query.types], includeAdult: query.includeAdult };
+}
+
+/**
+ * Whether the URL already says what to show.
+ *
+ * A link somebody followed, a Back restoring a previous view, or a hashtag tap
+ * all arrive with the answer in the address bar, and a saved preference must
+ * never overwrite it. Only a bare Discovery — no filters, no ordering, no
+ * search — is an opening with nothing said, and only then does the preference
+ * apply.
+ */
+export function queryStatesIntent(params: URLSearchParams) {
+  return ["sort", "tags", "type", "adult", "q"].some((key) => params.has(key));
+}
+
+/** A saved preference applied to a fresh query. */
+export function applyPreferences(query: DiscoveryQuery, preferences: DiscoveryPreferences): DiscoveryQuery {
+  return {
+    ...query,
+    sort: preferences.sort ?? query.sort,
+    tags: [...preferences.tags],
+    types: [...preferences.types],
+    includeAdult: preferences.includeAdult,
+    offset: 0,
+  };
+}
+
+/** True when two preference sets would produce the same feed. */
+export function samePreferences(a: DiscoveryPreferences, b: DiscoveryPreferences) {
+  return (a.sort ?? defaultDiscoverySort) === (b.sort ?? defaultDiscoverySort)
+    && a.includeAdult === b.includeAdult
+    && [...a.tags].sort().join("\u0000") === [...b.tags].sort().join("\u0000")
+    && [...a.types].sort().join("\u0000") === [...b.types].sort().join("\u0000");
+}

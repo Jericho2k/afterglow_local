@@ -5,9 +5,10 @@ import { Compass, Menu, Search, SlidersHorizontal, Sparkles, X } from "lucide-re
 import { api } from "@/lib/api-client";
 import { creationTypeLabels } from "@/lib/creation";
 import {
-  activeFilterCount, discoveryPageSize, discoverySearchParams, discoverySortHints,
-  discoverySortLabels, discoverySorts, isFilteredQuery, parseDiscoveryQuery, parseSearchTerm,
-  type DiscoveryQuery, type DiscoverySort,
+  activeFilterCount, applyPreferences, discoveryPageSize, discoverySearchParams, discoverySortHints,
+  discoverySortLabels, discoverySorts, emptyDiscoveryPreferences, isFilteredQuery, parseDiscoveryQuery,
+  parseSearchTerm, preferencesFromQuery, queryStatesIntent, samePreferences,
+  type DiscoveryPreferences, type DiscoveryQuery, type DiscoverySort,
 } from "@/lib/discovery";
 import { toggleCreationSave } from "@/lib/saves";
 import type { CreationSummary } from "@/lib/types";
@@ -65,16 +66,80 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const restoredRef = useRef<Restorable | null>(null);
   const snapshotRef = useRef<Restorable | null>(null);
+  // Set once, before the first preference response can land, so a preference
+  // arriving late never overwrites a filter the reader has already changed.
+  const preferencesApplied = useRef(false);
+  // What the server currently holds, so an unchanged query writes nothing.
+  const savedPreferences = useRef<DiscoveryPreferences | null>(null);
 
-  // Read the address bar once the component is in the browser, and pick up any
-  // page that was left behind for this exact query.
+  /**
+   * What to show on arrival.
+   *
+   * Two different questions, answered in a strict order:
+   *
+   *   1. Does the URL already say? A shared link, a hashtag tap, or a Back
+   *      restoring the previous view all arrive with the answer in the address
+   *      bar, and it always wins — otherwise Back would return somewhere the
+   *      reader had never been.
+   *   2. Otherwise, what does this account generally want? That is fetched
+   *      once, applied once, and never fought over again: `preferencesApplied`
+   *      is set before the request resolves, so a slow response cannot land on
+   *      top of a filter the reader changed while waiting.
+   */
   useEffect(() => {
-    const initial = parseDiscoveryQuery(new URLSearchParams(window.location.search));
+    const params = new URLSearchParams(window.location.search);
+    const initial = parseDiscoveryQuery(params);
     restoredRef.current = readRestorable(queryKey(initial));
-    setQuery(initial);
     setTerm(initial.hashtag ? `#${initial.hashtag}` : initial.search);
-    setReady(true);
+
+    if (queryStatesIntent(params) || restoredRef.current) {
+      preferencesApplied.current = true;
+      savedPreferences.current = null;
+      setQuery(initial);
+      setReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    api<{ discovery: DiscoveryPreferences }>("/api/preferences")
+      .then(({ discovery }) => {
+        if (cancelled) return;
+        const preferences = { ...emptyDiscoveryPreferences, ...discovery };
+        savedPreferences.current = preferences;
+        setQuery(applyPreferences(initial, preferences));
+      })
+      .catch(() => { if (!cancelled) setQuery(initial); })
+      .finally(() => {
+        if (cancelled) return;
+        preferencesApplied.current = true;
+        setReady(true);
+      });
+    return () => { cancelled = true; };
   }, []);
+
+  /**
+   * Remember what the reader settled on.
+   *
+   * Only the structured part — the ordering and the filters — and never the
+   * search term. Clearing counts: a creator who cleared their filters wants
+   * them cleared next time too, so an empty preference is written rather than
+   * treated as "nothing to save", which is what would make Clear appear to
+   * undo itself on the next visit.
+   */
+  useEffect(() => {
+    if (!ready || !preferencesApplied.current) return;
+    const next = preferencesFromQuery(query);
+    if (savedPreferences.current && samePreferences(savedPreferences.current, next)) return;
+    const timer = window.setTimeout(() => {
+      savedPreferences.current = next;
+      void api("/api/preferences", { method: "PATCH", body: JSON.stringify(next) }).catch(() => {
+        // A preference that failed to save is not worth interrupting browsing
+        // for; the next change tries again.
+        savedPreferences.current = null;
+      });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [query, ready]);
 
   const key = queryKey(query);
 

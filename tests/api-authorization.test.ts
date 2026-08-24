@@ -257,12 +257,30 @@ describe("public characters", () => {
     expect(response.status).toBe(200);
     const body=await response.json();
     expect(body.character).toMatchObject({id:alicePublic,ownedByViewer:false,sourceMaterial:""});
-    expect(body.worlds).toEqual([]);
     expect(body.viewerMessageCount).toBe(0);
     expect(body).not.toHaveProperty("conversations");
 
+    // A public creation built on a private world still shows that it is: the
+    // association is part of what the creation is, and hiding it would
+    // misrepresent it. What the visitor gets is the locked card and nothing
+    // else — no lore, no description, no creator, no timestamps.
+    expect(body.worlds).toEqual([{ id: privateWorld, name: "Private world", coverPath: "", coverUrl: "", locked: true }]);
+    expect(JSON.stringify(body.worlds)).not.toContain("Creator-only canon");
+
     const hidden=await characterDetail.GET(new Request(`http://test/api/characters/${aliceCharacter}`),{params:Promise.resolve({id:aliceCharacter})});
     expect(hidden.status).toBe(404);
+  });
+
+  it("gives the owner the private world itself rather than a locked card", async () => {
+    const privateWorld=crypto.randomUUID();
+    await query("INSERT INTO worlds (id,user_id,name,content,visibility) VALUES ($1,$2,'Private world','Creator-only canon','private')",[privateWorld,alice]);
+    await query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)",[alicePublic,privateWorld]);
+
+    account={id:alice,email:null};
+    const body=await (await characterDetail.GET(new Request(`http://test/api/characters/${alicePublic}`),{params:Promise.resolve({id:alicePublic})})).json();
+    expect(body.worlds).toHaveLength(1);
+    expect(body.worlds[0].locked).toBeUndefined();
+    expect(body.worlds[0].content).toBe("Creator-only canon");
   });
 
   it("enforces owner-only character mutation at the route boundary", async () => {

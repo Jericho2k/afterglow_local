@@ -83,6 +83,10 @@ export function characterFromSnapshot(snapshot: Record<string, unknown>, charact
     // The public description is presentation, not part of a frozen roleplay
     // definition, so a snapshot never carries it.
     description: "",
+    // A snapshot freezes what the roleplay reads, and blocks are presentation
+    // rather than roleplay. A frozen definition therefore has no rich content
+    // at all, which is also why an image can never enter a chat through one.
+    descriptionRich: [],
     userRole: String(snapshot.userRole || ""),
     avatarUrl: String(snapshot.avatarUrl || ""),
     avatarPath: String(snapshot.avatarPath || ""),
@@ -93,7 +97,9 @@ export function characterFromSnapshot(snapshot: Record<string, unknown>, charact
     personality: String(snapshot.personality || ""),
     scenario: String(snapshot.scenario || ""),
     greeting: String(snapshot.greeting || ""),
+    greetingRich: [],
     alternateGreetings: Array.isArray(snapshot.alternateGreetings) ? snapshot.alternateGreetings.filter((item): item is string => typeof item === "string") : [],
+    alternateGreetingsRich: [],
     exampleDialogue: String(snapshot.exampleDialogue || ""),
     responseDirective: String(snapshot.responseDirective || ""),
     boundaries: String(snapshot.boundaries || ""),

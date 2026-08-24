@@ -1,8 +1,38 @@
 import { randomUUID } from "node:crypto";
 import { asUser, characterFromRow, ownedCreationFromRow } from "@/lib/db";
 import { characterSchema, characterValidationMessage } from "@/lib/schemas";
+import { withCastMemberIds } from "@/lib/cast";
+import { richFieldPayload, textToRich, type RichBlock } from "@/lib/rich-content";
 import { currentAccount, unauthorized } from "@/lib/session";
 import { characterFromSnapshot, visitorCharacter } from "@/lib/access";
+
+
+/**
+ * The rich fields, reconciled.
+ *
+ * `richFieldPayload` decides both halves of each pair at once: the text a
+ * prompt will read, and the blocks a page will render. A field whose blocks
+ * say nothing the text does not goes back to being plain, so a description
+ * nobody put a picture in is stored exactly as it always was.
+ */
+function richFields(c: { description: string; descriptionRich: RichBlock[]; greeting: string; greetingRich: RichBlock[]; alternateGreetings: string[]; alternateGreetingsRich: RichBlock[][] }) {
+  const description = richFieldPayload(c.descriptionRich.length ? c.descriptionRich : textToRich(c.description));
+  const greeting = richFieldPayload(c.greetingRich.length ? c.greetingRich : textToRich(c.greeting));
+  const openings = c.alternateGreetings.map((opening, index) => {
+    const blocks = c.alternateGreetingsRich[index] ?? [];
+    return richFieldPayload(blocks.length ? blocks : textToRich(opening));
+  });
+  return {
+    description: description.text,
+    descriptionRich: JSON.stringify(description.rich),
+    greeting: greeting.text,
+    greetingRich: JSON.stringify(greeting.rich),
+    // Index-aligned with the text array, so an opening and its blocks can
+    // never drift apart by one.
+    alternateGreetings: JSON.stringify(openings.map((opening) => opening.text).filter(Boolean)),
+    alternateGreetingsRich: JSON.stringify(openings.filter((opening) => opening.text).map((opening) => opening.rich)),
+  };
+}
 
 export async function GET(request: Request) {
   const account = await currentAccount();
@@ -83,12 +113,13 @@ export async function POST(request: Request) {
   if (!parsed.success) return Response.json({ error: characterValidationMessage(parsed.error), details: parsed.error.flatten() }, { status: 400 });
   const id = randomUUID();
   const c = parsed.data;
+  const rich = richFields(c);
 
   const row = await asUser(account.id, async (client) => {
     const result = await client.query(
-      `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,tags,quick_facts,creation_type,title,description,user_role,hashtags,published_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::text[],$22::jsonb,$23,$24,$25,$26,$27::text[],CASE WHEN $20='public' THEN now() ELSE NULL END) RETURNING *`,
-      [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.visibility,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,c.description,c.userRole,c.hashtags],
+      `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,tags,quick_facts,creation_type,title,description,user_role,hashtags,description_rich,greeting_rich,alternate_greetings_rich,published_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::text[],$22::jsonb,$23,$24,$25,$26,$27::text[],$28::jsonb,$29::jsonb,$30::jsonb,CASE WHEN $20='public' THEN now() ELSE NULL END) RETURNING *`,
+      [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.visibility,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich],
     );
     // Only the caller's own worlds may be attached; the insert policy rejects
     // anything else, and filtering here turns that into a clean no-op instead

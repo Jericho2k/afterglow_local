@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Bookmark, Compass, MessageCircle, Users } from "lucide-react";
+import { accentVariables, normalizeAccent } from "@/lib/accent";
 import { creationTitle, creationType } from "@/lib/creation";
 import { compactCount, exactCount } from "@/lib/format";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
@@ -50,7 +51,10 @@ export function CreationCard({ creation, priority = false, onToggleSave }: {
   const creatorAvatar = creation.creator?.avatarPath ? avatarSource(profileAvatarBucket, creation.creator.avatarPath, "") : "";
   const saved = creation.savedByViewer;
 
-  return <article className={styles.card} style={{ "--accent-card": creation.accent } as React.CSSProperties}>
+  // The creation's own accent, validated and derived. It tints the card's
+  // edge and the gradient behind its artwork and nothing else — two cards
+  // side by side must still read as one grid rather than as two themes.
+  return <article className={styles.card} style={{ ...accentVariables(creation.accent), "--accent-card": normalizeAccent(creation.accent) } as React.CSSProperties}>
     {/* The whole card opens the public creation page. Starting a chat is a
         decision made there, with the overview, cast and tags in view. */}
     <Link href={`/characters/${creation.id}`} className={styles.cardLink}>

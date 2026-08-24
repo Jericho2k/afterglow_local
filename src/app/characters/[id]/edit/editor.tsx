@@ -72,7 +72,9 @@ export default function CreationEditor({ creationId }: { creationId: string }) {
     onLibrariesChanged={loadWorlds}
     onClose={leave}
     // Saving lands on the creation's own page, which is where a creator wants
-    // to see what they just changed.
+    // to see what they just changed. Deliberately an ordinary push with no
+    // just-created marker: an edit is not a publish, and Back from here should
+    // return to whatever the creator was managing from.
     onSaved={(saved) => router.push(`/characters/${saved.id}`)}
     // There is no creation to return to once it is deleted, so the management
     // list replaces this entry rather than stacking on top of it.

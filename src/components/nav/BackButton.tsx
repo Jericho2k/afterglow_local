@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { claimDepth, currentDepth, resolveBack, rootDepth } from "@/lib/back-navigation";
+import { claimDepth, currentDepth, isJustCreated, resolveBackAfterCreate, rootDepth } from "@/lib/back-navigation";
 
 /**
  * The top-left Back control.
@@ -24,7 +24,14 @@ export function BackButton({ fallback, label = "Back", className }: {
   const router = useRouter();
 
   function goBack() {
-    const destination = resolveBack(currentDepth(window.history.state, window.sessionStorage), fallback);
+    // The one page whose Back is not history: the creation a publish just
+    // landed on, whose previous entry is the form that was completed to make
+    // it. Everything else asks history first.
+    const destination = resolveBackAfterCreate(
+      currentDepth(window.history.state, window.sessionStorage),
+      fallback,
+      isJustCreated(window.location.search),
+    );
     if (destination.type === "history") { router.back(); return; }
     // The fallback replaces the deep-linked entry rather than stacking on top
     // of it, so the destination is the tab's root too and Back there does not

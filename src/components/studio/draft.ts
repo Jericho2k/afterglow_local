@@ -1,3 +1,4 @@
+import { normalizeBlocks } from "@/lib/rich-content";
 import { adultTagsIn } from "@/lib/tags";
 import type { Character, CharacterCastMember, CharacterGalleryImage, CreationType } from "@/lib/types";
 
@@ -37,6 +38,7 @@ export const blankDraft: CreationDraft = {
   profileType: "single",
   tagline: "",
   description: "",
+  descriptionRich: [],
   userRole: "",
   avatarUrl: "",
   avatarPath: "",
@@ -47,7 +49,9 @@ export const blankDraft: CreationDraft = {
   personality: "",
   scenario: "",
   greeting: "",
+  greetingRich: [],
   alternateGreetings: [],
+  alternateGreetingsRich: [],
   exampleDialogue: "",
   responseDirective: "",
   boundaries: "",
@@ -71,7 +75,7 @@ export const blankDraft: CreationDraft = {
  * than being discarded.
  */
 export function draftFromCharacter(character?: (Partial<Character> & Partial<Pick<CreationDraft, "proposedWorld">> & { name?: string }) | null): CreationDraft {
-  if (!character) return { ...blankDraft, cast: [], alternateGreetings: [], worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [] };
+  if (!character) return { ...blankDraft, cast: [], alternateGreetings: [], alternateGreetingsRich: [], descriptionRich: [], greetingRich: [], worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [] };
   const creationType: CreationType = character.creationType
     ?? (character.profileType === "ensemble" ? "cast" : "character");
   return {
@@ -81,6 +85,9 @@ export function draftFromCharacter(character?: (Partial<Character> & Partial<Pic
     profileType: creationType === "character" ? "single" : "ensemble",
     cast: (character.cast ?? []).map((member) => ({ ...blankCastMember, ...member })),
     alternateGreetings: [...(character.alternateGreetings ?? [])],
+    descriptionRich: normalizeBlocks(character.descriptionRich),
+    greetingRich: normalizeBlocks(character.greetingRich),
+    alternateGreetingsRich: (character.alternateGreetingsRich ?? []).map((blocks) => normalizeBlocks(blocks)),
     worldIds: [...(character.worldIds ?? [])],
     tags: [...(character.tags ?? [])],
     hashtags: [...(character.hashtags ?? [])],

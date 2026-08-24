@@ -2,6 +2,9 @@
 
 import { Plus, Trash2 } from "lucide-react";
 import type { CreationType } from "@/lib/types";
+import type { RichBlock } from "@/lib/rich-content";
+import { RichEditor } from "@/components/rich";
+import { characterAvatarBucket } from "@/lib/storage";
 import { Counter, Field, TextArea } from "./fields";
 import type { CreationDraft } from "./draft";
 import styles from "./studio.module.css";
@@ -28,18 +31,44 @@ const placeholders: Record<CreationType, string> = {
  * first opening is the default and every new chat may choose any of them,
  * which is the behaviour the chat side already supports.
  */
-export function OpeningStep({ draft, update }: { draft: CreationDraft; update: (changes: Partial<CreationDraft>) => void }) {
+export function OpeningStep({ draft, update, onError }: {
+  draft: CreationDraft;
+  update: (changes: Partial<CreationDraft>) => void;
+  onError: (message: string) => void;
+}) {
   const openings = [draft.greeting, ...draft.alternateGreetings];
+  const openingBlocks = [draft.greetingRich, ...draft.alternateGreetings.map((_, index) => draft.alternateGreetingsRich[index] ?? [])];
 
-  function setOpening(index: number, value: string) {
-    if (index === 0) { update({ greeting: value }); return; }
-    update({ alternateGreetings: draft.alternateGreetings.map((opening, position) => position === index - 1 ? value : opening) });
+  /**
+   * Both halves of an opening move together.
+   *
+   * The text is what the roleplay receives and the blocks are what the reader
+   * sees, so they are written from one place and can never describe different
+   * scenes.
+   */
+  function setOpening(index: number, value: { blocks: RichBlock[]; text: string }) {
+    if (index === 0) { update({ greeting: value.text, greetingRich: value.blocks }); return; }
+    const position = index - 1;
+    update({
+      alternateGreetings: draft.alternateGreetings.map((opening, item) => item === position ? value.text : opening),
+      alternateGreetingsRich: draft.alternateGreetings.map((_, item) =>
+        item === position ? value.blocks : draft.alternateGreetingsRich[item] ?? []),
+    });
+  }
+
+  function removeOpening(position: number) {
+    update({
+      alternateGreetings: draft.alternateGreetings.filter((_, item) => item !== position),
+      alternateGreetingsRich: draft.alternateGreetings
+        .map((_, item) => draft.alternateGreetingsRich[item] ?? [])
+        .filter((_, item) => item !== position),
+    });
   }
 
   return <>
     <header className={styles.stepHead}>
       <h2>Opening</h2>
-      <p>Write the scene readers see when they begin a new chat. This sets the tone before anybody types a word, so write it properly rather than as a greeting.</p>
+      <p>Write the scene readers see when they begin a new chat. This sets the tone before anybody types a word, so write it properly rather than as a greeting. You can place images between paragraphs — readers see them, the AI does not.</p>
     </header>
 
     <div className={styles.field}>
@@ -52,13 +81,15 @@ export function OpeningStep({ draft, update }: { draft: CreationDraft; update: (
             type="button"
             className={`${styles.miniButton} ${styles.miniDanger}`}
             aria-label={`Remove alternative ${index}`}
-            onClick={() => update({ alternateGreetings: draft.alternateGreetings.filter((_, position) => position !== index - 1) })}
+            onClick={() => removeOpening(index - 1)}
           ><Trash2 size={15} /></button>}
         </div>
-        <TextArea
-          value={opening}
-          maxLength={8000}
+        <RichEditor
+          blocks={openingBlocks[index] ?? []}
+          text={opening}
+          bucket={characterAvatarBucket}
           size={index === 0 ? "epic" : "tall"}
+          onError={onError}
           onChange={(value) => setOpening(index, value)}
           placeholder={index === 0 ? placeholders[draft.creationType] : "Write a different way into the same story"}
         />
@@ -70,7 +101,7 @@ export function OpeningStep({ draft, update }: { draft: CreationDraft; update: (
       type="button"
       className={styles.addButton}
       disabled={draft.alternateGreetings.length >= 11}
-      onClick={() => update({ alternateGreetings: [...draft.alternateGreetings, ""] })}
+      onClick={() => update({ alternateGreetings: [...draft.alternateGreetings, ""], alternateGreetingsRich: [...draft.alternateGreetings.map((_, item) => draft.alternateGreetingsRich[item] ?? []), []] })}
     >
       <Plus size={16} aria-hidden />Add another opening
     </button>

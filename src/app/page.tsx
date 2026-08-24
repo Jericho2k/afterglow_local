@@ -2,23 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {useRouter} from "next/navigation";
-import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, ModelCatalog, Persona, Profile, SceneState, UsageResponse, World } from "@/lib/types";
+import type { AppSettings, Character, ChatInstructionPreset, Conversation, Memory, MemoryArc, Message, ModelCatalog, Persona, Profile, SceneState, UsageResponse, World, WorldSummary } from "@/lib/types";
 import { api } from "@/lib/api-client";
 import { creationKindLine, creationSubject, creationTitle } from "@/lib/creation";
 import { uploadImage } from "@/lib/uploads";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
 import { DiscoveryFeed, SavedCreations } from "@/components/feed";
 import { YourCreations } from "@/components/creations";
-import { WorldCard } from "@/components/world";
+import { WorldsHub, WorldEditor } from "@/components/worlds";
+import { RichMessage, openingBlocksFor } from "@/components/rich";
 import { draftFromCharacter, draftPayload } from "@/components/studio/draft";
 import { forgetAllStoredDrafts } from "@/components/studio/drafts";
 import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
 import { supabaseBrowser, supabaseBrowserConfigured } from "@/lib/supabase/client";
-import { avatarSource, characterAvatarBucket, profileAvatarBucket, worldCoverBucket } from "@/lib/storage";
+import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
+import { claimDepth, justCreatedParam, rootDepth } from "@/lib/back-navigation";
 
 type WorldWithCount = StudioWorld;
 type AppView = "home" | "chats" | "chat" | "worlds" | "personas" | "profile" | "saved" | "creations";
+
+/** The views a URL may name. "chat" is entered with a character, never by name. */
+const shellViews: AppView[] = ["home", "chats", "worlds", "personas", "profile", "saved", "creations"];
 
 
 const defaultSettings: AppSettings = {
@@ -54,6 +59,8 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeView, setActiveView] = useState<AppView>("home");
   const [studioStartSection, setStudioStartSection] = useState<"basics" | "definition" | "world">("basics");
+  // The world being authored: "new" for a fresh one, a record for an edit.
+  const [editingWorld, setEditingWorld] = useState<WorldSummary | World | "new" | null>(null);
   const [composerToolsOpen, setComposerToolsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [models, setModels] = useState<string[]>([]);
@@ -84,6 +91,67 @@ export default function Home() {
   const closeStoryNavigation=()=>setStoryNavigation((state)=>closeStorySurface(state));
   const openComposerTool=(child:StoryChild)=>{setStoryNavigation(openChatChild(child));setComposerToolsOpen(false);};
   const openCharacterPage=(characterId:string)=>router.push(`/characters/${characterId}`);
+
+  /**
+   * The blocks belonging to a message, when it is an illustrated opening.
+   *
+   * Only the first assistant message can be one, and only while it still says
+   * exactly what an opening says — an edited or regenerated message is no
+   * longer that opening and renders as ordinary text. The conversation itself
+   * is untouched by this: the message row holds text, the model receives text,
+   * and the pictures are added on the way to the screen.
+   */
+  const openingBlocks=useCallback((message:Message,index:number)=>{
+    if(index!==0||message.role!=="assistant"||!selected)return null;
+    return openingBlocksFor(message.content,[
+      { text: selected.greeting, blocks: selected.greetingRich },
+      ...selected.alternateGreetings.map((text,position)=>({ text, blocks: selected.alternateGreetingsRich[position] ?? [] })),
+    ]);
+  },[selected]);
+
+  /**
+   * Moving between the shell's views is navigation, so it goes through the
+   * router.
+   *
+   * This is the fix for the Back complaint that survived the last sprint. The
+   * views were React state and nothing else: opening Your Creations changed
+   * what rendered but left the address bar on "/", so a creation opened from
+   * there had "/" underneath it and Back landed on Discovery. Nothing was
+   * guessing the origin — the origin had never been recorded.
+   *
+   * Pushing a real entry per view is what gives Back something true to return
+   * to. `activeView` stays as state because the chat view is entered from
+   * several places that are not navigations, and the popstate listener below
+   * is what keeps the two in step when the reader moves through history.
+   */
+  const viewHref=useCallback((view:AppView)=>view==="home"?"/":`/?view=${view}`,[]);
+  const goToView=useCallback((view:AppView)=>{
+    setActiveView(view);
+    setSidebarOpen(false);
+    const target=viewHref(view);
+    // Same view, same entry: tapping the current tab must not stack history.
+    if(`${window.location.pathname}${window.location.search}`===target)return;
+    router.push(target);
+  },[router,viewHref]);
+
+  /**
+   * Back and forward inside the shell.
+   *
+   * A popstate is the only way the address bar changes without this component
+   * having asked for it, so it is the only place the view needs to be read
+   * back out of the URL. Discovery rewriting its own filters uses
+   * `replaceState`, which fires nothing and therefore cannot fight this.
+   */
+  useEffect(()=>{
+    function syncFromUrl(){
+      const raw=new URLSearchParams(window.location.search).get("view");
+      // "likes" was this view's name before saving replaced liking.
+      const view=(raw==="likes"?"saved":raw??"home") as AppView;
+      setActiveView(shellViews.includes(view)?view:"home");
+    }
+    window.addEventListener("popstate",syncFromUrl);
+    return()=>window.removeEventListener("popstate",syncFromUrl);
+  },[]);
 
   const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
     const query = new URLSearchParams({ characterId });
@@ -140,8 +208,18 @@ export default function Home() {
     const view=params.get("view");
     // "likes" was this view's name before saving replaced liking; old links still work.
     const resolvedView=(view==="likes"?"saved":view) as AppView|null;
-    if(resolvedView&&["home","chats","worlds","personas","profile","saved","creations"].includes(resolvedView)){setActiveView(resolvedView);routeHandledRef.current=true;return;}
+    if(resolvedView&&shellViews.includes(resolvedView)){setActiveView(resolvedView);routeHandledRef.current=true;return;}
     if(params.get("create")==="1"){setEditing(null);setStudioStartSection("basics");setStudioOpen(true);routeHandledRef.current=true;return;}
+    // A world's own page sends its owner here to edit it, because the editor
+    // lives in the shell alongside the studio rather than on its own route.
+    const worldId=params.get("editWorld");
+    if(worldId){
+      routeHandledRef.current=true;
+      setActiveView("worlds");
+      void api<{world:World}>(`/api/worlds/${worldId}`).then(({world})=>setEditingWorld(world)).catch(()=>undefined);
+      window.history.replaceState(window.history.state,"","/?view=worlds");
+      return;
+    }
     const characterId=params.get("editCharacter")||params.get("character");
     if(!characterId)return;
     routeHandledRef.current=true;
@@ -392,24 +470,29 @@ export default function Home() {
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}>×</button></div>
         <nav className="primary-nav">
-          <button className={activeView === "home" ? "active" : ""} onClick={() => { setActiveView("home"); setSidebarOpen(false); }}><span>⌂</span><strong>Home</strong></button>
-          <button className={activeView === "chats" || activeView === "chat" ? "active" : ""} onClick={() => { setActiveView("chats"); setSidebarOpen(false); }}><span>◫</span><strong>Chats</strong></button>
+          <button className={activeView === "home" ? "active" : ""} onClick={() => goToView("home")}><span>⌂</span><strong>Home</strong></button>
+          <button className={activeView === "chats" || activeView === "chat" ? "active" : ""} onClick={() => goToView("chats")}><span>◫</span><strong>Chats</strong></button>
           <button onClick={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); setSidebarOpen(false); }}><span>＋</span><strong>Create</strong></button>
-          <button className={activeView === "worlds" ? "active" : ""} onClick={() => { setActiveView("worlds"); setSidebarOpen(false); }}><span>▤</span><strong>Worlds</strong></button>
-          <button className={activeView === "profile" ? "active" : ""} onClick={() => { setActiveView("profile"); setSidebarOpen(false); }}><span>◉</span><strong>Profile</strong></button>
-          <button className={activeView === "personas" ? "active" : ""} onClick={() => { setActiveView("personas"); setSidebarOpen(false); }}><span>◎</span><strong>Personas</strong></button>
-          <button className={activeView === "creations" ? "active" : ""} onClick={() => { setActiveView("creations"); setSidebarOpen(false); }}><span>✎</span><strong>Your Creations</strong></button>
-          <button className={activeView === "saved" ? "active" : ""} onClick={() => { setActiveView("saved"); setSidebarOpen(false); }}><span>❏</span><strong>Saved</strong></button>
+          <button className={activeView === "worlds" ? "active" : ""} onClick={() => goToView("worlds")}><span>▤</span><strong>Worlds</strong></button>
+          <button className={activeView === "profile" ? "active" : ""} onClick={() => goToView("profile")}><span>◉</span><strong>Profile</strong></button>
+          <button className={activeView === "personas" ? "active" : ""} onClick={() => goToView("personas")}><span>◎</span><strong>Personas</strong></button>
+          <button className={activeView === "creations" ? "active" : ""} onClick={() => goToView("creations")}><span>✎</span><strong>Your Creations</strong></button>
+          <button className={activeView === "saved" ? "active" : ""} onClick={() => goToView("saved")}><span>❏</span><strong>Saved</strong></button>
           <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><span>≛</span><strong>Settings</strong></button>
         </nav>
-        <section className="sidebar-characters" aria-label="Your Creations"><button className="sidebar-section-link" onClick={()=>{setActiveView("creations");setSidebarOpen(false);}}>Your Creations<span aria-hidden>›</span></button>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button onClick={()=>openCharacterPage(character.id)}>View {creationTitle(character)}</button><button onClick={()=>{setSidebarCharacterMenuId(null);setSidebarOpen(false);router.push(`/characters/${character.id}/edit`);}}>Edit {creationTitle(character)}</button></div>}</div>)}</section>
+        <section className="sidebar-characters" aria-label="Your Creations"><button className="sidebar-section-link" onClick={()=>goToView("creations")}>Your Creations<span aria-hidden>›</span></button>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button onClick={()=>openCharacterPage(character.id)}>View {creationTitle(character)}</button><button onClick={()=>{setSidebarCharacterMenuId(null);setSidebarOpen(false);router.push(`/characters/${character.id}/edit`);}}>Edit {creationTitle(character)}</button></div>}</div>)}</section>
         <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}><span>⇥</span><strong>Sign out</strong></button></div></div>
       </aside>
       {/* Discover and Saved render this control inside their own header, so
           the floating one would be a second identical button. */}
       {activeView !== "chat" && activeView !== "home" && activeView !== "saved" && activeView !== "creations" && <button className="global-mobile-menu" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>☰</button>}
 
-      {activeView === "home" ? <DiscoveryFeed onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "chats" ? <ChatLibrary characters={characters} conversations={chatIndex} personas={personas} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} /> : activeView === "worlds" ? <WorldLibrary worlds={worlds} onChange={() => void loadLibraries()} /> : activeView === "personas" ? <PersonaLibrary personas={personas} onClose={() => setActiveView(conversation ? "chat" : "chats")} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <AccountProfile profile={profile} onSaved={setProfile} /> : activeView === "saved" ? <SavedCreations onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "creations" ? <YourCreations
+      {activeView === "home" ? <DiscoveryFeed onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "chats" ? <ChatLibrary characters={characters} conversations={chatIndex} personas={personas} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} /> : activeView === "worlds" ? <WorldsHub
+        onOpenMenu={() => setSidebarOpen(true)}
+        onCreate={() => setEditingWorld("new")}
+        onEdit={(world) => setEditingWorld(world)}
+        onChanged={() => void loadLibraries()}
+      /> : activeView === "personas" ? <PersonaLibrary personas={personas} onClose={() => setActiveView(conversation ? "chat" : "chats")} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <AccountProfile profile={profile} onSaved={setProfile} /> : activeView === "saved" ? <SavedCreations onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "creations" ? <YourCreations
         onOpenMenu={() => setSidebarOpen(true)}
         onCreate={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); }}
         onChanged={() => { void loadCharacters(); void loadChatIndex().catch(() => undefined); }}
@@ -431,7 +514,7 @@ export default function Home() {
                 <div className="message-stack">
                   <div className="message-meta"><strong>{message.role === "assistant" ? creationSubject(selected) : activePersona?.name || "You"}</strong><time>{time(message.createdAt)}</time></div>
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`} style={editingMessageId === message.id && editWidth ? { width: editWidth } : undefined}>
-                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
+                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? (openingBlocks(message, index) ? <RichMessage blocks={openingBlocks(message, index)} bucket={characterAvatarBucket} /> : tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>)) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
                   </div>
                   {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?"◌ Creating…":"⑂ Branch here"}</button>{isAdmin && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {message.memoryIds.length + message.arcIds.length ? `${message.memoryIds.length + message.arcIds.length} recalled` : "Context"}</button>}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
                 </div>
@@ -461,7 +544,27 @@ export default function Home() {
         <section className="empty-state"><div className="orb">✦</div><span className="eyebrow">Your private story studio</span><h1>Create someone<br />worth remembering.</h1><p>Shape their history, voice, desires, and boundaries. Afterglow keeps the moments that matter.</p><button className="primary" onClick={() => setStudioOpen(true)}>Create your first character</button></section>
       )}
 
-      {studioOpen && <CreationStudio character={editing} worlds={worlds} startStep={studioStartSection} onLibrariesChanged={() => void loadLibraries()} onClose={() => { setStudioOpen(false); setEditing(null); }} onSaved={async (character) => { setStudioOpen(false); setEditing(null); await Promise.all([loadCharacters(),loadLibraries(),loadChatIndex()]); setSelectedId(character.id); setActiveView("chat"); }} onDeleted={async () => { setStudioOpen(false); setEditing(null); await Promise.all([loadCharacters(),loadChatIndex()]); setActiveView("chats"); }} />}
+      {editingWorld && <WorldEditor
+        world={editingWorld === "new" ? null : editingWorld}
+        onClose={() => setEditingWorld(null)}
+        onSaved={() => { setEditingWorld(null); void loadLibraries(); }}
+        onDeleted={() => { setEditingWorld(null); void loadLibraries(); }}
+      />}
+      {studioOpen && <CreationStudio character={editing} worlds={worlds} startStep={studioStartSection} onLibrariesChanged={() => void loadLibraries()} onClose={() => { setStudioOpen(false); setEditing(null); }} onSaved={async (character,{created}) => {
+        const wasNew=created;
+        setStudioOpen(false); setEditing(null);
+        await Promise.all([loadCharacters(),loadLibraries(),loadChatIndex()]);
+        if(wasNew){
+          // A brand-new creation lands on its own page so the creator sees
+          // what they made. The studio's entry is replaced rather than stacked
+          // on, and the marker tells that page's Back control to go to
+          // Discovery instead of back into the completed form.
+          claimDepth(window.sessionStorage,rootDepth);
+          router.replace(`/characters/${character.id}?${justCreatedParam}=1`);
+          return;
+        }
+        setSelectedId(character.id); setActiveView("chat");
+      }} onDeleted={async () => { setStudioOpen(false); setEditing(null); await Promise.all([loadCharacters(),loadChatIndex()]); goToView("chats"); }} />}
       {isAdmin && memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); setMemoryArcs(data.arcs); }} />}
       {storyNavigation.surface==="story" && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setStoryNavigation(closedStoryNavigation)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={async (id) => { await loadChat(selected.id,id); setStoryNavigation(closedStoryNavigation); }} onChange={() => void loadChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>setStoryNavigation(openStoryChild("model"))} onOpenPersona={()=>setStoryNavigation(openStoryChild("persona"))} onOpenInstructions={()=>setStoryNavigation(openStoryChild("instructions"))} onOpenWorld={()=>setStoryNavigation(openStoryChild("world"))} />}
       {settingsOpen && <SettingsDrawer isAdmin={isAdmin} settings={settings} models={models} catalog={modelCatalog} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings({...defaultSettings,...value}); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings; catalog: ModelCatalog }>("/api/settings"); setSettings({...defaultSettings,...data.settings}); if(data.catalog)setModelCatalog(data.catalog); }} />}
@@ -611,26 +714,6 @@ function AccountProfile({ profile, onSaved }: { profile: Profile | null; onSaved
   async function save(){setBusy(true);setError("");setNotice("");try{const data=await api<{profile:Profile}>("/api/profile",{method:"PATCH",body:JSON.stringify({username,displayName,bio,avatarPath})});onSaved(data.profile);setNotice("Profile saved.");}catch(e){setError(e instanceof Error?e.message:"Could not save profile");}finally{setBusy(false);}}
   const source=avatarSource(profileAvatarBucket,avatarPath,"");
   return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Your Afterglow account</span><h1>Profile</h1><p>This is your creator identity. It is separate from the personas you use inside stories.</p></div></header><section className="modal document-editor account-profile-card"><div className="document-form"><div className="persona-image-row"><div className="persona-preview">{source?<img src={source} alt=""/>:<span>{initials(displayName)}</span>}</div><label className="secondary file-button">↑ Choose image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{setAvatarPath(await uploadImage(file,profileAvatarBucket));}catch(err){setError(err instanceof Error?err.message:"Image upload failed");}finally{e.target.value="";}}}/></label></div><label>Display name<input value={displayName} onChange={(e)=>setDisplayName(e.target.value)} maxLength={80}/></label><label>Creator username<input value={username} onChange={(e)=>setUsername(e.target.value.toLowerCase())} maxLength={30} placeholder="your_username"/><small>Setting a username opts this profile into public creator attribution. Leave it blank to stay private.</small></label><label>Bio<textarea rows={8} value={bio} onChange={(e)=>setBio(e.target.value)} maxLength={2000} placeholder="What you create, your preferred genres, and anything visitors should know…"/></label>{notice&&<div className="success-note">{notice}</div>}{error&&<div className="form-error">{error}</div>}</div><footer><span className="footer-spacer"/><button className="primary" disabled={busy||!displayName.trim()} onClick={()=>void save()}>{busy?"Saving…":"Save profile"}</button></footer></section></section>;
-}
-
-function WorldLibrary({ worlds, onChange }: { worlds: WorldWithCount[]; onChange: () => void }) {
-  const [editing,setEditing] = useState<World | null | "new">(null); const [name,setName] = useState(""); const [description,setDescription] = useState(""); const [content,setContent] = useState(""); const [busy,setBusy] = useState(false); const [error,setError] = useState("");
-  // Cover art is optional: existing worlds without one keep working and the
-  // public card simply renders its gradient instead of an image.
-  const [coverPath,setCoverPath] = useState(""); const [coverUrl,setCoverUrl] = useState("");
-  const coverPreview = avatarSource(worldCoverBucket, coverPath, coverUrl);
-  function open(world?: World) { setEditing(world ?? "new"); setName(world?.name ?? ""); setDescription(world?.description ?? ""); setContent(world?.content ?? ""); setCoverPath(world?.coverPath ?? ""); setCoverUrl(world?.coverUrl ?? ""); setError(""); }
-  async function save() { setBusy(true); setError(""); try { await api(editing === "new" ? "/api/worlds" : `/api/worlds/${editing!.id}`,{method:editing === "new"?"POST":"PATCH",body:JSON.stringify({name,description,content,coverPath,coverUrl})}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Could not save world"); } finally { setBusy(false); } }
-  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Reusable canon</span><h1>Worlds</h1><p>Write lore once, then attach the same document to any characters that live there.</p></div><button className="primary" onClick={() => open()}>＋ New world</button></header>{/* The same card a creation page shows for an attached world, so a world is
-      presented one way across the product. Opening it opens the world; editing
-      is an explicit owner control on top of it. */}
-  <div className="world-grid">{worlds.map((world) => <WorldCard
-      key={world.id}
-      world={world}
-      variant="feature"
-      meta={<><span>{world.content.length.toLocaleString()} characters</span><span>used by {world.characterCount ?? 0} {(world.characterCount ?? 0) === 1 ? "creation" : "creations"}</span></>}
-      action={<button className="world-card-edit" onClick={() => open(world)}>Edit</button>}
-    />)}{!worlds.length && <div className="empty-library-note">No worlds yet. Create lore, rules, locations, factions, or setting documents here.</div>}</div>{editing && <div className="modal-backdrop" onMouseDown={(e) => { if(e.currentTarget===e.target)setEditing(null); }}><section className="modal document-editor"><header><div><span className="eyebrow">World document</span><h2>{editing === "new" ? "Create a reusable world" : `Edit ${editing.name}`}</h2></div><button className="icon-button" onClick={() => setEditing(null)}>×</button></header><div className="document-form"><div className="persona-image-row"><div className="world-cover-preview">{coverPreview?<img src={coverPreview} alt=""/>:<span>▤</span>}</div><label className="secondary file-button">↑ Cover image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{setCoverPath(await uploadImage(file,worldCoverBucket));}catch(err){setError(err instanceof Error?err.message:"Image upload failed");}finally{e.target.value="";}}}/></label>{coverPath&&<button className="secondary" onClick={()=>setCoverPath("")}>Remove</button>}</div><label>World name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tower of Babel" /></label><label>Short description<input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Setting, rules, factions, locations…" /></label><label>World canon<textarea value={content} onChange={(e) => setContent(e.target.value)} rows={18} maxLength={100000} placeholder="Everything characters should consistently know about this world…" /></label><small>{content.length.toLocaleString()} / 100,000</small>{error && <div className="form-error">{error}</div>}</div><footer>{editing !== "new" && <button className="danger-button" disabled={busy} onClick={async () => { if(!window.confirm(`Delete “${editing.name}”? It will detach from every character.`))return; setBusy(true); try { await api(`/api/worlds/${editing.id}`,{method:"DELETE"}); setEditing(null); onChange(); } catch(e) { setError(e instanceof Error?e.message:"Delete failed"); setBusy(false); } }}>⌫ Delete</button>}<span className="footer-spacer"/><button className="secondary" onClick={() => setEditing(null)}>Cancel</button><button className="primary" disabled={busy||!name.trim()||!content.trim()} onClick={() => void save()}>{busy?"Saving…":"Save world"}</button></footer></section></div>}</section>;
 }
 
 function WorldPicker({character,worlds,onClose,onCreated,onSaved}:{character:Character;worlds:WorldWithCount[];onClose:()=>void;onCreated:(world:WorldWithCount)=>void;onSaved:(character:Character)=>void}) {
