@@ -48,7 +48,10 @@ export async function GET(request: Request) {
     "c.user_id<>$1",
   ];
 
-  if (query.hideAdult) where.push("c.nsfw_enabled=false");
+  // Adult content is opt-in, and the opt-in is a property of this request
+  // only: it widens what a feed may return, never what an account is allowed
+  // to see, and it is never persisted as a preference.
+  if (!query.includeAdult) where.push("c.nsfw_enabled=false");
 
   if (query.types.length) {
     values.push(query.types);

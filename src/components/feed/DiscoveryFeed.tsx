@@ -185,12 +185,12 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
   const activeChips = useMemo(() => [
     ...query.types.map((type) => ({ label: creationTypeLabels[type], clear: () => update({ types: query.types.filter((item) => item !== type) }) })),
     ...query.tags.map((tag) => ({ label: tag, clear: () => update({ tags: query.tags.filter((item) => item !== tag) }) })),
-    ...(query.hideAdult ? [{ label: "18+ hidden", clear: () => update({ hideAdult: false }) }] : []),
-  ], [query.hideAdult, query.tags, query.types, update]);
+    ...(query.includeAdult ? [{ label: "18+ included", clear: () => update({ includeAdult: false }) }] : []),
+  ], [query.includeAdult, query.tags, query.types, update]);
 
   const clearEverything = useCallback(() => {
     setTerm("");
-    setQuery((current) => ({ ...current, search: "", hashtag: "", tags: [], types: [], hideAdult: false, offset: 0 }));
+    setQuery((current) => ({ ...current, search: "", hashtag: "", tags: [], types: [], includeAdult: false, offset: 0 }));
   }, []);
 
   return <section

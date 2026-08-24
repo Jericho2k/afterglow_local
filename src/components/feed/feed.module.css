@@ -533,13 +533,22 @@
   background: transparent; color: var(--muted); cursor: pointer;
 }
 .sheetClose:hover { color: var(--ink); border-color: var(--edge-strong); }
-.sheetBody { flex: 1; overflow-y: auto; padding: 16px 18px 4px; display: flex; flex-direction: column; gap: 18px; }
+/* The adult groups made this list long enough to scroll properly, so the body
+   owns its own momentum and keeps a gap under the last row that the sticky
+   footer would otherwise sit on top of. */
+.sheetBody {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding: 16px 18px 20px; display: flex; flex-direction: column; gap: 18px;
+}
 .sheetGroup { display: flex; flex-direction: column; gap: 8px; }
-.sheetGroup > h3 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.sheetGroup > h3 {
+  display: flex; align-items: center; gap: 7px;
+  margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+}
 .sheetGroup > p { margin: -3px 0 2px; font-size: 11px; line-height: 1.5; color: var(--faint); }
 .chipRow { display: flex; flex-wrap: wrap; gap: 7px; }
 .chip {
-  min-height: 34px; padding: 0 12px;
+  min-height: 34px; padding: 7px 12px;
   border: 1px solid var(--edge); border-radius: 999px;
   background: transparent; color: var(--muted);
   font-size: 12px; cursor: pointer;
@@ -557,6 +566,33 @@
 .sheetToggle strong { display: block; font-size: 12.5px; font-weight: 600; }
 .sheetToggle small { display: block; margin-top: 3px; color: var(--faint); font-size: 10.5px; line-height: 1.45; }
 .sheetToggle input { width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
+.sheetHelp, .sheetWarning {
+  margin: 0; padding: 9px 11px;
+  border-radius: 11px; font-size: 11px; line-height: 1.5;
+}
+.sheetHelp { border: 1px solid rgba(232, 121, 169, .22); background: rgba(232, 121, 169, .08); color: #f0d3e2; }
+.sheetWarning { border: 1px solid rgba(232, 121, 169, .38); background: rgba(232, 121, 169, .13); color: #ffe2ef; }
+.sheetWarning strong { font-weight: 650; }
+
+/* Adult marking. A word rather than a colour, so the restriction survives a
+   monochrome display and reaches a screen reader through the chip's label. */
+.adultBadge {
+  padding: 2px 6px;
+  border: 1px solid rgba(232, 121, 169, .4); border-radius: 999px;
+  background: rgba(232, 121, 169, .12); color: var(--accent);
+  font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: none;
+}
+.chipAdult { display: inline-flex; align-items: center; gap: 6px; text-align: left; }
+/* Long labels such as "CNC / Non-consent Fantasy" wrap inside the chip rather
+   than shrinking the text or pushing the sheet sideways. */
+.chipAdult, .chip { max-width: 100%; white-space: normal; }
+.chipAdultMark {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px; background: rgba(232, 121, 169, .16); color: var(--accent);
+  font-size: 9px; font-weight: 700; letter-spacing: .03em;
+}
+.chipSelected .chipAdultMark { background: rgba(255, 226, 239, .2); color: #ffe2ef; }
 .sheetFoot {
   display: flex; gap: 10px;
   padding: 14px 18px calc(16px + env(safe-area-inset-bottom));

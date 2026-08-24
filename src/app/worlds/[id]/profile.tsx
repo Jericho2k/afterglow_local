@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Globe2, Sparkles } from "lucide-react";
+import { Globe2, Sparkles } from "lucide-react";
 import type { World } from "@/lib/types";
 import { avatarSource, characterAvatarBucket, worldCoverBucket } from "@/lib/storage";
+import { backFallbacks } from "@/lib/back-navigation";
+import { BackButton } from "@/components/nav";
 import styles from "./profile.module.css";
 
 type WorldCharacter = { id: string; name: string; tagline: string; avatarPath: string; avatarUrl: string; accent: string };
@@ -35,7 +37,7 @@ export default function WorldProfile({ worldId }: { worldId: string }) {
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not open this world"));
   }, [worldId]);
 
-  if (error) return <main className={styles.state}><Globe2 size={26} /><h1>World unavailable</h1><p>{error}</p><Link href="/">Return to Afterglow</Link></main>;
+  if (error) return <main className={styles.state}><Globe2 size={26} /><h1>World unavailable</h1><p>{error}</p><Link href="/?view=worlds">Return to Worlds</Link></main>;
   if (!detail) return <main className={styles.state}><Globe2 size={26} className={styles.spin} /><h1>Opening world</h1></main>;
 
   const { world, characters } = detail;
@@ -48,7 +50,7 @@ export default function WorldProfile({ worldId }: { worldId: string }) {
         <div className={styles.heroScrim} />
       </div>
       <div className={styles.heroBar}>
-        <Link href="/" className={styles.circleButton} aria-label="Back to Afterglow"><ArrowLeft size={18} /></Link>
+        <BackButton className={styles.circleButton} fallback={backFallbacks.world} />
       </div>
       <div className={styles.heroCopy}>
         <span className={styles.kicker}><Sparkles size={13} />Reusable world</span>
