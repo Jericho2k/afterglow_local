@@ -26,19 +26,9 @@ export async function GET(request: Request) {
         const row=liveById.get(id); return row?characterFromRow({...row,world_ids:[]},account.id):null;
       }).filter((item): item is NonNullable<typeof item>=>Boolean(item));
     }
-    // "published" is the seam the discovery feed will grow from. It never
-    // returns anything the creator kept private, and it is not the default.
-    const result = scope === "published"
-      ? await client.query(
-        `SELECT c.*,p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
-           (mine.character_id IS NOT NULL) liked_by_viewer
-         FROM characters c LEFT JOIN profiles p ON p.id=c.user_id
-         LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$1
-         WHERE c.visibility='public' AND c.user_id<>$1
-         ORDER BY c.published_at DESC NULLS LAST,c.like_count DESC,c.updated_at DESC LIMIT 60`,
-        [account.id],
-      )
-      : await client.query("SELECT * FROM characters WHERE user_id=$1 ORDER BY updated_at DESC", [account.id]);
+    // Discovery has its own endpoint, which returns lean public summaries
+    // rather than whole characters; this route is the caller's own library.
+    const result = await client.query("SELECT * FROM characters WHERE user_id=$1 ORDER BY updated_at DESC", [account.id]);
     const ids = result.rows.map((row) => String(row.id));
     const links = ids.length
       ? await client.query("SELECT character_id,world_id FROM character_worlds WHERE character_id = ANY($1::uuid[])", [ids])
@@ -48,8 +38,8 @@ export async function GET(request: Request) {
         ...row,
         world_ids: links.rows.filter((link) => String(link.character_id) === String(row.id)).map((link) => String(link.world_id)),
       }, account.id);
-      // Discovery lists somebody else's creations, so they arrive in their
-      // public form rather than carrying the creator's instruction fields.
+      // Belt and braces: the predicate above already restricts this to the
+      // caller's own rows, so anything else would be a bug worth blunting.
       return character.ownedByViewer ? character : visitorCharacter(character);
     });
   });

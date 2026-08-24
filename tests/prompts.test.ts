@@ -8,7 +8,7 @@ const character: Character = {
   backstory: "Mara is 31.", cast: [], lorebook: "Paris factions.", personality: "Dry wit.", scenario: "Paris.", greeting: "Hello.", alternateGreetings: [],
   exampleDialogue: "A sample.", responseDirective: "Be vivid.", boundaries: "Respect stop words.",
   sourceMaterial: "", worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [],
-  publicStats: { messages: null, likes: null, chats: null, rank: null, rankCategory: null },
+  publicStats: { messages: null, saves: null, chats: null, rank: null, rankCategory: null },
   visibility: "private", ownedByViewer: true, nsfwEnabled: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
 };
 

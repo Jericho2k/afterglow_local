@@ -7,6 +7,7 @@ import { api } from "@/lib/api-client";
 import { creationKindLine, creationSubject, creationTitle } from "@/lib/creation";
 import { uploadImage } from "@/lib/uploads";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
+import { DiscoveryFeed, SavedCreations } from "@/components/feed";
 import { draftFromCharacter, draftPayload } from "@/components/studio/draft";
 import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
 import { supabaseBrowser, supabaseBrowserConfigured } from "@/lib/supabase/client";
@@ -14,7 +15,7 @@ import { avatarSource, characterAvatarBucket, profileAvatarBucket, worldCoverBuc
 import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
 
 type WorldWithCount = StudioWorld;
-type AppView = "home" | "chats" | "chat" | "worlds" | "personas" | "profile" | "likes";
+type AppView = "home" | "chats" | "chat" | "worlds" | "personas" | "profile" | "saved";
 
 
 const defaultSettings: AppSettings = {
@@ -133,8 +134,10 @@ export default function Home() {
   useEffect(()=>{
     if(!authenticated||routeHandledRef.current)return;
     const params=new URLSearchParams(window.location.search);
-    const view=params.get("view") as AppView|null;
-    if(view&&["home","chats","worlds","personas","profile","likes"].includes(view)){setActiveView(view);routeHandledRef.current=true;return;}
+    const view=params.get("view");
+    // "likes" was this view's name before saving replaced liking; old links still work.
+    const resolvedView=(view==="likes"?"saved":view) as AppView|null;
+    if(resolvedView&&["home","chats","worlds","personas","profile","saved"].includes(resolvedView)){setActiveView(resolvedView);routeHandledRef.current=true;return;}
     if(params.get("create")==="1"){setEditing(null);setStudioStartSection("basics");setStudioOpen(true);routeHandledRef.current=true;return;}
     const characterId=params.get("editCharacter")||params.get("character");
     if(!characterId)return;
@@ -386,15 +389,17 @@ export default function Home() {
           <button className={activeView === "worlds" ? "active" : ""} onClick={() => { setActiveView("worlds"); setSidebarOpen(false); }}><span>▤</span><strong>World</strong></button>
           <button className={activeView === "profile" ? "active" : ""} onClick={() => { setActiveView("profile"); setSidebarOpen(false); }}><span>◉</span><strong>Profile</strong></button>
           <button className={activeView === "personas" ? "active" : ""} onClick={() => { setActiveView("personas"); setSidebarOpen(false); }}><span>◎</span><strong>Personas</strong></button>
-          <button className={activeView === "likes" ? "active" : ""} onClick={() => { setActiveView("likes"); setSidebarOpen(false); }}><span>♡</span><strong>Likes</strong></button>
+          <button className={activeView === "saved" ? "active" : ""} onClick={() => { setActiveView("saved"); setSidebarOpen(false); }}><span>❏</span><strong>Saved</strong></button>
           <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><span>≛</span><strong>Settings</strong></button>
         </nav>
         <section className="sidebar-characters" aria-label="Your Characters"><span className="sidebar-section-title">Your Characters</span>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button onClick={()=>openCharacterPage(character.id)}>View {creationTitle(character)}</button><button onClick={()=>{setStudioStartSection("basics");setEditing(character);setStudioOpen(true);setSidebarCharacterMenuId(null);setSidebarOpen(false);}}>Edit {creationTitle(character)}</button></div>}</div>)}</section>
         <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}><span>⇥</span><strong>Sign out</strong></button></div></div>
       </aside>
-      {activeView !== "chat" && <button className="global-mobile-menu" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>☰</button>}
+      {/* Discover and Saved render this control inside their own header, so
+          the floating one would be a second identical button. */}
+      {activeView !== "chat" && activeView !== "home" && activeView !== "saved" && <button className="global-mobile-menu" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>☰</button>}
 
-      {activeView === "home" ? <HomeFeed onOpen={(character) => openCharacterPage(character.id)} /> : activeView === "chats" ? <ChatLibrary characters={characters} conversations={chatIndex} personas={personas} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} /> : activeView === "worlds" ? <WorldLibrary worlds={worlds} onChange={() => void loadLibraries()} /> : activeView === "personas" ? <PersonaLibrary personas={personas} onClose={() => setActiveView(conversation ? "chat" : "chats")} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <AccountProfile profile={profile} onSaved={setProfile} /> : activeView === "likes" ? <LikedCharacters onOpen={(character)=>openCharacterPage(character.id)} /> : selected ? (
+      {activeView === "home" ? <DiscoveryFeed onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "chats" ? <ChatLibrary characters={characters} conversations={chatIndex} personas={personas} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} /> : activeView === "worlds" ? <WorldLibrary worlds={worlds} onChange={() => void loadLibraries()} /> : activeView === "personas" ? <PersonaLibrary personas={personas} onClose={() => setActiveView(conversation ? "chat" : "chats")} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <AccountProfile profile={profile} onSaved={setProfile} /> : activeView === "saved" ? <SavedCreations onOpenMenu={() => setSidebarOpen(true)} /> : selected ? (
         <section className="chat-panel">
           <header className="chat-header">
             <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open menu">☰</button><button className="identity-profile" title={`View ${creationTitle(selected)}`} onClick={() => openCharacterPage(selected.id)}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{creationTitle(selected)}</strong><small>{selected.creationType === "character" ? `Chatting as ${activePersona?.name || "You"}` : creationKindLine(selected)}</small></span></button></div>
@@ -563,44 +568,6 @@ function ChatLibrary({ characters, conversations, personas, onOpen }: { characte
   const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
   const toggle=(id:string)=>setExpanded((current)=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;});
   return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Characters and stories</span><h1>Chats</h1><p>Choose a character or expand one to resume a specific story.</p></div></header><div className="chat-library-list">{characters.map((character)=>{const stories=conversations.filter((item)=>item.characterId===character.id);const open=expanded.has(character.id);return <article className={`chat-library-card ${open?"expanded":""}`} key={character.id}><button className="chat-character-main" onClick={()=>onOpen(character.id,stories[0]?.id)}><Avatar character={character} large/><span><strong>{creationTitle(character)}</strong><small>{creationKindLine(character)} · {stories.length} {stories.length===1?"story":"stories"}</small></span></button><button className="chat-expand" aria-label={`${open?"Collapse":"Expand"} ${creationTitle(character)} stories`} aria-expanded={open} onClick={()=>toggle(character.id)}>{open?"⌃":"⌄"}</button><div className="chat-story-list" aria-hidden={!open}>{stories.length?stories.map((story)=><button key={story.id} onClick={()=>onOpen(character.id,story.id)}><span><strong>{story.title}</strong><small>{story.messageCount} messages · {personas.find((persona)=>persona.id===story.personaId)?.name||"Default persona"}</small></span><time>{new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(story.updatedAt))}</time></button>):<button className="start-first-story" onClick={()=>onOpen(character.id)}>Start first story <span>→</span></button>}</div></article>;})}{!characters.length&&<div className="empty-library-note">No characters or chats yet. Create or import a character to begin.</div>}</div></section>;
-}
-
-function HomeFeed({ onOpen }: { onOpen: (character: Character) => void }) {
-  const [published,setPublished]=useState<Character[]>([]); const [discoveryError,setDiscoveryError]=useState("");
-  useEffect(()=>{api<{characters:Character[]}>("/api/characters?scope=published").then((data)=>setPublished(data.characters)).catch((e)=>setDiscoveryError(e instanceof Error?e.message:"Discovery is unavailable"));},[]);
-  async function toggleLike(character:Character){try{if(character.likedByViewer)await api(`/api/likes?characterId=${character.id}`,{method:"DELETE"});else await api("/api/likes",{method:"POST",body:JSON.stringify({characterId:character.id})});setPublished((items)=>items.map((item)=>item.id===character.id?{...item,likedByViewer:!item.likedByViewer,likeCount:Math.max(0,(item.likeCount||0)+(item.likedByViewer?-1:1))}:item));}catch(e){setDiscoveryError(e instanceof Error?e.message:"Could not update like");}}
-  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Discover roleplay characters</span><h1>Home</h1><p>Browse published cards from other creators. Your own characters and every private story live in Chats.</p></div></header><div className="feed-section-heading"><strong>Discover</strong><span>{published.length} published</span></div>{discoveryError&&<div className="form-error discovery-error">{discoveryError}</div>}<div className="feed-grid">{published.map((character)=><article key={character.id} className="feed-card published-card" role="button" tabIndex={0} onClick={()=>onOpen(character)} onKeyDown={(e)=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onOpen(character);}}}><div className="feed-card-art" style={{"--accent":character.accent} as React.CSSProperties}>{avatarSource(characterAvatarBucket,character.avatarPath,character.avatarUrl)?<img src={avatarSource(characterAvatarBucket,character.avatarPath,character.avatarUrl)} alt=""/>:<span>{initials(character.name)}</span>}<em>{character.nsfwEnabled?"18+":"SFW"}</em></div><FeedCardCopy character={character} creatorFallback="Afterglow creator"/><button className={character.likedByViewer?"card-like liked":"card-like"} aria-label={character.likedByViewer?`Unlike ${creationTitle(character)}`:`Like ${creationTitle(character)}`} onClick={(e)=>{e.stopPropagation();void toggleLike(character);}}>{character.likedByViewer?"♥":"♡"}</button></article>)}{!published.length&&!discoveryError&&<div className="empty-library-note">No creators have published a character yet. Your private cards remain available in Chats.</div>}</div></section>;
-}
-
-/**
- * Feed card copy.
- *
- * The card is titled with the creation, not with a character: "The Final War"
- * and "Medieval Fantasy World RP" are titles too, and a scenario may have no
- * character to borrow a name from. The tagline is the premise a reader
- * actually decides on, so it is shown rather than a field count.
- */
-function FeedCardCopy({ character, creatorFallback }: { character: Character; creatorFallback: string }) {
-  const tags = character.tags.slice(0, 3);
-  return <div className="feed-card-copy">
-    <span className="eyebrow">{character.creator?.displayName||character.creator?.username||creatorFallback}</span>
-    <strong>{creationTitle(character)}</strong>
-    {character.tagline && <p className="feed-card-tagline">{character.tagline}</p>}
-    {tags.length>0 && <span className="feed-card-tags">{tags.map((tag)=><em key={tag}>{tag}</em>)}</span>}
-    <small>{character.likeCount||0} likes · {creationKindLine(character)}</small>
-  </div>;
-}
-
-function PlaceholderView({ icon, title, text }: { icon: string; title: string; text: string }) {
-  return <section className="placeholder-view"><span>{icon}</span><h1>{title}</h1><p>{text}</p></section>;
-}
-
-function LikedCharacters({ onOpen }: { onOpen: (character: Character) => void }) {
-  const [characters,setCharacters]=useState<Character[]|null>(null); const [error,setError]=useState("");
-  useEffect(()=>{api<{characters:Character[]}>("/api/likes").then((data)=>setCharacters(data.characters)).catch((e)=>setError(e instanceof Error?e.message:"Could not load likes"));},[]);
-  if(error)return <PlaceholderView icon="♡" title="Could not load likes" text={error}/>;
-  if(!characters)return <PlaceholderView icon="♡" title="Loading your likes" text="Collecting your saved public characters…"/>;
-  return <section className="library-view"><header className="library-header"><div><span className="eyebrow">Saved to your account</span><h1>Likes</h1><p>Public and unlisted character cards you want to find again. Their creators never see your private chats.</p></div></header><div className="feed-grid">{characters.map((character)=><button key={character.id} className="feed-card" onClick={()=>onOpen(character)}><div className="feed-card-art" style={{"--accent":character.accent} as React.CSSProperties}>{avatarSource(characterAvatarBucket,character.avatarPath,character.avatarUrl)?<img src={avatarSource(characterAvatarBucket,character.avatarPath,character.avatarUrl)} alt=""/>:<span>{initials(character.name)}</span>}<em>{character.nsfwEnabled?"18+":"SFW"}</em></div><FeedCardCopy character={character} creatorFallback="Creator"/></button>)}{!characters.length&&<div className="empty-library-note">You have not liked any published characters yet.</div>}</div></section>;
 }
 
 function AccountProfile({ profile, onSaved }: { profile: Profile | null; onSaved: (profile: Profile) => void }) {

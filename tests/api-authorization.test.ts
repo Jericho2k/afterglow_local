@@ -33,6 +33,7 @@ const { ensureSchema, query, setPoolForTesting } = await import("@/lib/db");
 const chat = await import("@/app/api/chat/route");
 const characters = await import("@/app/api/characters/route");
 const characterDetail = await import("@/app/api/characters/[id]/route");
+const discovery = await import("@/app/api/discovery/route");
 const conversations = await import("@/app/api/conversations/route");
 const memories = await import("@/app/api/memories/route");
 const consolidate = await import("@/app/api/memories/consolidate/route");
@@ -292,11 +293,12 @@ describe("public characters", () => {
     const stored = await query("SELECT character_snapshot FROM conversations WHERE id=$1", [body.conversation.id]);
     expect(JSON.stringify(stored.rows[0].character_snapshot)).not.toContain("Private production notes");
 
-    const published = await characters.GET(new Request("http://test/api/characters?scope=published"));
-    const list = await published.json();
-    expect(list.characters).toHaveLength(1);
-    expect(list.characters[0].sourceMaterial).toBe("");
-    expect(list.characters[0].ownedByViewer).toBe(false);
+    const listed = await (await discovery.GET(new Request("http://test/api/discovery"))).json();
+    expect(listed.creations).toHaveLength(1);
+    expect(listed.creations[0].ownedByViewer).toBe(false);
+    // The discovery summary has no source material to expose in the first place.
+    expect(listed.creations[0]).not.toHaveProperty("sourceMaterial");
+    expect(JSON.stringify(listed.creations)).not.toContain("Private production notes");
   });
 
   it("refuses to start a chat from a character that is private to somebody else", async () => {
