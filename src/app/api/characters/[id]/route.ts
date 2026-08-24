@@ -33,11 +33,44 @@ function richFields(c: { description: string; descriptionRich: RichBlock[]; gree
   };
 }
 
+/*
+ * Whether this database has the locked-world preview function yet.
+ *
+ * Probed once per process, in a transaction of its own. That isolation is the
+ * point: PostgreSQL aborts a transaction after any failed statement, so
+ * calling a function that does not exist inside the page's own transaction
+ * would take the rest of the request down with it. A deployment that has not
+ * run 0017 therefore keeps exactly its previous behaviour — readable worlds
+ * show, locked ones do not — instead of failing the page. Like the row level
+ * security probe in `db.ts`, the answer is cached until the process restarts.
+ */
+let previewFunctionSupported: boolean | null = null;
+
+export function resetWorldPreviewSupportForTesting() {
+  if (process.env.NODE_ENV !== "test") throw new Error("Preview support reset is test-only");
+  previewFunctionSupported = null;
+}
+
+async function worldPreviewsSupported(userId: string) {
+  if (previewFunctionSupported !== null) return previewFunctionSupported;
+  try {
+    await asUser(userId, (client) => client.query(
+      "SELECT id FROM creation_world_previews($1) LIMIT 0",
+      ["00000000-0000-0000-0000-000000000000"],
+    ));
+    previewFunctionSupported = true;
+  } catch {
+    previewFunctionSupported = false;
+  }
+  return previewFunctionSupported;
+}
+
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const account = await currentAccount();
   if (!account) return unauthorized();
   const { id } = await context.params;
 
+  const supportsPreviews = await worldPreviewsSupported(account.id);
   const detail = await asUser(account.id, async (client) => {
     const result = await client.query(
       `SELECT c.*,p.id creator_id,p.username creator_username,p.display_name creator_display_name,
@@ -52,16 +85,14 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const row = result.rows[0];
     const owner = String(row.user_id) === account.id;
     /*
-     * Every attached world, including ones this viewer may not open.
+     * The worlds this viewer may actually open.
      *
-     * A public creation built on a private world is still built on it, and
-     * hiding the association would misrepresent what the creation is. So the
-     * association is shown and the content is not: a world the viewer cannot
-     * read comes back as `locked`, carrying its id, its name and its cover and
-     * nothing else — no lore, no description, no creator, no comments, no
-     * timestamps. The readable case is decided in SQL rather than by trimming
-     * a fully-selected row afterwards, so there is no full row to forget to
-     * trim.
+     * Row level security answers that question: a world resolves here when it
+     * is public, unlisted, or the viewer's own — which is what keeps an
+     * owner's private world openable on their own creation page. The CASE
+     * masks are kept as a second layer, so a policy mistake still cannot ship
+     * lore through this route. Worlds the viewer may NOT open are handled
+     * separately below, because RLS correctly refuses to return them at all.
      */
     const worlds = await client.query(
       `SELECT w.id,w.name,w.cover_path,w.cover_url,
@@ -87,9 +118,33 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
          AND m.generation_started_at IS NOT NULL`,
       [account.id, id],
     );
+    /*
+     * The links the reader may not open.
+     *
+     * The query above can only ever see worlds this account is permitted to
+     * read — `worlds_select_own_or_published` is doing exactly its job — which
+     * is why a public creation built on somebody's private world used to show
+     * no world at all. The association is real and hiding it misrepresents the
+     * creation, so the ids and covers come from a preview function that
+     * returns four columns and no lore; see 0017_linked_world_previews.sql for
+     * why the narrowness is structural rather than careful.
+     */
+    const previews = supportsPreviews
+      ? (await client.query("SELECT id,name,cover_path,cover_url FROM creation_world_previews($1)", [id])).rows.map((preview) => ({
+        id: String(preview.id), name: String(preview.name),
+        coverPath: String(preview.cover_path || ""), coverUrl: String(preview.cover_url || ""),
+      }))
+      : [];
+    // Anything the query returned is already accounted for, readable or not.
+    // The previews only supply worlds row level security refused to return.
+    const returnedIds = new Set(worlds.rows.map((world) => String(world.id)));
+    const lockedPreviews = previews.filter((preview) => !returnedIds.has(preview.id));
+
     // World links the creator may edit. A locked world is still linked, so it
     // still counts — the studio must not silently detach it on the next save.
-    const worldIds = worlds.rows.map((world) => String(world.id));
+    const worldIds = previews.length
+      ? previews.map((preview) => preview.id)
+      : worlds.rows.map((world) => String(world.id));
     // Gallery rows are readable wherever the character is, so a visitor sees a
     // published character's gallery without ever reaching its owner's stories.
     const gallery = await client.query(
@@ -100,9 +155,16 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     return {
       // A visitor receives the public creation, not its prompt engineering.
       character: owner ? character : visitorCharacter(character),
-      worlds: worlds.rows.map((row) => row.readable
-        ? worldFromRow(row, account.id)
-        : { id: String(row.id), name: String(row.name), coverPath: String(row.cover_path || ""), coverUrl: String(row.cover_url || ""), locked: true as const }),
+      worlds: [
+        // The second layer: even if a policy change ever let an unreadable row
+        // through the query above, it still leaves here as a locked card.
+        ...worlds.rows.map((row) => row.readable
+          ? worldFromRow(row, account.id)
+          : { id: String(row.id), name: String(row.name), coverPath: String(row.cover_path || ""), coverUrl: String(row.cover_url || ""), locked: true as const }),
+        // Identity and a cover. No lore, no description, no creator, no
+        // comments, no timestamps — there is nothing else in the row to leak.
+        ...lockedPreviews.map((preview) => ({ ...preview, locked: true as const })),
+      ],
       viewerMessageCount: Number(messages.rows[0]?.count || 0),
       owner,
     };

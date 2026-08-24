@@ -8,6 +8,7 @@ import { backFallbacks } from "@/lib/back-navigation";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import type { PublicCastMember } from "@/lib/cast";
 import { BackButton } from "@/components/nav";
+import { iconButtonClass } from "@/components/ui";
 import styles from "./member.module.css";
 
 type Detail = {
@@ -65,7 +66,7 @@ export default function CastMemberProfile({ creationId, memberId }: { creationId
         {/* Back is history, and the fallback for a member opened cold is the
             creation it belongs to rather than the feed — that is the page it
             is a part of. */}
-        <BackButton className={styles.circleButton} fallback={backFallbacks.castMember(creation.id)} />
+        <BackButton className={iconButtonClass("media")} fallback={backFallbacks.castMember(creation.id)} />
       </div>
       <div className={styles.heroCopy}>
         <span className={styles.kicker}>From {creation.title}</span>

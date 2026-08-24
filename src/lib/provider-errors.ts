@@ -1,0 +1,147 @@
+/**
+ * What a model failure is, and who is allowed to read it.
+ *
+ * A provider failure has two audiences with opposite needs. The operator needs
+ * the status, the routing metadata, the upstream host and the raw body. The
+ * reader needs one calm sentence and their turn back. Before this file the
+ * product had exactly one representation — the upstream string — and it went
+ * to both, which is how "OpenRouter request failed (429): {…provider JSON…}"
+ * came to appear inside a roleplay.
+ *
+ * So a failure is a `ProviderError`: a category, a public sentence chosen from
+ * that category, and a `diagnostic` bag that never leaves the server. The
+ * category is also what decides whether retrying is sane, so classification
+ * happens once and both the retry policy and the message read the same answer.
+ */
+
+export type ProviderErrorCategory =
+  /** Upstream is busy or rate limited. Another provider for the same model may not be. */
+  | "rate_limited"
+  /** A route, deployment or gateway is temporarily down. */
+  | "upstream_unavailable"
+  /** The request was accepted but produced no text. */
+  | "empty_response"
+  /** The deployment's credentials are wrong. Nobody's turn will fix this. */
+  | "auth"
+  /** Credit, quota or payment. Also not fixed by retrying. */
+  | "billing"
+  /** Afterglow sent something the provider rejected. A bug, not a blip. */
+  | "bad_request"
+  /** The request was cancelled or timed out before completion. */
+  | "timeout"
+  | "unknown";
+
+/** What a reader is told. Deliberately short, and never names infrastructure. */
+const publicMessages: Record<ProviderErrorCategory, string> = {
+  rate_limited: "The model is temporarily busy. Please try again in a moment.",
+  upstream_unavailable: "The model is temporarily unavailable. Please try again in a moment.",
+  empty_response: "The model did not return a reply. Please try again.",
+  auth: "Something went wrong while generating the response. Please try again.",
+  billing: "Something went wrong while generating the response. Please try again.",
+  bad_request: "Something went wrong while generating the response. Please try again.",
+  timeout: "That reply took too long to arrive. Please try again.",
+  unknown: "Something went wrong while generating the response. Please try again.",
+};
+
+/** Which categories are worth another attempt against the same model. */
+const retryable: Record<ProviderErrorCategory, boolean> = {
+  rate_limited: true,
+  upstream_unavailable: true,
+  empty_response: true,
+  timeout: false,
+  auth: false,
+  billing: false,
+  bad_request: false,
+  unknown: false,
+};
+
+export type ProviderDiagnostic = {
+  provider?: string;
+  model?: string;
+  actualModel?: string;
+  upstreamProvider?: string;
+  status?: number;
+  requestId?: string;
+  conversationId?: string;
+  attempt?: number;
+  latencyMs?: number;
+  /** A trimmed upstream body. Internal only, and never returned to a client. */
+  detail?: string;
+};
+
+export class ProviderError extends Error {
+  readonly category: ProviderErrorCategory;
+  readonly diagnostic: ProviderDiagnostic;
+
+  constructor(category: ProviderErrorCategory, diagnostic: ProviderDiagnostic = {}) {
+    // `message` is the public sentence, so that the one thing every careless
+    // `error.message` in the codebase reaches is already safe. The upstream
+    // text lives in `diagnostic.detail`, which no response serialiser touches.
+    super(publicMessages[category]);
+    this.name = "ProviderError";
+    this.category = category;
+    this.diagnostic = diagnostic;
+  }
+
+  get retryable() {
+    return retryable[this.category];
+  }
+
+  /** The HTTP status Afterglow answers with. Not the upstream's. */
+  get httpStatus() {
+    if (this.category === "rate_limited") return 429;
+    if (this.category === "timeout") return 504;
+    return 502;
+  }
+
+  withDiagnostic(extra: ProviderDiagnostic) {
+    return new ProviderError(this.category, { ...this.diagnostic, ...extra });
+  }
+}
+
+/** The sentence a reader sees for any failure, provider-shaped or not. */
+export function publicErrorMessage(error: unknown) {
+  if (error instanceof ProviderError) return error.message;
+  return publicMessages.unknown;
+}
+
+export function publicErrorStatus(error: unknown) {
+  return error instanceof ProviderError ? error.httpStatus : 502;
+}
+
+/**
+ * An upstream HTTP failure, classified.
+ *
+ * The status is the primary signal; the body is consulted only to tell a
+ * temporarily-unroutable provider apart from a genuinely missing model, since
+ * both arrive as 404.
+ */
+export function classifyProviderFailure(status: number, body: string): ProviderErrorCategory {
+  if (status === 429) return "rate_limited";
+  if (status === 408 || status === 504) return "timeout";
+  if (status === 401 || status === 403) return "auth";
+  if (status === 402) return "billing";
+  if (status === 404) {
+    return /provider returned error|deployment .*doesn.t exist|isn.t accessible|no (?:allowed |endpoints|providers)/i.test(body)
+      ? "upstream_unavailable"
+      : "bad_request";
+  }
+  if (status === 400 || status === 422) return "bad_request";
+  if (status >= 500) return "upstream_unavailable";
+  return "unknown";
+}
+
+/**
+ * The operator's copy.
+ *
+ * Structured, one line, and the only place upstream text is written down. It
+ * deliberately records identifiers rather than content: a conversation id is
+ * enough to find the row, and the prompt itself is never logged.
+ */
+export function logProviderDiagnostic(context: string, error: unknown) {
+  if (error instanceof ProviderError) {
+    console.error(`[provider] ${context}`, JSON.stringify({ category: error.category, ...error.diagnostic }));
+    return;
+  }
+  console.error(`[provider] ${context}`, error instanceof Error ? error.message : String(error));
+}

@@ -36,17 +36,13 @@
   gap: 3px;
   padding: calc(16px + env(safe-area-inset-top)) var(--gutter) 12px;
 }
-.menuButton {
-  display: none;
-  place-items: center;
-  width: 38px; height: 38px;
-  margin-bottom: 8px;
-  border: 1px solid var(--edge);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, .03);
-  color: var(--ink);
-  cursor: pointer;
-}
+/*
+ * Placement only. The control itself is the shared rounded-square icon button
+ * (src/components/ui) — this rule decides where it sits and when it shows,
+ * because on a wide screen the sidebar is already visible and a menu control
+ * would be a second way to reach the same thing.
+ */
+.menuButton { display: none; margin-bottom: 8px; }
 .eyebrow { text-transform: uppercase; letter-spacing: .14em; font-size: 9.5px; color: var(--faint); }
 .title {
   margin: 0;
@@ -266,7 +262,7 @@
   .head { padding-top: 34px; }
 }
 
-@media (max-width: 500px) { .menuButton { display: grid; } }
+@media (max-width: 500px) { .menuButton { display: inline-grid; } }
 
 @media (prefers-reduced-motion: reduce) {
   .card { transition: none; }

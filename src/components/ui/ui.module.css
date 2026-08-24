@@ -1,0 +1,163 @@
+/*
+ * Afterglow's shared control shapes.
+ *
+ * The app had drifted into two geometries for the same job: perfect circles on
+ * the creation, cast and world pages, and rounded squares in the newer feed,
+ * worlds and creations headers. Back and Menu are the same KIND of action, so
+ * they should not be two different shapes depending on which sprint built the
+ * page they sit on.
+ *
+ * This file settles it. An ordinary icon action is a rounded square. Circles
+ * remain where the circle means something — an avatar, a floating create
+ * control — and those are not built from these classes.
+ */
+
+:root {
+  --ui-radius-control: 12px;
+  --ui-radius-panel: 16px;
+}
+
+/* ------------------------------------------------------------ icon ---- */
+
+.iconButton {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .1));
+  border-radius: var(--ui-radius-control);
+  background: rgba(255, 255, 255, .035);
+  color: var(--ink, #f6eff4);
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, transform .12s ease;
+}
+
+.iconButton:hover {
+  background: rgba(232, 121, 169, .14);
+  border-color: rgba(232, 121, 169, .32);
+}
+
+.iconButton:active { transform: scale(.94); }
+
+.iconButton:focus-visible {
+  outline: 2px solid var(--creation-accent-readable, #f5a8c6);
+  outline-offset: 2px;
+}
+
+.iconButton[disabled] { opacity: .45; cursor: not-allowed; }
+
+/*
+ * The variant that sits on top of artwork.
+ *
+ * Same shape, blurred so it stays legible over a bright cover — which is what
+ * the old `.circleButton` on the hero bars was for.
+ */
+.onMedia {
+  background: rgba(14, 10, 16, .58);
+  backdrop-filter: blur(14px);
+  border-color: rgba(255, 255, 255, .16);
+}
+
+.onMedia:hover {
+  background: rgba(232, 121, 169, .18);
+  border-color: rgba(232, 121, 169, .34);
+}
+
+/* Quieter, for a control inside a card rather than on a page header. */
+.subtle {
+  width: 32px;
+  height: 32px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted, #a99cab);
+}
+
+.subtle:hover {
+  background: rgba(255, 255, 255, .06);
+  border-color: var(--edge, rgba(255, 255, 255, .1));
+  color: var(--ink, #f6eff4);
+}
+
+/* Pressed state for a toggle drawn as an icon, e.g. Save. */
+.iconButton[aria-pressed="true"] {
+  background: rgba(232, 121, 169, .18);
+  border-color: rgba(232, 121, 169, .38);
+  color: #f7c9de;
+}
+
+/* ---------------------------------------------------------- buttons ---- */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-control);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, transform .12s ease, opacity .18s ease;
+}
+
+.button:active { transform: scale(.985); }
+.button[disabled] { opacity: .5; cursor: not-allowed; }
+.button:focus-visible { outline: 2px solid var(--creation-accent-readable, #f5a8c6); outline-offset: 2px; }
+
+.primary {
+  border-color: rgba(232, 121, 169, .4);
+  background: linear-gradient(120deg, var(--creation-accent-bright, #f5a8c6), var(--creation-accent, #e879a9) 55%, var(--creation-accent-soft, #b892f0));
+  color: #180f16;
+}
+
+.primary:hover { filter: brightness(1.06); }
+
+.secondary {
+  border-color: var(--edge, rgba(255, 255, 255, .1));
+  background: rgba(255, 255, 255, .04);
+  color: var(--ink, #f6eff4);
+}
+
+.secondary:hover { background: rgba(255, 255, 255, .08); }
+
+.destructive {
+  border-color: rgba(238, 104, 137, .38);
+  background: rgba(238, 104, 137, .1);
+  color: #ffb4c6;
+}
+
+.destructive:hover { background: rgba(238, 104, 137, .18); }
+
+/* A selectable filter or option. Pill-shaped on purpose: a chip is a chip. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .1));
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .03);
+  color: var(--muted, #a99cab);
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, color .18s ease;
+}
+
+.chip:hover { background: rgba(255, 255, 255, .07); color: var(--ink, #f6eff4); }
+
+.chip[aria-pressed="true"], .chipActive {
+  border-color: rgba(232, 121, 169, .38);
+  background: rgba(232, 121, 169, .13);
+  color: #f7c9de;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iconButton, .button, .chip { transition: none; }
+  .iconButton:active, .button:active { transform: none; }
+}

@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Compass, Globe2, Lock, Menu, Pencil, Plus, Trash2 } from "lucide-react";
+import { Compass, Globe2, Lock, Pencil, Plus, Trash2 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { AppMenuButton } from "@/components/ui";
 import { toggleWorldSave } from "@/lib/world-saves";
 import type { WorldSummary } from "@/lib/types";
 import { MoreMenu, type MoreMenuItem } from "@/components/nav";
@@ -106,7 +107,7 @@ export function WorldsHub({ onOpenMenu, onCreate, onEdit, onChanged }: {
 
   return <section className={styles.page} aria-label="Worlds">
     <header className={styles.head}>
-      {onOpenMenu && <button type="button" className={styles.menuButton} aria-label="Open menu" onClick={onOpenMenu}><Menu size={18} /></button>}
+      {onOpenMenu && <AppMenuButton className={styles.menuButton} onOpen={onOpenMenu} />}
       <span className={styles.eyebrow}>Reusable settings and lore</span>
       <h1 className={styles.title}>Worlds</h1>
       <p className={styles.lede}>A world is the setting a story happens in. Attach one to any number of creations, and it stays one document.</p>

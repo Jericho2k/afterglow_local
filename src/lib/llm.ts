@@ -22,6 +22,12 @@ export type CompletionOptions = {
   temperature?: number;
   json?: boolean;
   thinking?: boolean;
+  /**
+   * Opaque provider-stickiness hint for one conversation and one task.
+   * Built by src/lib/inference-session.ts; adapters that have no such concept
+   * ignore it.
+   */
+  sessionId?: string;
 };
 
 /** The adapter contract future OpenRouter or self-hosted runtimes implement. */

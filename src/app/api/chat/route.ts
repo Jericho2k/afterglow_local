@@ -8,13 +8,16 @@ import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
 import { sceneStateEnabled, sceneStateRetrievalHintEnabled } from "@/lib/memory-flags";
 import { sceneFieldsOf, sceneRetrievalCue } from "@/lib/scene-state";
 import { currentSceneState, dropSceneStateForMessage, maybeUpdateSceneState } from "@/lib/scene-state-store";
-import { recallText, selectRecentMessages } from "@/lib/context";
+import { anchoredFetchLimit, recallText, selectAnchoredMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
 import { providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
 import { responseLengths, type AppSettings, type ResponseLength } from "@/lib/types";
+import { responseLengthPlan } from "@/lib/response-length";
+import { inferenceSessionId } from "@/lib/inference-session";
+import { ProviderError, logProviderDiagnostic, publicErrorMessage, publicErrorStatus } from "@/lib/provider-errors";
 
 export const maxDuration = 120;
 
@@ -71,7 +74,10 @@ export async function POST(request: Request) {
   try {
     selection = taskModelSelection("rp_generation",conversationSelection);
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "The RP model route is unavailable" },{ status:409 });
+    // A deployment routing mistake is an operator problem. The reader is told
+    // what they can act on, not what the environment variable is called.
+    console.error("[provider] RP_MODEL_ROUTE is misconfigured", error instanceof Error ? error.message : error);
+    return Response.json({ error: "This chat's model is not available on this deployment. Choose another model in chat tools.", reason: "model_unavailable" },{ status:409 });
   }
   const engineId = String(row.rp_engine_id || settings.roleplayPreset) as AppSettings["roleplayPreset"];
   const storedResponseLength = String(row.response_length || "");
@@ -80,7 +86,24 @@ export async function POST(request: Request) {
   const conversationModelDefinition = resolveModel(conversationSelection.providerId,conversationSelection.modelId);
   const modelDefinition = resolveModel(selection.providerId, selection.modelId);
   const engineDefinition = resolveEngine(engineId);
-  if (!conversationModelDefinition || !modelDefinition || !engineDefinition) return Response.json({ error: "This chat's model or roleplay engine is no longer available. Choose another one in chat tools." }, { status: 409 });
+  /*
+   * Model retirement, handled rather than crashed into.
+   *
+   * A conversation stores the provider and model it was started with, and an
+   * upstream model can be retired underneath it. That must not turn the whole
+   * chat into a mystery: the reply is refused with a sentence that says what
+   * happened and what to do, and `reason` lets the client offer the model
+   * picker directly. Nothing is silently substituted — the writer a reader
+   * chose is never swapped for another one behind their back.
+   */
+  if (!conversationModelDefinition || !modelDefinition || !engineDefinition) {
+    return Response.json({
+      error: !engineDefinition
+        ? "This chat's roleplay engine is no longer available. Choose another one in chat tools."
+        : "This chat's model is no longer available. Choose another model in chat tools — your story, memories and settings are untouched.",
+      reason: !engineDefinition ? "engine_unavailable" : "model_unavailable",
+    }, { status: 409 });
+  }
 
   // Memory maintenance is deliberately not on the reply's critical path. The
   // recent transcript already carries the newest accepted turns, while the
@@ -109,12 +132,21 @@ export async function POST(request: Request) {
       if (regenerateTarget && sceneEnabled) await dropSceneStateForMessage(client,conversationId,regenerateTarget.id,account.id);
     }
 
+    // A few rows past the context limit, so the anchored window below has the
+    // messages it may keep. The extra rows are read, not necessarily sent.
     const historyResult = await client.query(
       "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT $3",
-      [conversationId, account.id, settings.contextMessages],
+      [conversationId, account.id, anchoredFetchLimit(settings.contextMessages)],
+    );
+    const totalMessages = await client.query(
+      "SELECT COUNT(*)::int count FROM messages WHERE conversation_id=$1 AND user_id=$2",
+      [conversationId, account.id],
     );
     const availableHistory = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
-    const history = selectRecentMessages(availableHistory, settings.contextMessages, settings.contextTokenBudget);
+    // Anchored rather than strictly sliding: the same transcript the budget
+    // would have selected, with its start quantised so a provider's prompt
+    // cache survives more than one turn. Never fewer messages than before.
+    const history = selectAnchoredMessages(availableHistory, Number(totalMessages.rows[0]?.count || availableHistory.length), settings.contextMessages, settings.contextTokenBudget);
     const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
     const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
     // Where and when this reply happens. Read after any regeneration cleanup so
@@ -165,13 +197,35 @@ export async function POST(request: Request) {
   if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
 
   const completionMessages = [{ role: "system" as const, content: system },...modelHistory];
-  const completionOptions = { signal: request.signal, maxTokens: settings.maxTokens, temperature, thinking: engineDefinition.thinking && modelDefinition.supportsThinking };
+  // Response Length owns the output envelope as well as the directive. The
+  // account's `maxTokens` is the Natural baseline the other two scale from, so
+  // Concise has a genuinely lower ceiling than Detailed without any mode ever
+  // being cut off: see src/lib/response-length.ts for why each ceiling sits
+  // far above the words its own directive asks for.
+  const lengthPlan = responseLengthPlan(responseLength, settings.maxTokens);
+  const completionOptions = {
+    signal: request.signal,
+    maxTokens: lengthPlan.maxTokens,
+    temperature,
+    thinking: engineDefinition.thinking && modelDefinition.supportsThinking,
+    // Conversation-scoped provider stickiness. Sequential turns in one story
+    // ask for the same upstream host, which is what lets its prompt cache stay
+    // warm; a different story is a different session and shares nothing.
+    sessionId: inferenceSessionId("rp_generation", conversationId),
+  };
   let upstream: ReadableStream<Uint8Array>;
   const requestStartedAt = Date.now();
   try {
     upstream = await streamCompletion(selection,completionMessages,completionOptions);
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Model request failed" }, { status: 502 });
+    // The operator gets the status, the route and the upstream body; the
+    // reader gets one sentence. These are two different strings on purpose —
+    // returning `error.message` here is what used to put raw provider JSON
+    // inside a roleplay.
+    logProviderDiagnostic("rp generation failed before streaming", error instanceof ProviderError
+      ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId })
+      : error);
+    return Response.json({ error: publicErrorMessage(error) }, { status: publicErrorStatus(error) });
   }
   if (userMessageId) {
     await asUser(account.id, (client) => client.query(
@@ -236,6 +290,12 @@ export async function POST(request: Request) {
           // Some routed providers occasionally finish a successful HTTP stream
           // without text. Account for that attempt, then transparently retry
           // once so the user does not have to delete and resend their turn.
+          //
+          // The guard is deliberately "no visible text at all". A generation
+          // that already streamed prose is never retried: appending a second,
+          // independent continuation on top of it would produce a doubled or
+          // self-contradicting reply, which is a worse failure than the one it
+          // would be papering over.
           await recordAttemptUsage();
           buffer = ""; usage = null; providerRequestId = undefined; upstreamProvider=undefined; ttftMs=undefined;
           actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
@@ -243,7 +303,7 @@ export async function POST(request: Request) {
           const retry = await streamCompletion(selection,completionMessages,completionOptions);
           await consume(retry,retryStartedAt);
         }
-        if (!assistant.trim()) throw new Error("The model returned no text after two attempts. Please try again.");
+        if (!assistant.trim()) throw new ProviderError("empty_response", { conversationId, provider: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, upstreamProvider, attempt: 2, detail: "two attempts produced no text" });
         const variants: string[] = regenerateTarget ? [...regenerateTarget.variants, assistant] : [assistant];
         const selectedVariant = variants.length - 1;
         const memoryIds = memories.map((memory) => memory.id);
@@ -302,7 +362,10 @@ export async function POST(request: Request) {
           await maybeBackfillMemoryEmbeddings(account.id,conversationId);
         })().catch((error) => console.error("Memory maintenance failed",error));
       } catch (error) {
-        send({ type: "error", error: error instanceof Error ? error.message : "Stream failed" });
+        logProviderDiagnostic("rp generation failed mid-stream", error instanceof ProviderError
+          ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, upstreamProvider })
+          : error);
+        send({ type: "error", error: publicErrorMessage(error) });
         controller.close();
       }
     },

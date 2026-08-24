@@ -17,8 +17,18 @@
   --ink: #f6eff4;
   --muted: #a99cab;
   --faint: #7b6f7e;
-  --accent: #e879a9;
-  --accent-soft: #b892f0;
+  /*
+   * The creation's colour, made general.
+   *
+   * These two tokens already fed a dozen rules — headings, tags, links, the
+   * verified check, the facts column — and both were fixed rose, which is why
+   * choosing an accent barely changed anything. Pointing them at the derived
+   * palette themes the whole page from one place, and the fallbacks keep a
+   * creation with no accent looking exactly as it does today. `readable` is
+   * used rather than the raw colour because these tokens are drawn as text.
+   */
+  --accent: var(--creation-accent-readable, #e879a9);
+  --accent-soft: var(--creation-accent-soft, #b892f0);
   min-height: 100dvh;
   background: #0b080d;
   color: var(--ink);
@@ -60,7 +70,9 @@
 .heroGlow {
   position: absolute; inset: 0; z-index: 1;
   pointer-events: none;
-  background: radial-gradient(120% 55% at 50% 100%, var(--creation-accent-glow, transparent), transparent 72%);
+  background:
+    radial-gradient(70% 34% at 50% 100%, var(--creation-accent-glow-strong, transparent), transparent 70%),
+    radial-gradient(120% 58% at 50% 100%, var(--creation-accent-glow, transparent), transparent 74%);
 }
 
 .heroScrim {
@@ -77,14 +89,13 @@
 }
 .heroBarActions { display: flex; gap: 8px; }
 
-.circleButton {
-  display: grid; place-items: center; width: 38px; height: 38px;
-  border-radius: 50%; border: 1px solid var(--edge);
-  background: rgba(14, 10, 16, .58); backdrop-filter: blur(14px);
-  color: var(--ink); cursor: pointer; transition: background .18s, border-color .18s, transform .18s;
-}
-.circleButton:hover { background: rgba(232, 121, 169, .16); border-color: rgba(232, 121, 169, .34); }
-.circleButton:active { transform: scale(.94); }
+/*
+ * The hero controls use the shared rounded-square icon button now
+ * (src/components/ui). Back, More, Share and Save are the same kind of action
+ * everywhere in Afterglow, so they are the same shape everywhere. Circles are
+ * kept only where the circle means something — an avatar, a floating create
+ * control — and those are not built from this class.
+ */
 
 .heroCopy {
   position: relative; z-index: 2;
@@ -99,7 +110,7 @@
   /* The creation's accent is the far end of the product's own gradient, never
      the whole button: a creation is tinted by its colour, not repainted in it,
      and the CTA still reads as an Afterglow control at every value. */
-  background: linear-gradient(102deg, #ffd9ea 4%, var(--accent) 38%, var(--creation-accent-soft, var(--accent-soft)) 96%);
+  background: linear-gradient(102deg, var(--creation-accent-bright, #ffd9ea) 4%, var(--creation-accent-readable, #e879a9) 38%, var(--creation-accent-soft, var(--accent-soft)) 96%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 /* The last word carries the badge so a wrapping name can never leave the check
@@ -124,12 +135,18 @@
   flex: 1; min-height: 52px;
   display: inline-flex; align-items: center; justify-content: center; gap: 9px;
   border: 0; border-radius: 15px;
-  background: linear-gradient(96deg, #ff5fa2 0%, #e879a9 45%, #a874f0 100%);
-  color: #2a1020; font-size: 15px; font-weight: 650; cursor: pointer;
-  box-shadow: 0 14px 36px rgba(214, 92, 158, .32);
+  /* Bright end, the colour itself, then the violet partner: three stops from
+     the derived palette, so a red creation gets a crimson-to-rose CTA and a
+     blue one gets indigo-to-violet, while both still read as Afterglow. */
+  background: linear-gradient(96deg,
+    var(--creation-accent-bright, #ff5fa2) 0%,
+    var(--creation-accent, #e879a9) 45%,
+    var(--creation-accent-soft, #a874f0) 100%);
+  color: var(--creation-accent-ink, #2a1020); font-size: 15px; font-weight: 650; cursor: pointer;
+  box-shadow: 0 14px 36px var(--creation-accent-glow-strong, rgba(214, 92, 158, .32));
   transition: transform .18s, box-shadow .18s, filter .18s;
 }
-.primaryCta:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 18px 44px rgba(214, 92, 158, .42); }
+.primaryCta:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 20px 50px var(--creation-accent-glow-strong, rgba(214, 92, 158, .42)); }
 .primaryCta:active:not(:disabled) { transform: translateY(0) scale(.99); }
 .primaryCta:disabled { filter: saturate(.55) brightness(.86); cursor: progress; }
 
@@ -139,7 +156,7 @@
   background: rgba(255, 255, 255, .035); color: var(--ink); cursor: pointer;
   transition: background .18s, border-color .18s;
 }
-.ghostButton:hover { background: rgba(232, 121, 169, .12); border-color: rgba(232, 121, 169, .3); }
+.ghostButton:hover { background: var(--creation-accent-glow, rgba(232, 121, 169, .12)); border-color: var(--creation-accent-border, rgba(232, 121, 169, .3)); }
 
 /*
  * Messages, saves and chats.
@@ -240,8 +257,8 @@
 
 /* Navigation feedback: illuminate the target edge, then fade away. */
 .illuminate {
-  border-color: rgba(232, 121, 169, .5);
-  box-shadow: 0 0 0 1px rgba(232, 121, 169, .3), 0 0 34px rgba(232, 121, 169, .2);
+  border-color: var(--creation-accent-border, rgba(232, 121, 169, .5));
+  box-shadow: 0 0 0 1px var(--creation-accent-border, rgba(232, 121, 169, .3)), 0 0 34px var(--creation-accent-glow, rgba(232, 121, 169, .2));
 }
 
 .count { font-style: normal; font-size: 11px; color: var(--faint); }
@@ -257,7 +274,7 @@
 .gallery li { scroll-snap-align: start; }
 .gallery img {
   width: 100%; aspect-ratio: 3 / 4; object-fit: cover;
-  border-radius: 13px; border: 1px solid rgba(232, 121, 169, .18);
+  border-radius: 13px; border: 1px solid var(--creation-accent-border, rgba(232, 121, 169, .18));
   background: #0e0a10;
   box-shadow: 0 10px 26px rgba(0, 0, 0, .4);
 }
@@ -276,13 +293,13 @@
 
 .tagList { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .tagList li {
-  border: 1px solid rgba(232, 121, 169, .26); border-radius: 999px;
-  background: rgba(232, 121, 169, .08);
+  border: 1px solid var(--creation-accent-border, rgba(232, 121, 169, .26)); border-radius: 999px;
+  background: var(--creation-accent-glow, rgba(232, 121, 169, .08));
   padding: 7px 13px; font-size: 12px; color: #f0d9e7;
 }
 .adultBadge {
   font-style: normal; font-size: 10px; font-weight: 700; letter-spacing: .04em;
-  border: 1px solid rgba(232, 121, 169, .4); border-radius: 999px;
+  border: 1px solid var(--creation-accent-border, rgba(232, 121, 169, .4)); border-radius: 999px;
   padding: 3px 8px; color: var(--accent);
 }
 .adultNote { margin: 12px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--faint); }
@@ -446,7 +463,9 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
 .heroGlow {
   position: absolute; inset: 0; z-index: 1;
   pointer-events: none;
-  background: radial-gradient(120% 55% at 50% 100%, var(--creation-accent-glow, transparent), transparent 72%);
+  background:
+    radial-gradient(70% 34% at 50% 100%, var(--creation-accent-glow-strong, transparent), transparent 70%),
+    radial-gradient(120% 58% at 50% 100%, var(--creation-accent-glow, transparent), transparent 74%);
 }
 
 .heroScrim {
@@ -499,6 +518,6 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .primaryCta, .circleButton, .card { transition: none; }
+  .primaryCta, .card { transition: none; }
   .spin { animation: none; }
 }

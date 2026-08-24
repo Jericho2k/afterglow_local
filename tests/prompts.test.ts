@@ -94,12 +94,21 @@ describe("roleplay prompt", () => {
     expect(continueSceneCue).toContain("Do not repeat or paraphrase");
   });
 
-  it("keeps natural unchanged while concise and detailed remain soft preferences", () => {
+  it("keeps natural unchanged and gives concise and detailed concrete written targets", () => {
     const natural=roleplayPrompt(character,"",[],[],{ownerName:"Alex",ownerProfile:"",roleplayPreset:"immersive",responseLength:"natural"});
     const concise=roleplayPrompt(character,"",[],[],{ownerName:"Alex",ownerProfile:"",roleplayPreset:"immersive",responseLength:"concise"});
     const detailed=roleplayPrompt(character,"",[],[],{ownerName:"Alex",ownerProfile:"",roleplayPreset:"immersive",responseLength:"detailed"});
-    expect(natural).not.toContain("RESPONSE LENGTH PREFERENCE");
-    expect(concise).toContain("do not truncate");
+    // Natural is the untouched baseline: it must add nothing at all.
+    expect(natural).not.toContain("RESPONSE LENGTH");
+    // The other two are requirements with a shape and a number, not adjectives.
+    expect(concise).toContain("RESPONSE LENGTH — CONCISE (ACTIVE REQUIREMENT)");
+    expect(concise).toContain("ONE to TWO short paragraphs");
+    expect(concise).toMatch(/roughly \d+-\d+ words/);
+    expect(detailed).toContain("RESPONSE LENGTH — DETAILED (ACTIVE REQUIREMENT)");
+    expect(detailed).toContain("THREE to FIVE paragraphs");
     expect(detailed).toContain("Do not pad");
+    // Neither mode may ever ask for a cut-off reply.
+    expect(concise).toContain("end on a whole sentence");
+    expect(detailed).toContain("End on a whole sentence");
   });
 });

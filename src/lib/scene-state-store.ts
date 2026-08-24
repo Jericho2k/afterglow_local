@@ -5,6 +5,7 @@ import { completionWithUsage, parseJson } from "./llm";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { sceneStateEnabled } from "./memory-flags";
 import { providerModelId, taskModelSelection } from "./provider";
+import { inferenceSessionId } from "./inference-session";
 import {
   locationLabel, mergeSceneState, normalizeSceneUpdate, renderCurrentScene, sceneExtractionPrompt,
   sceneExtractionSystemPrompt, sceneFieldsOf, sceneIsEmpty, type SceneStateFields,
@@ -314,7 +315,15 @@ export async function maybeUpdateSceneState(userId: string, conversationId: stri
             isOpening: sceneIsEmpty(previousFields),
           }),
         },
-      ], { json: true, maxTokens: 600, temperature: 0.1 });
+      ], {
+        json: true, maxTokens: 600, temperature: 0.1,
+        // Scene extraction is conversation-shaped too — a stable instruction
+        // prefix over a growing transcript — so it gets its own sticky
+        // namespace. Deliberately not the roleplay one: the two prompts share
+        // no prefix, and pooling them would ask a provider to hold a cache
+        // that could never hit.
+        sessionId: inferenceSessionId("scene_state", conversationId),
+      });
       const latencyMs = Math.max(0, Date.now() - started);
       if (response.usage) {
         await recordUsageEvent({

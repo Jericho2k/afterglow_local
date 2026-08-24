@@ -22,6 +22,7 @@ import { toggleCreationSave } from "@/lib/saves";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
 import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
+import { iconButtonClass } from "@/components/ui";
 import { WorldCard } from "@/components/world";
 import styles from "./profile.module.css";
 
@@ -283,18 +284,18 @@ export default function CharacterProfile({ characterId }: { characterId: string 
       </div>
 
       <div className={styles.heroBar}>
-        <BackButton className={styles.circleButton} fallback={backFallbacks.creation} />
+        <BackButton className={iconButtonClass("media")} fallback={backFallbacks.creation} />
         <div className={styles.heroBarActions}>
-          {!detail.owner && <button className={styles.circleButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
+          {!detail.owner && <button className={iconButtonClass("media")} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
             <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
           </button>}
-          <button className={styles.circleButton} aria-label="Share creation" onClick={share}><Share2 size={18} /></button>
+          <button className={iconButtonClass("media")} aria-label="Share creation" title="Share creation" onClick={share}><Share2 size={18} /></button>
           {/* A menu, not a link. Pressing it opens the actions below and
               navigates nowhere; each action then does exactly the one thing
               it is labelled with. Owners get the two that need ownership,
               and everybody gets the one that does not — there is no Report
               or Duplicate here because neither exists to be offered. */}
-          <MoreMenu className={styles.circleButton} label={`More actions for ${title}`} items={menuItems} />
+          <MoreMenu className={iconButtonClass("media")} label={`More actions for ${title}`} items={menuItems} />
         </div>
       </div>
 
