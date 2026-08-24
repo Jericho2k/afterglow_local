@@ -10,13 +10,14 @@ import { BasicsStep } from "./BasicsStep";
 import { CastDefinitionStep } from "./CastDefinitionStep";
 import { CharacterDefinitionStep } from "./CharacterDefinitionStep";
 import { CreationProgress, type StudioStep } from "./CreationProgress";
-import { CreationTypeSelector } from "./CreationTypeSelector";
 import { OpeningStep } from "./OpeningStep";
 import { PublishStep } from "./PublishStep";
 import { ScenarioDefinitionStep } from "./ScenarioDefinitionStep";
 import { WorldStep, type StudioWorld } from "./WorldStep";
-import { Counter, Field, TextArea, TextInput } from "./fields";
+import { CreateIntro, AiNotices } from "./CreateIntro";
 import { blankCastMember, draftFromCharacter, draftPayload, draftProblems, isMeaningfulDraft, type CreationDraft, type StagedGalleryImage } from "./draft";
+import { draftStorageKey, forgetStoredDraft, readStoredDraft, writeStoredDraft, type DraftSummary } from "./drafts";
+import type { CreationAiNotice } from "@/lib/creation-ai";
 import styles from "./studio.module.css";
 
 /**
@@ -38,23 +39,6 @@ function stepsFor(type: CreationType): StudioStep[] {
     { id: "opening", label: "Opening" },
     { id: "publish", label: "Publish" },
   ];
-}
-
-const draftStorageKey = (id: string | null) => `afterglow:studio:v1:${id ?? "new"}`;
-
-type StoredDraft = { savedAt: string; draft: CreationDraft };
-
-function readStoredDraft(id: string | null): StoredDraft | null {
-  try {
-    const raw = window.localStorage.getItem(draftStorageKey(id));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as StoredDraft;
-    return parsed?.draft ? parsed : null;
-  } catch { return null; }
-}
-
-function forgetStoredDraft(key: string) {
-  try { window.localStorage.removeItem(key); } catch { /* nothing to forget */ }
 }
 
 function sameGallery(a: StagedGalleryImage[], b: StagedGalleryImage[]) {
@@ -81,6 +65,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [restored, setRestored] = useState(false);
+  const [aiNotices, setAiNotices] = useState<CreationAiNotice[]>([]);
   const [localWorlds, setLocalWorlds] = useState<StudioWorld[]>(worlds);
   const savedGallery = useRef<StagedGalleryImage[]>(draftFromCharacter(character).gallery);
   // What "unchanged" currently means: the blank draft for a new creation, the
@@ -162,15 +147,12 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
     if (!hydrated.current && character) return;
     const timeout = window.setTimeout(() => {
       if (!isMeaningfulDraft(draft, baseline.current)) { forgetStoredDraft(storageKey.current); return; }
-      try { window.localStorage.setItem(storageKey.current, JSON.stringify({ savedAt: new Date().toISOString(), draft })); }
-      catch { /* storage can be full or blocked; the draft simply is not mirrored */ }
+      writeStoredDraft(storageKey.current, draft);
     }, 600);
     return () => window.clearTimeout(timeout);
   }, [draft, character]);
 
-  const clearStoredDraft = useCallback(() => {
-    try { window.localStorage.removeItem(storageKey.current); } catch { /* ignore */ }
-  }, []);
+  const clearStoredDraft = useCallback(() => { forgetStoredDraft(storageKey.current); }, []);
 
   /**
    * Changing the structure never destroys anything: every field stays in the
@@ -190,6 +172,42 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
       setNotice(`${draft.name.trim()} was added as the first cast member. Everything else you wrote is still here.`);
     }
   }
+
+  /**
+   * Resume a draft the Create screen offered.
+   *
+   * Everything the draft held is restored — structure, fields, tags,
+   * hashtags, cast, worlds, openings, images, adult setting and imported
+   * source — because the stored object is the whole draft rather than a
+   * summary of it. A draft belonging to a creation that was already saved
+   * also moves this session onto that creation's autosave slot, so continuing
+   * it keeps updating the same draft instead of forking a second one.
+   */
+  const continueDraft = useCallback((summary: DraftSummary) => {
+    storageKey.current = summary.key;
+    // Its own stored state is what "unchanged" means from here: a resumed
+    // draft is not immediately re-announced as recovered work.
+    baseline.current = summary.creationId ? null : { ...summary.draft };
+    restoredRef.current = true;
+    setDraft(summary.draft);
+    setRestored(false);
+    setAiNotices([]);
+    setPhase("steps");
+    setStepIndex(0);
+    if (summary.creationId) {
+      // The saved record is fetched so the gallery and the server's own copy
+      // are available; the resumed draft stays in front of it.
+      api<{ character: Character }>(`/api/characters/${summary.creationId}`)
+        .then(({ character: full }) => {
+          const loaded = draftFromCharacter(full);
+          savedGallery.current = loaded.gallery;
+          baseline.current = loaded;
+          setRecord(full);
+        })
+        .catch(() => undefined);
+    }
+    scrollTop();
+  }, []);
 
   function goToStep(id: string) {
     const index = steps.findIndex((item) => item.id === id);
@@ -229,12 +247,16 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
     setError("");
     try {
       let worldIds = [...draft.worldIds];
+      // World material an import separated becomes a real, reusable World —
+      // but only here, on an explicit save, and under the name the creator
+      // saw and could edit. Nothing persistent appears in their library
+      // merely because they ran an import and looked at the result.
       if (draft.lorebook.trim()) {
         const created = await api<{ world: World }>("/api/worlds", {
           method: "POST",
           body: JSON.stringify({
-            name: `${(draft.title || draft.name).trim() || "Imported"} world`,
-            description: "World material separated automatically from the import.",
+            name: draft.proposedWorld?.name.trim() || `${(draft.title || draft.name).trim() || "Imported"} world`,
+            description: draft.proposedWorld?.description.trim() || "World material separated automatically from the import.",
             content: draft.lorebook.trim(),
           }),
         });
@@ -261,7 +283,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
       clearStoredDraft();
       storageKey.current = draftStorageKey(complete.id);
       setRecord(complete);
-      const settled = { ...draft, worldIds, lorebook: "" };
+      const settled = { ...draft, worldIds, lorebook: "", proposedWorld: null };
       // The saved copy is the new "unchanged", so a creation that was just
       // published is not immediately mistaken for unsaved work.
       baseline.current = settled;
@@ -333,14 +355,25 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
           <span>{notice}</span>
           <button type="button" onClick={() => setNotice("")}>Dismiss</button>
         </div>}
+        <AiNotices notices={aiNotices} onDismiss={() => setAiNotices([])} />
         {error && <div className={styles.error} role="alert">{error}</div>}
 
         {phase === "type"
-          ? <TypeStep draft={draft} update={update} onChangeType={changeType} onGenerated={(generated) => {
-            setDraft(generated);
-            setPhase("steps");
-            setStepIndex(0);
-          }} onError={setError} />
+          ? <CreateIntro
+            draft={draft}
+            update={update}
+            onChangeType={changeType}
+            hasWork={isMeaningfulDraft(draft, baseline.current)}
+            onGenerated={(generated, notices) => {
+              setDraft(generated);
+              setAiNotices(notices);
+              setPhase("steps");
+              setStepIndex(0);
+              scrollTop();
+            }}
+            onContinueDraft={continueDraft}
+            onError={setError}
+          />
           : step.id === "basics" ? <BasicsStep draft={draft} update={update} onChangeType={changeType} onError={setError} />
             : step.id === "definition" ? (
               draft.creationType === "scenario" ? <ScenarioDefinitionStep draft={draft} update={update} onError={setError} />
@@ -368,7 +401,19 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
 
     <footer className={styles.footer}>
       <div className={styles.footerInner}>
-        {phase === "steps" && stepIndex > 0 && <button type="button" className={styles.backButton} onClick={() => { setStepIndex(stepIndex - 1); scrollTop(); }}>
+        {/* Back walks the steps, and from the first step of a new creation it
+            returns to the Create screen rather than dead-ending — which is
+            what makes the studio's own Back behave like the rest of the app.
+            Nothing is discarded: the draft is one object either way. */}
+        {phase === "steps" && (stepIndex > 0 || !record) && <button
+          type="button"
+          className={styles.backButton}
+          onClick={() => {
+            if (stepIndex > 0) { setStepIndex(stepIndex - 1); scrollTop(); return; }
+            setPhase("type");
+            scrollTop();
+          }}
+        >
           <ArrowLeft size={16} aria-hidden />Back
         </button>}
         {phase === "type"
@@ -385,94 +430,4 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
       </div>
     </footer>
   </div>;
-}
-
-/**
- * The opening screen: what are you making, and would you like the AI to draft
- * it from an idea or an existing card?
- */
-function TypeStep({ draft, update, onChangeType, onGenerated, onError }: {
-  draft: CreationDraft;
-  update: (changes: Partial<CreationDraft>) => void;
-  onChangeType: (type: CreationType) => void;
-  onGenerated: (draft: CreationDraft) => void;
-  onError: (message: string) => void;
-}) {
-  const [mode, setMode] = useState<"idea" | "dump">("idea");
-  const [idea, setIdea] = useState("");
-  const [tone, setTone] = useState("dramatic");
-  const [busy, setBusy] = useState(false);
-
-  async function generate() {
-    setBusy(true);
-    onError("");
-    try {
-      const data = await api<{ character: Partial<Character> }>("/api/characters/generate", {
-        method: "POST",
-        body: JSON.stringify({ idea, mode, tone, nsfwEnabled: draft.nsfwEnabled }),
-      });
-      const generated = draftFromCharacter(data.character as Character);
-      onGenerated({ ...generated, visibility: draft.visibility, nsfwEnabled: draft.nsfwEnabled });
-    } catch (reason) {
-      onError(reason instanceof Error ? reason.message : "Generation failed");
-    } finally { setBusy(false); }
-  }
-
-  return <>
-    <header className={styles.stepHead}>
-      <h2>What are you creating?</h2>
-      <p>Pick the shape that fits your idea. You can change it later without losing anything.</p>
-    </header>
-
-    <CreationTypeSelector value={draft.creationType} onChange={onChangeType} />
-
-    <section className={styles.generator}>
-      <div className={styles.cardHead}>
-        <Sparkles size={17} aria-hidden />
-        <div>
-          <strong>Start with a draft</strong>
-          <small>Optional. Describe an idea or paste an existing card and Afterglow fills the fields in for you to edit.</small>
-        </div>
-      </div>
-      <div className={styles.segmented}>
-        <button type="button" aria-pressed={mode === "idea"} onClick={() => setMode("idea")}>Quick idea</button>
-        <button type="button" aria-pressed={mode === "dump"} onClick={() => setMode("dump")}>Paste everything</button>
-      </div>
-      <Field
-        label={mode === "dump" ? "Paste your material" : "Describe your idea"}
-        hint={mode === "dump"
-          ? "Up to 100,000 characters. Multiple characters, world material and openings are separated automatically, and the original is kept for reference."
-          : "One character, a group, or a whole situation — whatever you have."}
-        counter={<Counter value={idea.length} max={100000} />}
-      >
-        <TextArea
-          value={idea}
-          maxLength={100000}
-          size={mode === "dump" ? "epic" : "normal"}
-          onChange={setIdea}
-          placeholder={mode === "dump"
-            ? "Paste the complete card, descriptions, dialogue, scenarios, lorebooks, rules and notes here…"
-            : "A sharp-witted art thief in her thirties who meets me at a rain-soaked Paris café…"}
-        />
-      </Field>
-      <div className={styles.generatorFoot}>
-        <select className={styles.select} value={tone} aria-label="Tone" onChange={(event) => setTone(event.target.value)}>
-          <option value="dramatic">Dramatic</option>
-          <option value="romantic">Romantic</option>
-          <option value="playful">Playful</option>
-          <option value="adventurous">Adventurous</option>
-          <option value="comforting">Comforting</option>
-          <option value="custom">Preserve supplied tone</option>
-        </select>
-        <button type="button" className={styles.magicButton} disabled={busy || idea.trim().length < 8} onClick={() => void generate()}>
-          <Sparkles size={16} aria-hidden />
-          {busy ? (mode === "dump" ? "Mapping characters & worlds…" : "Drafting…") : (mode === "dump" ? "Import and organise" : "Draft it for me")}
-        </button>
-      </div>
-    </section>
-
-    <Field label="Title" optional hint="You can name it now or on the next step.">
-      <TextInput value={draft.title} maxLength={120} onChange={(value) => update({ title: value })} placeholder={draft.creationType === "scenario" ? "The Final War" : "Seraphine"} />
-    </Field>
-  </>;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backupSchema, characterSchema, chatSchema, conversationUpdateSchema, generateCharacterSchema, messageUpdateSchema, personaSchema, settingsSchema, worldSchema } from "@/lib/schemas";
+import { backupSchema, characterSchema, chatSchema, conversationUpdateSchema, generateCreationSchema, messageUpdateSchema, personaSchema, settingsSchema, worldSchema } from "@/lib/schemas";
 
 describe("character validation", () => {
   it("applies safe defaults", () => {
@@ -23,13 +23,29 @@ describe("character validation", () => {
   });
 
   it("requires a meaningful generation concept", () => {
-    expect(generateCharacterSchema.safeParse({ idea: "elf" }).success).toBe(false);
+    expect(generateCreationSchema.safeParse({ idea: "elf" }).success).toBe(false);
   });
 
-  it("accepts a large unstructured character dump", () => {
-    const parsed = generateCharacterSchema.parse({ idea: "Name: Mara\n" + "Detailed lore. ".repeat(1000), mode: "dump" });
-    expect(parsed.mode).toBe("dump");
+  it("accepts a large unstructured paste as an import", () => {
+    const parsed = generateCreationSchema.parse({ idea: "Name: Mara\n" + "Detailed lore. ".repeat(1000), mode: "import" });
+    expect(parsed.mode).toBe("import");
     expect(parsed.idea.length).toBeGreaterThan(10000);
+  });
+
+  it("carries each accelerator's own control and defaults the other away", () => {
+    // Quick Idea takes a freeform direction; an import takes a polish flag.
+    // Neither is a shared tone preset, and neither is required.
+    const idea = generateCreationSchema.parse({ idea: "A sarcastic vampire roommate.", direction: "  slow burn, dry humour  " });
+    expect(idea.mode).toBe("idea");
+    expect(idea.direction).toBe("slow burn, dry humour");
+    expect(idea.polish).toBe(false);
+    const bare = generateCreationSchema.parse({ idea: "A sarcastic vampire roommate." });
+    expect(bare.direction).toBe("");
+  });
+
+  it("honours a structure the creator already chose and rejects one it does not know", () => {
+    expect(generateCreationSchema.parse({ idea: "The Final War approaches.", creationType: "scenario" }).creationType).toBe("scenario");
+    expect(generateCreationSchema.safeParse({ idea: "The Final War approaches.", creationType: "world" }).success).toBe(false);
   });
 
   it("round-trips a rich generated ensemble through the save schema", () => {

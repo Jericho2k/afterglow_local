@@ -122,10 +122,29 @@ export function characterValidationMessage(error: z.ZodError) {
   return `${field}: ${issue.message}`;
 }
 
-export const generateCharacterSchema = z.object({
+/**
+ * The AI accelerator request.
+ *
+ * One endpoint, two behaviours. `mode` decides which of them runs, and the
+ * two controls beside it are deliberately not the same control: Quick Idea
+ * takes an optional freeform creative direction, and an import takes a single
+ * boolean for whether the creator wants their wording tidied. There is no
+ * shared tone preset, because a preset applied to an import is an instruction
+ * to rewrite somebody's work.
+ *
+ * `creationType` is the structure the creator already chose in the interface.
+ * When present it is honoured rather than inferred; when absent the model
+ * decides. `nsfwEnabled` is their current adult setting, which the result may
+ * turn on for unambiguously adult material but never silently turns off.
+ */
+export const generateCreationSchema = z.object({
   idea: text(100000, 8),
-  mode: z.enum(["idea", "dump"]).default("idea"),
-  tone: z.enum(["romantic", "dramatic", "playful", "adventurous", "comforting", "custom"]).default("dramatic"),
+  mode: z.enum(["idea", "import"]).default("idea"),
+  /** Quick Idea only. Tone, pacing, dynamic or stylistic constraints. */
+  direction: text(600).default(""),
+  /** Import only. Off means preserve the supplied wording as faithfully as possible. */
+  polish: z.boolean().default(false),
+  creationType: z.enum(creationTypes).nullish(),
   nsfwEnabled: z.boolean().default(false),
 });
 

@@ -154,6 +154,99 @@ describe("Creator profile → Creation → Back", () => {
   });
 });
 
+/**
+ * Your Creations → Edit → Back.
+ *
+ * Editing used to be a server redirect into the home shell with the creation's
+ * id in a query string, so Back from the studio returned to Home rather than
+ * to the list the reader pressed Edit in. It is now a page of its own, which
+ * is what makes this an ordinary history step.
+ */
+describe("Your Creations → Edit → Back", () => {
+  it("returns to the management list rather than to Home", () => {
+    const session = tab().visit("/?view=creations").visit("/characters/aaaa/edit");
+    expect(session.press("/characters/aaaa")).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/?view=creations");
+  });
+
+  it("returns to the creation when Edit was pressed on the creation page", () => {
+    const session = tab().visit("/").visit("/characters/aaaa").visit("/characters/aaaa/edit");
+    expect(session.press("/characters/aaaa")).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/characters/aaaa");
+    // And once more, back to where the creation was opened from.
+    expect(session.press(backFallbacks.creation)).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/");
+  });
+
+  it("falls back to the creation itself for an edit page opened cold", () => {
+    const session = tab().visit("/characters/aaaa/edit");
+    expect(session.press("/characters/aaaa")).toEqual({ type: "fallback", href: "/characters/aaaa" });
+  });
+
+  it("treats a deletion's replacement as the tab's new root", () => {
+    // There is nothing to go back to once the creation is gone, so the
+    // management list replaces the edit entry rather than stacking on it.
+    const session = tab().visit("/?view=creations").visit("/characters/aaaa/edit");
+    claimDepth(session.storage, rootDepth);
+    session.replace(backFallbacks.creations, { keepState: false });
+    expect(session.depth()).toBe(rootDepth);
+    expect(session.press(backFallbacks.creation)).toEqual({ type: "fallback", href: backFallbacks.creation });
+  });
+});
+
+/**
+ * Clearing a query string must not clear the navigation stamp with it.
+ *
+ * The home shell tidies its own URL after acting on a deep link. It used to do
+ * that with an empty state object, which erased the depth stamp on the entry —
+ * and every Back control on pages opened from there then fell through to its
+ * fallback instead of returning to the previous page.
+ */
+describe("the shell tidying its own URL", () => {
+  it("keeps the depth when it rewrites the query away", () => {
+    const session = tab().visit("/").visit("/?character=aaaa&conversation=bbbb");
+    const before = session.depth();
+    session.replace("/");
+    expect(session.depth()).toBe(before);
+    expect(session.press(backFallbacks.creation)).toEqual({ type: "history" });
+  });
+
+  it("would have broken Back had the state been discarded", () => {
+    // The regression, stated directly: a replace that drops history state
+    // makes the entry look like the tab's root.
+    const session = tab().visit("/").visit("/?character=aaaa");
+    session.replace("/", { keepState: false });
+    // The tracker restamps it, but from the last depth it saw rather than from
+    // nothing — which is why the fallback path is reached only when the stamp
+    // and the recorded depth are both gone.
+    expect(session.depth()).toBeGreaterThan(rootDepth);
+  });
+});
+
+/**
+ * Discovery → Your Creations → Back.
+ *
+ * The management page is a query-string view of the shell, exactly as Worlds
+ * and Saved are, so moving into it is an ordinary history step and Back is an
+ * ordinary return.
+ */
+describe("Discovery → Your Creations → Back", () => {
+  it("returns to Discovery", () => {
+    const session = tab().visit("/").visit("/?view=creations");
+    expect(session.press(backFallbacks.creation)).toEqual({ type: "history" });
+    session.back();
+    expect(session.url()).toBe("/");
+  });
+
+  it("falls back to Discovery for a management page opened cold", () => {
+    const session = tab().visit("/?view=creations");
+    expect(session.press(backFallbacks.creation)).toEqual({ type: "fallback", href: "/" });
+  });
+});
+
 describe("deep links", () => {
   it("gives a creation opened cold a safe in-app destination", () => {
     const session = tab().visit("/characters/aaaa");
@@ -264,6 +357,10 @@ describe("the depth stamp itself", () => {
     claimDepth(storage, rootDepth);
     expect(takeClaimedDepth(storage)).toBe(rootDepth);
     expect(takeClaimedDepth(storage)).toBeNull();
+  });
+
+  it("names a management fallback for the surfaces that reach editing", () => {
+    expect(backFallbacks.creations).toBe("/?view=creations");
   });
 
   it("keeps every fallback inside the app", () => {

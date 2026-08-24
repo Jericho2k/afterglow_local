@@ -38,7 +38,7 @@ export function WorldStep({ draft, update, worlds, onWorldCreated, onError }: {
   return <>
     <header className={styles.stepHead}>
       <h2>World</h2>
-      <p>Attach reusable setting and lore. Optional — a creation that needs no shared world simply skips this.</p>
+      <p>Attach setting and lore you want to reuse across creations. Optional — a creation that needs no shared world simply skips this step.</p>
     </header>
 
     {attached.length > 0 && <div className={styles.field}>
@@ -50,7 +50,7 @@ export function WorldStep({ draft, update, worlds, onWorldCreated, onError }: {
 
     {available.length > 0 && <div className={styles.field}>
       <span className={styles.fieldLabel}>{attached.length ? "Attach another" : "Your worlds"}</span>
-      <span className={styles.hint}>The same world document can belong to any number of creations.</span>
+      <span className={styles.hint}>Select any world this creation takes place in. The same world document can belong to any number of creations.</span>
       <div className={styles.worldList}>
         {available.map((world) => <WorldCard key={world.id} world={world} selected={false} onToggle={() => toggle(world.id)} />)}
       </div>
@@ -73,8 +73,8 @@ export function WorldStep({ draft, update, worlds, onWorldCreated, onError }: {
       </button>}
 
     {draft.lorebook.trim() && <Field
-      label="Imported world draft"
-      hint="Separated from an import. Saving turns this into its own reusable World and attaches it here."
+      label={draft.proposedWorld ? `Proposed world · ${draft.proposedWorld.name}` : "Imported world draft"}
+      hint="World material separated out of your import. Review or edit it here — saving turns it into a reusable World and attaches it to this creation. Clear the text to keep it as part of the creation instead."
       counter={<Counter value={draft.lorebook.length} max={50000} />}
     >
       <TextArea value={draft.lorebook} maxLength={50000} size="tall" onChange={(value) => update({ lorebook: value })} />
@@ -146,12 +146,14 @@ function WorldCreator({ onCreated, onCancel, onError }: {
         </label>
       </div>
     </div>
-    <Field label="World name" required><TextInput value={name} maxLength={120} onChange={setName} placeholder="Tower of Babel" /></Field>
-    <Field label="Short description" optional hint="One line shown on the world card.">
-      <TextInput value={description} maxLength={500} onChange={setDescription} placeholder="A thousand-floor tower filled with trials." />
+    <Field label="World name" required hint="Name the setting itself, not a creation set in it.">
+      <TextInput value={name} maxLength={120} onChange={setName} placeholder="What this world is called" />
     </Field>
-    <Field label="World canon" required counter={<Counter value={content.length} max={100000} />}>
-      <TextArea value={content} maxLength={100000} size="tall" onChange={setContent} placeholder="Everything the AI should consistently know about this world — rules, factions, locations, history, terminology…" />
+    <Field label="Short description" optional hint="Write one line for the world card.">
+      <TextInput value={description} maxLength={500} onChange={setDescription} placeholder="One line about this setting" />
+    </Field>
+    <Field label="World canon" required hint="Write everything the AI should consistently know about this setting: rules, factions, locations, history, terminology and constraints." counter={<Counter value={content.length} max={100000} />}>
+      <TextArea value={content} maxLength={100000} size="tall" onChange={setContent} placeholder="Write the rules, places, factions and history of this world" />
     </Field>
     <button type="button" className={styles.primaryCta} disabled={busy || !name.trim() || !content.trim()} onClick={() => void create()}>
       {busy ? "Creating…" : "Create & attach"}

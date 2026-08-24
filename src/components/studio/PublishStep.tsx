@@ -59,7 +59,7 @@ export function PublishStep({ draft, update, problems, onGoToStep, onDelete, exi
       </ul>
     </div>}
 
-    <SectionCard title="Who can see this" description="Your chats, memories and stories stay private whichever you choose. Publishing shares the creation itself.">
+    <SectionCard title="Who can see this" description="Choose who can reach the creation. Your chats, memories and stories stay private whichever you pick — publishing shares the creation itself, never your play.">
       <ChoiceList<CharacterVisibility>
         label="Visibility"
         value={draft.visibility}
@@ -72,10 +72,10 @@ export function PublishStep({ draft, update, problems, onGoToStep, onDelete, exi
       />
     </SectionCard>
 
-    <SectionCard title="Content" description="Sets the badge on the card and the rules the roleplay follows.">
+    <SectionCard title="Content" description="Set whether this is adult work. It decides the badge on the card and the rules the roleplay follows.">
       <Toggle
         label="Adult mode · 18+"
-        description="Allows consensual explicit roleplay between fictional adults. The card is marked 18+."
+        description="Allows consensual explicit roleplay between fictional adults, and marks the card 18+. Readers see it only when they have opted into 18+ content."
         checked={draft.nsfwEnabled}
         onChange={(nsfwEnabled) => update({ nsfwEnabled })}
       />

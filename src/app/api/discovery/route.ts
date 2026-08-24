@@ -42,10 +42,17 @@ export async function GET(request: Request) {
 
   const values: unknown[] = [account.id];
   const where: string[] = [
+    // Public and nothing else. Eligibility is deliberately this one column
+    // plus the viewer's adult setting and their active filters: a creation is
+    // never required to carry a world, a hashtag, a quick fact, a cast member,
+    // a save or a rank in order to be discoverable, and every join below is a
+    // LEFT JOIN precisely so an absent optional row cannot delete a valid
+    // creation from the feed.
     "c.visibility='public'",
-    // Discovery is other people's work; the caller's own creations live in
-    // their sidebar and in Chats, exactly as they did before this feed.
-    "c.user_id<>$1",
+    // The viewer's own public creations belong here too. Excluding them made
+    // a creator's feed silently disagree with what they had just published,
+    // which is the opposite of the confirmation publishing should give.
+    // Their card simply has no save control, which the grid already handles.
   ];
 
   // Adult content is opt-in, and the opt-in is a property of this request

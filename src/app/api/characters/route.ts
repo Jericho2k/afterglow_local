@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asUser, characterFromRow } from "@/lib/db";
+import { asUser, characterFromRow, ownedCreationFromRow } from "@/lib/db";
 import { characterSchema, characterValidationMessage } from "@/lib/schemas";
 import { currentAccount, unauthorized } from "@/lib/session";
 import { characterFromSnapshot, visitorCharacter } from "@/lib/access";
@@ -8,6 +8,35 @@ export async function GET(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
   const scope = new URL(request.url).searchParams.get("scope");
+
+  /**
+   * The owner's management list.
+   *
+   * Your Creations renders a page of cards and needs a page of card data, so
+   * this reads the same lean columns discovery does plus visibility and the
+   * last-updated time. The hidden definition — greeting, personality,
+   * backstory, response directive, boundaries, cast definitions, import
+   * source — is not selected, which is both the privacy boundary and the
+   * reason a creator with fifty creations does not download all of them to
+   * look at a grid. Editing fetches the whole record for one creation.
+   */
+  if (scope === "manage") {
+    const creations = await asUser(account.id, async (client) => {
+      const result = await client.query(
+        `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
+           c.tags,c.hashtags,c.nsfw_enabled,c.visibility,c.message_count,c.chat_count,c.like_count,
+           c.published_at,c.created_at,c.updated_at,
+           p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path
+         FROM characters c
+         LEFT JOIN profiles p ON p.id=c.user_id
+         WHERE c.user_id=$1
+         ORDER BY c.updated_at DESC, c.id DESC`,
+        [account.id],
+      );
+      return result.rows.map((row) => ownedCreationFromRow(row, account.id));
+    });
+    return Response.json({ creations });
+  }
 
   const characters = await asUser(account.id, async (client) => {
     if (scope === "chats") {

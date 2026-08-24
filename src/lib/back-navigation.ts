@@ -133,4 +133,6 @@ export const backFallbacks = {
   creation: "/",
   /** The Worlds page, which is where a world is browsed from. */
   world: "/?view=worlds",
+  /** The owner's management list, which is where editing is reached from. */
+  creations: "/?view=creations",
 } as const;

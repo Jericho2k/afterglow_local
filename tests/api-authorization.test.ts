@@ -29,7 +29,7 @@ vi.mock("@/lib/deepseek", () => ({
   parseJson: (value: string) => JSON.parse(value),
 }));
 
-const { ensureSchema, query, setPoolForTesting } = await import("@/lib/db");
+const { ensureSchema, pool, query, setPoolForTesting } = await import("@/lib/db");
 const chat = await import("@/app/api/chat/route");
 const characters = await import("@/app/api/characters/route");
 const characterDetail = await import("@/app/api/characters/[id]/route");
@@ -339,5 +339,145 @@ describe("public characters", () => {
     const body = await response.json();
     const stored = await query("SELECT character_snapshot FROM conversations WHERE id=$1", [body.conversation.id]);
     expect(stored.rows[0].character_snapshot).toBeNull();
+  });
+});
+
+/**
+ * Your Creations.
+ *
+ * The owner management list is the one place a creator's private work is
+ * listed, so it has two jobs that pull in opposite directions: show them
+ * everything they own, and show them nothing of anybody else's. It also has to
+ * stay lean — a page of cards must not carry a page of hidden definitions.
+ */
+describe("owner management list", () => {
+  const bobCharacter = "bbbbbbbb-0000-4000-8000-000000000001";
+
+  async function manage() {
+    const response = await characters.GET(new Request("http://test/api/characters?scope=manage"));
+    const body = await response.json() as { creations: Array<Record<string, unknown>> };
+    return { status: response.status, creations: body.creations ?? [] };
+  }
+
+  beforeEach(async () => {
+    await query(
+      `UPDATE characters SET title='Alice Public',creation_type='scenario',profile_type='ensemble',
+         tagline='The heroes are running out of options.',greeting='A sealed file on the table.',
+         personality='Grim.',backstory='The war approaches.',response_directive='Narrate only.',
+         boundaries='No minors.',source_material='Private production notes',nsfw_enabled=true
+       WHERE id=$1`,
+      [alicePublic],
+    );
+    await query(
+      "INSERT INTO characters (id,name,title,user_id,visibility,creation_type) VALUES ($1,'Bob Public','Bob Public',$2,'public','character')",
+      [bobCharacter, bob],
+    );
+  });
+
+  it("requires an account", async () => {
+    account = null;
+    expect((await manage()).status).toBe(401);
+  });
+
+  it("lists everything the caller owns, whatever its visibility", async () => {
+    account = { id: alice, email: null };
+    const { creations } = await manage();
+    expect(creations.map((creation) => creation.id).sort()).toEqual([aliceCharacter, alicePublic].sort());
+    expect(creations.map((creation) => creation.visibility).sort()).toEqual(["private", "public"]);
+  });
+
+  it("never lists another account's creation, published or not", async () => {
+    account = { id: alice, email: null };
+    expect((await manage()).creations.map((creation) => creation.id)).not.toContain(bobCharacter);
+    account = { id: bob, email: null };
+    const { creations } = await manage();
+    expect(creations.map((creation) => creation.id)).toEqual([bobCharacter]);
+  });
+
+  it("carries the state an owner manages by, and the structure of each creation", async () => {
+    account = { id: alice, email: null };
+    const card = (await manage()).creations.find((creation) => creation.id === alicePublic)!;
+    expect(card.visibility).toBe("public");
+    expect(card.creationType).toBe("scenario");
+    expect(card.nsfwEnabled).toBe(true);
+    expect(card.ownedByViewer).toBe(true);
+    expect(typeof card.updatedAt).toBe("string");
+  });
+
+  it("does not ship the hidden definition to a page of cards", async () => {
+    account = { id: alice, email: null };
+    const { creations } = await manage();
+    for (const field of ["greeting", "personality", "backstory", "responseDirective", "boundaries", "sourceMaterial", "cast", "description"]) {
+      expect(creations[0]).not.toHaveProperty(field);
+    }
+    expect(JSON.stringify(creations)).not.toContain("Private production notes");
+    expect(JSON.stringify(creations)).not.toContain("Narrate only.");
+  });
+
+  it("answers the whole list in one statement", async () => {
+    account = { id: alice, email: null };
+    const statements: string[] = [];
+    const client = pool();
+    const original = client.query.bind(client);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).query = (text: any, ...rest: any[]) => {
+      if (typeof text === "string" && /FROM characters/i.test(text)) statements.push(text);
+      return original(text, ...rest);
+    };
+    try {
+      await manage();
+      expect(statements).toHaveLength(1);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).query = original;
+    }
+  });
+
+  it("refuses to edit or delete a creation the caller does not own", async () => {
+    account = { id: bob, email: null };
+    const edited = await characterDetail.PATCH(
+      new Request(`http://test/api/characters/${alicePublic}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Hijacked", title: "Hijacked", visibility: "public" }),
+      }),
+      { params: Promise.resolve({ id: alicePublic }) },
+    );
+    expect(edited.status).toBe(404);
+
+    const deleted = await characterDetail.DELETE(
+      new Request(`http://test/api/characters/${alicePublic}`, { method: "DELETE" }),
+      { params: Promise.resolve({ id: alicePublic }) },
+    );
+    expect(deleted.status).toBe(404);
+
+    // Untouched, and still Alice's.
+    const row = await query("SELECT name,user_id FROM characters WHERE id=$1", [alicePublic]);
+    expect(row.rows[0].name).toBe("Alice Public");
+    expect(String(row.rows[0].user_id)).toBe(alice);
+  });
+
+  it("lets the owner delete their own creation", async () => {
+    account = { id: alice, email: null };
+    const deleted = await characterDetail.DELETE(
+      new Request(`http://test/api/characters/${aliceCharacter}`, { method: "DELETE" }),
+      { params: Promise.resolve({ id: aliceCharacter }) },
+    );
+    expect(deleted.status).toBe(200);
+    expect(Number((await query("SELECT COUNT(*) count FROM characters WHERE id=$1", [aliceCharacter])).rows[0].count)).toBe(0);
+  });
+
+  it("does not let another account read the edit payload for a creation they do not own", async () => {
+    account = { id: bob, email: null };
+    const response = await characterDetail.GET(
+      new Request(`http://test/api/characters/${alicePublic}`),
+      { params: Promise.resolve({ id: alicePublic }) },
+    );
+    const body = await response.json();
+    expect(body.owner).toBe(false);
+    // Readable because it is published — but as a public creation, not as a
+    // definition anybody could edit or copy wholesale.
+    expect(body.character.responseDirective).toBe("");
+    expect(body.character.boundaries).toBe("");
+    expect(body.character.sourceMaterial).toBe("");
   });
 });

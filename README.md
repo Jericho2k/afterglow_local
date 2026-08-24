@@ -8,7 +8,8 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 
 - Creations: one flow that publishes a single character, a defined cast, or a scenario/RPG with no primary character at all
 - Adaptive Creation Studio with progressive disclosure, autosaved drafts, platform tags and creator hashtags, reusable Worlds, and long-form openings
-- AI-assisted character creation from a short concept
+- Two AI accelerators that produce the same canonical draft as manual authoring: Quick Idea generates one from a sentence, Paste Everything imports and organises existing work without rewriting it
+- Visible, resumable drafts on the Create screen, and a dedicated Your Creations page for managing everything you own
 - Detailed backstory, personality, scenario, greeting, example voice, response directive, and boundaries
 - Optional avatar URL and per-character visual accent
 - Provider/model/RP-engine catalog with conversation-level switching; changing the writer never resets Afterglow continuity
@@ -217,6 +218,70 @@ Migration `0011` is additive: `creation_type` is backfilled from
 name and the existing backstory text, and no chat, memory, like, comment or
 world link is touched. Migration `0012` is index-only.
 
+## Creating
+
+Everything published is a Creation, and there is one draft shape behind all of
+it. Manual authoring, Quick Idea and Paste Everything converge on the same
+canonical payload (`characterSchema`), so there is no separate "AI character"
+schema to drift away from what creators actually edit.
+
+The two accelerators share that output and share nothing else, because they are
+different jobs:
+
+| | Quick Idea | Paste Everything |
+| --- | --- | --- |
+| Purpose | invent a first draft from a concept | organise existing work |
+| Control | optional freeform creative direction | a single "lightly polish wording" toggle, off by default |
+| Temperature | warm | cold |
+| Output budget | fixed | scales with the source |
+| Large sources | — | a recall inventory pass runs first, above 12,000 characters |
+
+Both are prompted in `src/lib/creation-prompts.ts` and both are normalised by
+`normalizeCreationResult` in `src/lib/creation-ai.ts`, which never trusts
+provider output: it accepts the field aliases real cards arrive with, repairs
+formatting rather than meaning, merges duplicate cast members, drops any tag
+that is not in the platform taxonomy (keeping it as a hashtag instead), and
+hands the result to the same Zod schema `/api/characters` uses. Nothing is ever
+auto-published — the result is always a private draft the creator reviews.
+
+Two rules govern adult material, and they are not the same rule. A source that
+is unambiguously adult produces an adult draft: adult tags and adult mode are
+turned on together, and explicit characterisation is carried through rather
+than softened into generic romance. A source that states or implies a
+participant under 18 never produces an adult draft, whatever else it says —
+the material is left exactly as written, adult mode stays off, adult tags are
+removed, the creation stays private, and the creator is told what the
+contradiction was. The importer reports the conflict; it does not resolve it by
+editing the fiction.
+
+World material is separated from character material rather than collapsed into
+a backstory, and it is *proposed* rather than created: the draft carries the
+lore and the name suggested for it, and a reusable World only exists once the
+creator saves. An import's original paste is preserved verbatim on the creation
+for review and re-import, and is never sent with a chat reply.
+
+Both accelerators run on `CHARACTER_IMPORT_MODEL_ROUTE`, which is structured
+extraction rather than the conversation's roleplay writer, and each behaviour
+is accounted separately in the usage ledger (`creation_quick_idea`,
+`creation_import`, `creation_import_inventory`).
+
+## Drafts and Your Creations
+
+A draft is unsaved work and lives in local storage, one key per creation plus a
+shared slot for a creation that has not been saved yet. The Create screen lists
+them under "Continue where you left off" and Continue restores the whole
+draft — structure, fields, tags, hashtags, cast, worlds, openings, images,
+adult setting and imported source. The rule that an empty session is not a
+draft is unchanged and applied twice: autosave only writes a session that
+differs from where it started, and anything that still reads as empty on load
+is deleted rather than offered.
+
+A private creation is a different thing: it is a saved row, and it lives on
+Your Creations (`/?view=creations`), the owner's management surface. That page
+reads `/api/characters?scope=manage`, which selects card columns only — a page
+of cards never carries a page of hidden definitions — and offers View, Edit and
+Delete, each of which is authorised server-side rather than by the client.
+
 ## Discovery
 
 `/api/discovery` answers one page of public creations per request from a single
@@ -227,6 +292,14 @@ selected at all, so there is nothing to blank out for a visitor. Visibility is
 enforced by `characters_select_own_or_published`, by an explicit
 `visibility='public'` predicate, and by there being no code path that adds a
 draft or unlisted row to the list.
+
+Eligibility is deliberately narrow: published and public, permitted by the
+viewer's 18+ setting, and permitted by their active filters. Nothing optional
+is a hidden requirement — a creation with no world, no hashtags, no saves, no
+quick facts and no cast members appears, and so does a scenario that defines no
+primary character, because every join in the statement is a `LEFT JOIN`. A
+creator's own public creations appear too: excluding them made publishing
+unverifiable from the one surface meant to confirm it.
 
 Three orderings, each a plain sort over a real, trigger-maintained aggregate:
 

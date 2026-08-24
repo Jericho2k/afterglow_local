@@ -33,28 +33,28 @@ export function BasicsStep({ draft, update, onChangeType, onError }: {
     <Field
       label="Creation title"
       required
-      hint="The name people see on the card. For a single character this is usually just their name."
+      hint="Name the creation as readers will see it on its card and page. For one character this is usually their name; for a cast or a scenario, name the experience."
       counter={<Counter value={draft.title.length} max={120} />}
     >
       <TextInput
         value={draft.title}
         maxLength={120}
         onChange={(value) => update({ title: value })}
-        placeholder={draft.creationType === "scenario" ? "The Final War" : draft.creationType === "cast" ? "Roommates From Hell" : "Seraphine"}
+        placeholder={draft.creationType === "scenario" ? "What this experience is called" : draft.creationType === "cast" ? "What this group is called" : "What this character is called"}
       />
     </Field>
 
     <Field
       label="Tagline"
       optional
-      hint="One line that makes somebody open it. Shown under the title on cards."
+      hint="Write one line that makes somebody want to open this. It appears under the title on every card."
       counter={<Counter value={draft.tagline.length} max={300} />}
     >
       <TextInput
         value={draft.tagline}
         maxLength={300}
         onChange={(value) => update({ tagline: value })}
-        placeholder="The girl who writes your name in the margins of her poetry."
+        placeholder="One line — the hook, not a summary"
       />
     </Field>
 
@@ -69,7 +69,7 @@ export function BasicsStep({ draft, update, onChangeType, onError }: {
     <Field
       label="Description"
       optional
-      hint="The public premise, in your own voice. This is what readers see — your AI instructions stay private."
+      hint="Tell readers what this experience is and why they would want to be in it. This is the only long text shown publicly; your AI instructions stay private."
       counter={<Counter value={draft.description.length} max={6000} />}
     >
       <TextArea
@@ -78,8 +78,10 @@ export function BasicsStep({ draft, update, onChangeType, onError }: {
         size="tall"
         onChange={(value) => update({ description: value })}
         placeholder={draft.creationType === "scenario"
-          ? "You're the newest transfer student at an academy where everyone seems to know something about you that you don't…"
-          : "What is this experience, and why would somebody want to be in it?"}
+          ? "Describe the situation a reader is stepping into"
+          : draft.creationType === "cast"
+            ? "Describe who these characters are and what they are all in together"
+            : "Describe who this character is and what it is like to talk to them"}
       />
     </Field>
 

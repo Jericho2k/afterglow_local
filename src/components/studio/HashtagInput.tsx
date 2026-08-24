@@ -29,7 +29,7 @@ export function HashtagInput({ hashtags, onChange }: { hashtags: string[]; onCha
 
   return <div className={styles.field}>
     <span className={styles.fieldLabel}>Hashtags<span className={styles.optional}>your own words</span></span>
-    <span className={styles.hint}>Freeform keywords for discovery — fandoms, tropes, anything the categories miss. Typing “mha” saves it as #mha.</span>
+    <span className={styles.hint}>Add your own hashtags for fandoms, niche themes, alternate universes and community discovery. Typing “mha” saves it as #mha.</span>
     {hashtags.length > 0 && <div className={styles.chipRow}>
       {hashtags.map((tag) => <button
         key={tag}
@@ -48,7 +48,7 @@ export function HashtagInput({ hashtags, onChange }: { hashtags: string[]; onCha
           value={draft}
           disabled={full}
           maxLength={60}
-          placeholder={full ? `Maximum of ${maxHashtags} hashtags` : "slowburn, villainau…"}
+          placeholder={full ? `That is the maximum of ${maxHashtags} hashtags` : "Type a word and press enter"}
           aria-label="Add a hashtag"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {

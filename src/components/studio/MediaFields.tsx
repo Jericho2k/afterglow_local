@@ -33,7 +33,7 @@ export function CoverPicker({ avatarPath, avatarUrl, accent, onChange, onError }
     finally { setBusy(false); }
   }
 
-  return <Field label="Cover image" optional hint="Shown on the feed card and behind the title. PNG, JPEG, WebP or GIF up to 5 MB.">
+  return <Field label="Cover image" optional hint="Upload the artwork shown on the feed card and behind the title. PNG, JPEG, WebP or GIF, up to 5 MB.">
     <div className={styles.coverRow}>
       <div className={styles.coverPreview} style={{ "--accent": accent } as React.CSSProperties}>
         {preview ? <img src={preview} alt="" /> : <ImagePlus size={22} aria-hidden />}
@@ -53,7 +53,7 @@ export function CoverPicker({ avatarPath, avatarUrl, accent, onChange, onError }
         <TextInput
           value={avatarUrl.startsWith("data:") ? "" : avatarUrl}
           onChange={(value) => onChange({ avatarUrl: value })}
-          placeholder="…or paste an image URL"
+          placeholder="…or paste a direct image URL"
         />
       </div>
     </div>
@@ -89,7 +89,7 @@ export function GalleryEditor({ images, onChange, onError }: {
   return <SectionCard
     icon={<Images size={17} aria-hidden />}
     title="Gallery"
-    description="Up to twelve extra images. The gallery section is hidden on the public page when it is empty."
+    description="Add up to twelve more images. The gallery section is hidden on the public page while it is empty."
   >
     <div className={styles.galleryGrid}>
       {images.map((image, index) => {
@@ -124,7 +124,7 @@ export function QuickFactsEditor({ facts, onChange }: {
 }) {
   return <div className={styles.field}>
     <span className={styles.fieldLabel}>Quick facts<span className={styles.optional}>up to six</span></span>
-    <span className={styles.hint}>Any label you like — Age, Occupation, Genre, Difficulty. Shown as a small public panel, and hidden entirely when empty.</span>
+    <span className={styles.hint}>Add short public facts worth stating outright. The label is yours to choose — Age, Occupation, Genre, Difficulty. The panel is hidden entirely while this is empty, so leave out anything you would have to invent.</span>
     {facts.map((fact, index) => <div key={index} className={styles.inlineRow}>
       <input
         className={styles.input}

@@ -833,16 +833,9 @@
 }
 .magicButton:disabled { opacity: 0.5; cursor: default; }
 
-.selectRow { display: flex; gap: 8px; flex-wrap: wrap; }
-.select {
-  min-height: 44px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: rgba(8, 6, 9, 0.65);
-  color: var(--ink);
-  font-size: 13px;
-  padding: 0 12px;
-}
+/* The fixed tone selector these styled is gone: Quick Idea takes a freeform
+   creative direction and an import takes a polish toggle, so there is no
+   dropdown on the Create screen any more. */
 
 /* ---------------------------------------------------------------- footer */
 
@@ -995,4 +988,134 @@
 @media (prefers-reduced-motion: reduce) {
   .studio, .sheet { animation: none; }
   .chevron, .switch, .switch::after { transition: none; }
+}
+
+/* -------------------------------------------------- create screen additions */
+
+/*
+ * Unfinished work, offered back at the top of the Create screen.
+ *
+ * Deliberately quieter than the generator card beside it: this is a way back
+ * into something that already exists, not a third accelerator competing for
+ * the same tap. It uses the same thin borders, near-black surface and rose
+ * accent as the rest of the studio.
+ */
+.resume {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.022);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.resumeList { display: flex; flex-direction: column; gap: 8px; }
+
+/*
+ * On a phone the actions drop to their own row rather than squeezing the
+ * title into three wrapped lines; from tablet width up the card is one row.
+ */
+.draftCard {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px 12px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(8, 6, 9, 0.45);
+}
+.draftArt {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 52px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: linear-gradient(150deg, color-mix(in srgb, var(--accent, #e879a9) 28%, transparent), rgba(255, 255, 255, 0.03));
+  color: var(--rose2);
+}
+.draftArt img { width: 100%; height: 100%; object-fit: cover; }
+
+.draftCopy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.draftCopy strong {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.draftCopy small { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.draftCopy small + small { color: var(--faint); }
+
+.draftActions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.draftContinue {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 11px;
+  border: 1px solid rgba(232, 121, 169, 0.3);
+  background: rgba(232, 121, 169, 0.13);
+  color: #ffd7e6;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .18s;
+}
+.draftContinue:hover { background: rgba(232, 121, 169, 0.2); }
+
+/* The line under the accelerator toggle that says what this mode actually does. */
+.modeNote { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+
+.segmented button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+
+.noticeStack { display: flex; flex-direction: column; gap: 8px; }
+
+/*
+ * A warning, not a suggestion.
+ *
+ * Reserved for the one thing an accelerator reports that the creator cannot
+ * simply ignore: an age contradiction, where adult settings were held back and
+ * the source was deliberately left unchanged.
+ */
+.warningNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(240, 170, 90, 0.34);
+  background: rgba(240, 170, 90, 0.09);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.warningNotice .noticeIcon { color: #f0aa5a; }
+.warningNotice button {
+  margin-left: auto;
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  color: #f0aa5a;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+@media (min-width: 560px) {
+  .draftCard { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .draftActions { grid-column: auto; }
+}
+
+@media (min-width: 720px) {
+  .draftArt { width: 46px; height: 58px; }
 }

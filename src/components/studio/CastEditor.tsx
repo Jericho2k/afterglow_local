@@ -117,21 +117,21 @@ function CastMemberSheet({ member, index, onChange, onClose, onError }: {
           </div>
         </div>
 
-        <Field label="Name" required>
-          <TextInput value={member.name} maxLength={120} autoFocus={!member.name} onChange={(value) => set({ name: value })} placeholder="Maya" />
+        <Field label="Name" required hint="Write the name this character is called by.">
+          <TextInput value={member.name} maxLength={120} autoFocus={!member.name} onChange={(value) => set({ name: value })} placeholder="This character's name" />
         </Field>
-        <Field label="Role" optional hint="How they relate to the story or the reader.">
-          <TextInput value={member.role} maxLength={240} onChange={(value) => set({ role: value })} placeholder="Protective roommate" />
+        <Field label="Role" optional hint="Say in a few words how they relate to the story or to the reader.">
+          <TextInput value={member.role} maxLength={240} onChange={(value) => set({ role: value })} placeholder="Their part in the story" />
         </Field>
-        <Field label="Public blurb" optional hint="One line shown on the public cast card. Their definition below stays private.">
-          <TextInput value={member.tagline} maxLength={240} onChange={(value) => set({ tagline: value })} placeholder="Keeps the apartment standing, and everyone in it." />
+        <Field label="Public blurb" optional hint="Write one line for the public cast card. Their definition below always stays private.">
+          <TextInput value={member.tagline} maxLength={240} onChange={(value) => set({ tagline: value })} placeholder="One line readers see about them" />
         </Field>
         <Field
           label="Definition"
-          hint="Appearance, personality, motives, abilities, relationships with the others and with the reader, how they change over time."
+          hint="Describe how this character looks, thinks, speaks and behaves, what they want, and how they relate to the rest of the cast and to the reader."
           counter={<Counter value={member.description.length} max={8000} />}
         >
-          <TextArea value={member.description} maxLength={8000} size="epic" onChange={(value) => set({ description: value })} />
+          <TextArea value={member.description} maxLength={8000} size="epic" onChange={(value) => set({ description: value })} placeholder="Write their appearance, personality, motives and relationships" />
         </Field>
       </div>
       <footer className={styles.sheetFoot}>
