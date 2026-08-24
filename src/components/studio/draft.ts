@@ -11,7 +11,20 @@ import type { Character, CharacterCastMember, CharacterGalleryImage, CreationTyp
 export type CreationDraft = Omit<
   Character,
   "id" | "createdAt" | "updatedAt" | "ownedByViewer" | "saveCount" | "savedByViewer" | "creator" | "gallery" | "publicStats"
-> & { gallery: StagedGalleryImage[] };
+> & {
+  gallery: StagedGalleryImage[];
+  /**
+   * World material an import separated out, waiting to be confirmed.
+   *
+   * The lore itself lives in `lorebook`, which the studio already promotes to
+   * a reusable World on save; this only carries the name and description the
+   * importer proposed for it, so a separated world is called something better
+   * than "Imported world". Nothing persistent is created until the creator
+   * saves, and they can edit or clear it first — an import never leaves an
+   * unwanted World behind in their library.
+   */
+  proposedWorld: { name: string; description: string } | null;
+};
 
 export type StagedGalleryImage = Pick<CharacterGalleryImage, "storagePath" | "externalUrl" | "caption">;
 
@@ -44,12 +57,20 @@ export const blankDraft: CreationDraft = {
   hashtags: [],
   quickFacts: [],
   gallery: [],
+  proposedWorld: null,
   visibility: "private",
   nsfwEnabled: false,
 };
 
-/** A deep-enough copy that editing the draft never mutates the loaded record. */
-export function draftFromCharacter(character?: (Partial<Character> & { name?: string }) | null): CreationDraft {
+/**
+ * A deep-enough copy that editing the draft never mutates the loaded record.
+ *
+ * The input is deliberately loose: a `Character` from the API, a stored draft
+ * read back out of local storage, or an AI result. Anything absent falls back
+ * to the blank draft, so a draft written before a field existed loads rather
+ * than being discarded.
+ */
+export function draftFromCharacter(character?: (Partial<Character> & Partial<Pick<CreationDraft, "proposedWorld">> & { name?: string }) | null): CreationDraft {
   if (!character) return { ...blankDraft, cast: [], alternateGreetings: [], worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [] };
   const creationType: CreationType = character.creationType
     ?? (character.profileType === "ensemble" ? "cast" : "character");
@@ -65,6 +86,7 @@ export function draftFromCharacter(character?: (Partial<Character> & { name?: st
     hashtags: [...(character.hashtags ?? [])],
     quickFacts: (character.quickFacts ?? []).map((fact) => ({ ...fact })),
     gallery: (character.gallery ?? []).map((image) => ({ storagePath: image.storagePath, externalUrl: image.externalUrl, caption: image.caption })),
+    proposedWorld: character.proposedWorld ? { ...character.proposedWorld } : null,
   };
 }
 
@@ -78,8 +100,11 @@ export function draftFromCharacter(character?: (Partial<Character> & { name?: st
 export function draftPayload(draft: CreationDraft) {
   const title = draft.title.trim();
   const name = draft.name.trim() || title;
-  const { gallery: _gallery, ...rest } = draft;
+  // The gallery has its own endpoint, and the proposed world is studio-local
+  // until the creator saves and it becomes a real World.
+  const { gallery: _gallery, proposedWorld: _proposedWorld, ...rest } = draft;
   void _gallery;
+  void _proposedWorld;
   return {
     ...rest,
     name,
@@ -131,6 +156,9 @@ function contentSignature(draft: CreationDraft, includeType: boolean) {
     [...draft.hashtags].sort(),
     draft.quickFacts.map((fact) => [String(fact.label ?? "").trim(), String(fact.value ?? "").trim()]),
     draft.gallery.map((image) => [image.storagePath, image.externalUrl, image.caption]),
+    // A separated world is real work an import produced, so a session holding
+    // one is not an empty session even before anything else is typed.
+    draft.proposedWorld ? [draft.proposedWorld.name.trim(), draft.proposedWorld.description.trim()] : "",
   ]);
 }
 

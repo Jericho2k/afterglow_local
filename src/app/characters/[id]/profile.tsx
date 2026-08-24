@@ -4,19 +4,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images,
-  MessageCircle, MoreHorizontal, Share2, Sparkles, Tag, UserRound, Users,
+  BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images, Link2,
+  MessageCircle, Pencil, Share2, Sparkles, Tag, Trash2, UserRound, Users,
 } from "lucide-react";
 import type { Character, CharacterComment, World } from "@/lib/types";
 import {
   castSectionLabel, creationCtaLabel, creationOverview, creationSubject, creationTitle, creationType,
   publicCastMembers,
 } from "@/lib/creation";
+import { creationActions, creationEditHref } from "@/lib/creation-actions";
 import { compactCount } from "@/lib/format";
 import { toggleCreationSave } from "@/lib/saves";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
-import { BackButton } from "@/components/nav";
+import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
 import { WorldCard } from "@/components/world";
 import styles from "./profile.module.css";
 
@@ -171,6 +172,34 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     void navigator.clipboard?.writeText(url).catch(() => undefined);
   }, [character]);
 
+  const copyLink = useCallback(() => {
+    void navigator.clipboard?.writeText(window.location.href)
+      .then(() => setError("Link copied."))
+      .catch(() => setError("Could not copy the link. Use your browser's address bar."));
+  }, []);
+
+  /**
+   * Deleting, from the owner's menu.
+   *
+   * Confirmed first and then decided by the server: the ownership predicate
+   * lives in the API, and the 409 the database raises for a creation other
+   * accounts are chatting with is surfaced as the instruction it is rather
+   * than as a failure.
+   */
+  const removeCreation = useCallback(async () => {
+    if (!character) return;
+    const label = creationTitle(character);
+    if (!window.confirm(`Permanently delete “${label}”, including every chat and memory attached to it? This cannot be undone.`)) return;
+    try {
+      const response = await fetch(`/api/characters/${characterId}`, { method: "DELETE" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Could not delete this creation");
+      router.replace("/?view=creations");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not delete this creation");
+    }
+  }, [character, characterId, router]);
+
   const submitComment = useCallback(async () => {
     const body = draft.trim();
     if (!body) return;
@@ -204,6 +233,22 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const titleTail = titleWords[titleWords.length - 1] ?? title;
   const stats = character.publicStats;
   const heroTags = character.tags.slice(0, 6);
+  // Which actions exist is decided in one place, so the menu here and any
+  // other surface that grows one cannot disagree about what ownership allows.
+  const menuIcons = { edit: <Pencil size={16} aria-hidden />, copy_link: <Link2 size={16} aria-hidden />, delete: <Trash2 size={16} aria-hidden /> };
+  const menuHandlers = {
+    // Straight to the edit route, which is now a real page rather than a
+    // redirect through the home shell.
+    edit: () => router.push(creationEditHref(character.id)),
+    copy_link: copyLink,
+    delete: () => void removeCreation(),
+  };
+  const menuItems: MoreMenuItem[] = creationActions({ owner: detail.owner }).map((action) => ({
+    label: action.label,
+    icon: menuIcons[action.id],
+    danger: action.danger,
+    onSelect: menuHandlers[action.id],
+  }));
 
   return <main className={styles.page} style={{ "--character-accent": character.accent } as React.CSSProperties}>
     <div className={styles.hero}>
@@ -218,8 +263,13 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           {!detail.owner && <button className={styles.circleButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
             <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
           </button>}
-          <button className={styles.circleButton} aria-label="Share character" onClick={share}><Share2 size={18} /></button>
-          {detail.owner && <Link href={`/characters/${character.id}/edit`} className={styles.circleButton} aria-label="Edit character"><MoreHorizontal size={18} /></Link>}
+          <button className={styles.circleButton} aria-label="Share creation" onClick={share}><Share2 size={18} /></button>
+          {/* A menu, not a link. Pressing it opens the actions below and
+              navigates nowhere; each action then does exactly the one thing
+              it is labelled with. Owners get the two that need ownership,
+              and everybody gets the one that does not — there is no Report
+              or Duplicate here because neither exists to be offered. */}
+          <MoreMenu className={styles.circleButton} label={`More actions for ${title}`} items={menuItems} />
         </div>
       </div>
 

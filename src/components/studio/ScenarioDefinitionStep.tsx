@@ -30,7 +30,7 @@ export function ScenarioDefinitionStep({ draft, update, onError }: {
     <Field
       label="Premise"
       required
-      hint="The situation the reader is stepping into, and why now."
+      hint="Describe what is happening and the situation the reader enters — what is at stake, and why now."
       counter={<Counter value={draft.scenario.length} max={12000} />}
     >
       <TextArea
@@ -38,27 +38,27 @@ export function ScenarioDefinitionStep({ draft, update, onError }: {
         maxLength={12000}
         size="epic"
         onChange={(value) => update({ scenario: value })}
-        placeholder="The Final War is approaching. U.A. is no longer functioning as only a school — it is a fortress, an evacuation centre and one of the last places still able to organise a resistance…"
+        placeholder="Describe the situation, what is at stake, and why the reader arrives now"
       />
     </Field>
 
     <Field
       label="The reader's role"
       optional
-      hint="Who {{user}} plays. Shown publicly as “Your role” when you fill it in."
+      hint="Describe who the reader is in this scenario, if the role is predefined. Shown publicly as “Your role” when you fill it in."
       counter={<Counter value={draft.userRole.length} max={4000} />}
     >
       <TextArea
         value={draft.userRole}
         maxLength={4000}
         onChange={(value) => update({ userRole: value })}
-        placeholder="A sealed asset whose file is classified and whose history is disputed."
+        placeholder="Describe who the reader plays, and what everyone else knows about them"
       />
     </Field>
 
     <Field
       label="What the AI is responsible for"
-      hint="Narration, NPCs, pacing, consequences — and what it must never do."
+      hint="Tell the AI what it controls and how to handle the world, the narration and the NPCs — including what it must never do."
       counter={<Counter value={draft.responseDirective.length} max={8000} />}
     >
       <TextArea
@@ -66,23 +66,23 @@ export function ScenarioDefinitionStep({ draft, update, onError }: {
         maxLength={8000}
         size="tall"
         onChange={(value) => update({ responseDirective: value })}
-        placeholder="Narrate the environment and control every NPC. Never write actions, dialogue or internal thoughts for {{user}}. Let decisions have consequences that persist."
+        placeholder="Describe what the AI narrates, which characters it plays, and what it must never write for the reader"
       />
     </Field>
 
     <Field
       label="Background, lore & established facts"
       optional
-      hint="What is already true in this story. Reusable setting material belongs in a World on the next step."
+      hint="Write the history and established facts the AI should treat as already true here. Setting material you want to reuse elsewhere belongs in a World on the next step."
       counter={<Counter value={draft.backstory.length} max={30000} />}
     >
-      <TextArea value={draft.backstory} maxLength={30000} size="tall" onChange={(value) => update({ backstory: value })} />
+      <TextArea value={draft.backstory} maxLength={30000} size="tall" onChange={(value) => update({ backstory: value })} placeholder="Write what is already true when the story begins" />
     </Field>
 
     <SectionCard
       icon={<UsersRound size={17} aria-hidden />}
       title={`Important characters${draft.cast.length ? ` · ${draft.cast.length}` : ""}`}
-      description="Optional. Add recurring characters the AI should know in detail. You do not need to list every NPC in the scenario — the AI creates the rest from your premise and world."
+      description="Optional. Define recurring characters the AI should know in detail. There is no need to list every NPC — the AI creates the rest from your premise and world."
     >
       <CastEditor
         cast={draft.cast}
@@ -96,24 +96,24 @@ export function ScenarioDefinitionStep({ draft, update, onError }: {
     <Disclosure
       icon={<MessageSquareQuote size={17} aria-hidden />}
       title="Tone & example prose"
-      description="How the narration should read."
+      description="Show the AI how the narration itself should read."
       count={(draft.personality ? 1 : 0) + (draft.exampleDialogue ? 1 : 0)}
     >
       <Field
         label="Tone & narrative style"
         optional
-        hint="Atmosphere, pacing, how grim or warm, how much description."
+        hint="Describe the atmosphere and pacing you want: how grim or warm, how dense the description, how fast events move."
         counter={<Counter value={draft.personality.length} max={12000} />}
       >
-        <TextArea value={draft.personality} maxLength={12000} size="tall" onChange={(value) => update({ personality: value })} />
+        <TextArea value={draft.personality} maxLength={12000} size="tall" onChange={(value) => update({ personality: value })} placeholder="Describe the atmosphere, pacing and density of the writing" />
       </Field>
       <Field
         label="Example prose"
         optional
-        hint="A sample passage showing how narration and dialogue should be written. {{user}} refers to the reader."
+        hint="Write a passage that demonstrates how narration and dialogue should be written. {{user}} refers to the reader."
         counter={<Counter value={draft.exampleDialogue.length} max={12000} />}
       >
-        <TextArea value={draft.exampleDialogue} maxLength={12000} size="tall" onChange={(value) => update({ exampleDialogue: value })} />
+        <TextArea value={draft.exampleDialogue} maxLength={12000} size="tall" onChange={(value) => update({ exampleDialogue: value })} placeholder="Write a short passage in the voice the narration should use" />
       </Field>
     </Disclosure>
 
@@ -126,10 +126,10 @@ export function ScenarioDefinitionStep({ draft, update, onError }: {
       <Field
         label="Boundaries"
         optional
-        hint="Consent rules, topics to avoid, hard limits, anything the story must never do."
+        hint="State the consent rules, hard limits and topics this scenario must never go near."
         counter={<Counter value={draft.boundaries.length} max={5000} />}
       >
-        <TextArea value={draft.boundaries} maxLength={5000} size="tall" onChange={(value) => update({ boundaries: value })} />
+        <TextArea value={draft.boundaries} maxLength={5000} size="tall" onChange={(value) => update({ boundaries: value })} placeholder="State the limits this scenario must respect" />
       </Field>
     </Disclosure>
 

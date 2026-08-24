@@ -1,6 +1,6 @@
-import {redirect} from "next/navigation";
+import CreationEditor from "./editor";
 
-export default async function CharacterEditRoute({params}:{params:Promise<{id:string}>}) {
-  const {id}=await params;
-  redirect(`/?editCharacter=${encodeURIComponent(id)}`);
+export default async function CharacterEditRoute({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  return <CreationEditor creationId={id} />;
 }

@@ -134,6 +134,21 @@ export type CreationSummary = {
   createdAt: string;
 };
 
+/**
+ * A creation as its owner manages it.
+ *
+ * The management list is the same lean shape discovery uses plus the two
+ * things only an owner needs — what its visibility is, and when it last
+ * changed — and deliberately nothing else. A creator's own list is exactly
+ * where it would be easiest to select the whole row out of habit and ship
+ * every hidden definition to the browser for a page of cards; this type
+ * exists so that is a compile error rather than a judgement call.
+ */
+export type OwnedCreationSummary = CreationSummary & {
+  visibility: CharacterVisibility;
+  updatedAt: string;
+};
+
 export type Conversation = {
   id: string;
   characterId: string;

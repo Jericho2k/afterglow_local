@@ -1,0 +1,63 @@
+/*
+ * The three-dot menu panel.
+ *
+ * Anchored to its trigger, pinned inside the viewport, and using the same
+ * near-black surface, thin border and restrained blur as every other floating
+ * surface in the app.
+ */
+
+.wrapper { position: relative; display: inline-flex; }
+
+.panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  z-index: 40;
+  min-width: 208px;
+  /* Never wider than the viewport, whatever it is anchored to. */
+  max-width: min(280px, calc(100vw - 32px));
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(18, 14, 20, 0.97);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: menuIn 0.14s ease;
+}
+.panelEnd { right: 0; }
+.panelStart { left: 0; }
+
+@keyframes menuIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  /* A comfortable target on a phone, which is where this is mostly used. */
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s;
+}
+.item:hover, .item:focus-visible { background: rgba(232, 121, 169, 0.13); }
+.item svg { flex: 0 0 auto; color: var(--muted); }
+.item:hover svg { color: var(--rose2); }
+
+.danger { color: #ff9f9f; }
+.danger svg { color: #ff9f9f; }
+.danger:hover, .danger:focus-visible { background: rgba(255, 120, 120, 0.13); }
+
+@media (prefers-reduced-motion: reduce) {
+  .panel { animation: none; }
+  .item { transition: none; }
+}

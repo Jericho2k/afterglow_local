@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type Persona, type SceneStamp, type SceneState, type World } from "./types";
+import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type SceneStamp, type SceneState, type World } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -730,6 +730,21 @@ export function creationSummaryFromRow(row: Record<string, unknown>, viewerId: s
     ownedByViewer: String(row.user_id ?? "") === viewerId,
     publishedAt: row.published_at ? new Date(String(row.published_at)).toISOString() : null,
     createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * The lean row the owner's management list is built from.
+ *
+ * Deliberately built on the discovery summary rather than beside it: the two
+ * lists render the same card, so they read the same fields, and an owner's
+ * grid cannot quietly start carrying greetings and response directives.
+ */
+export function ownedCreationFromRow(row: Record<string, unknown>, viewerId: string): OwnedCreationSummary {
+  return {
+    ...creationSummaryFromRow(row, viewerId),
+    visibility: (["private", "unlisted", "public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as OwnedCreationSummary["visibility"],
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
   };
 }
 

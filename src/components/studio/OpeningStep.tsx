@@ -6,10 +6,18 @@ import { Counter, Field, TextArea } from "./fields";
 import type { CreationDraft } from "./draft";
 import styles from "./studio.module.css";
 
+/*
+ * Guidance, not sample fiction.
+ *
+ * A creator staring at somebody else's paragraph tends to either copy it or
+ * write around it. What they need to know is what this box is for and what
+ * shape the writing takes, so each placeholder says that in the terms of the
+ * structure they are actually authoring.
+ */
 const placeholders: Record<CreationType, string> = {
-  character: "The rain had not stopped for three days, and neither had she.\n\n*She looks up as the door closes behind you, pen still moving across the page.* \"You're soaked.\"",
-  cast: "*The kitchen light is still on at two in the morning. Maya is at the table with a mug of something long gone cold; Sophie is arguing with the toaster.*",
-  scenario: "The briefing room has no windows and too many chairs.\n\n*Nezu sets a sealed file on the table between you and does not open it.* \"Before we begin, you should know that four people in this building believe you should still be in that cell.\"",
+  character: "Write the scene readers open on: where they are, what the character is doing, and the first thing said. Action in *italics*, speech in quotes.",
+  cast: "Write the scene readers open on, with the cast already in it and doing something. Action in *italics*, speech in quotes.",
+  scenario: "Write the scene readers open on: the setting, what is happening, and what is put in front of them. Action in *italics*, speech in quotes.",
 };
 
 /**
@@ -31,7 +39,7 @@ export function OpeningStep({ draft, update }: { draft: CreationDraft; update: (
   return <>
     <header className={styles.stepHead}>
       <h2>Opening</h2>
-      <p>The first message of the roleplay. Write the scene properly — this is what sets the tone before anybody types a word.</p>
+      <p>Write the scene readers see when they begin a new chat. This sets the tone before anybody types a word, so write it properly rather than as a greeting.</p>
     </header>
 
     <div className={styles.field}>
@@ -52,7 +60,7 @@ export function OpeningStep({ draft, update }: { draft: CreationDraft; update: (
           maxLength={8000}
           size={index === 0 ? "epic" : "tall"}
           onChange={(value) => setOpening(index, value)}
-          placeholder={index === 0 ? placeholders[draft.creationType] : "A different way into the same story…"}
+          placeholder={index === 0 ? placeholders[draft.creationType] : "Write a different way into the same story"}
         />
         <div className={styles.fieldFoot}><Counter value={opening.length} max={8000} /></div>
       </article>)}
@@ -66,17 +74,23 @@ export function OpeningStep({ draft, update }: { draft: CreationDraft; update: (
     >
       <Plus size={16} aria-hidden />Add another opening
     </button>
-    <p className={styles.hint}>Readers pick which opening to start from when they begin a new chat.</p>
+    <p className={styles.hint}>Readers choose which opening to start from when they begin a new chat. Add one only when it is genuinely a different way in.</p>
 
     <Field
       label="Example dialogue"
       optional
       hint={draft.creationType === "scenario"
-        ? "Sample narration and dialogue that teach the style. {{user}} is the reader."
-        : "Sample exchanges that teach cadence and formatting. {{char}} is the character, {{user}} is the reader."}
+        ? "Write narration and dialogue that demonstrate the style you want. {{user}} refers to the reader."
+        : "Write dialogue that demonstrates the voice, formatting and conversational style you want. {{char}} is the character, {{user}} is the reader."}
       counter={<Counter value={draft.exampleDialogue.length} max={12000} />}
     >
-      <TextArea value={draft.exampleDialogue} maxLength={12000} size="tall" onChange={(value) => update({ exampleDialogue: value })} />
+      <TextArea
+        value={draft.exampleDialogue}
+        maxLength={12000}
+        size="tall"
+        onChange={(value) => update({ exampleDialogue: value })}
+        placeholder={draft.creationType === "scenario" ? "Write a short passage in the voice the narration should use" : "{{char}}: …\n{{user}}: …"}
+      />
     </Field>
   </>;
 }

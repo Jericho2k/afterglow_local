@@ -40,7 +40,7 @@ export function TagSelector({ tags, onChange, adultMode, onAdultMode }: {
 
   return <div className={styles.field}>
     <span className={styles.fieldLabel}>Tags<span className={styles.optional}>platform categories</span></span>
-    <span className={styles.hint}>Chosen from Afterglow&rsquo;s categories. They power filtering, browsing and recommendations.</span>
+    <span className={styles.hint}>Choose the categories a reader would browse or filter by. These are Afterglow&rsquo;s own vocabulary; anything they do not cover belongs in a hashtag below.</span>
     <div className={styles.chipRow}>
       {tags.map((tag) => <button
         key={tag}

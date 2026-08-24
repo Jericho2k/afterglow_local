@@ -129,9 +129,21 @@ describe("visibility", () => {
     expect(ids((await feed()).creations)).not.toContain(finalWar);
   });
 
-  it("keeps the caller's own creations in their library rather than in discovery", async () => {
+  it("shows the caller their own published creations rather than hiding them", async () => {
+    // A creator who marks something public must be able to find it in the
+    // feed. Excluding owned rows made publishing unverifiable from the one
+    // surface that is supposed to confirm it.
     account = { id: alice, email: null };
-    expect((await feed()).creations).toHaveLength(0);
+    const { creations } = await feed();
+    expect(ids(creations).sort()).toEqual([seraphine, finalWar, roommates].sort());
+    expect(creations.every((creation) => creation.ownedByViewer)).toBe(true);
+  });
+
+  it("still keeps the owner's own private and unlisted creations out of the feed", async () => {
+    account = { id: alice, email: null };
+    const listed = ids((await feed()).creations);
+    expect(listed).not.toContain(draft);
+    expect(listed).not.toContain(unlisted);
   });
 
   it("requires an account", async () => {
@@ -342,6 +354,123 @@ describe("paging", () => {
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (client as any).query = original;
+    }
+  });
+});
+
+/**
+ * Public discovery eligibility.
+ *
+ * The feed's membership rule is deliberately narrow: published, public, and
+ * permitted by the viewer's adult setting and their active filters. Nothing
+ * optional may act as a hidden requirement, because every one of these is a
+ * legitimate shape for a finished creation — a scenario with no characters, a
+ * creation nobody has saved yet, one with no hashtags, one with no world. A
+ * feed that silently required any of them would return an empty page and
+ * blame the creator for it.
+ */
+describe("public eligibility", () => {
+  const barren = "aaaaaaaa-0000-4000-8000-000000000009";
+
+  /** Public, and carrying no optional related data whatsoever. */
+  async function publishBarren(creationType: string, profileType = "single") {
+    await query(
+      `INSERT INTO characters (id,user_id,name,title,creation_type,profile_type,visibility,published_at,
+         tags,hashtags,cast_members,nsfw_enabled,message_count,chat_count,like_count)
+       VALUES ($1,$2,'Nothing Attached','Nothing Attached',$3,$4,'public',now(),
+         '{}'::text[],'{}'::text[],'[]'::jsonb,false,0,0,0)`,
+      [barren, alice, creationType, profileType],
+    );
+  }
+
+  it("lists a public character", async () => {
+    expect(ids((await feed()).creations)).toContain(seraphine);
+  });
+
+  it("lists a public cast", async () => {
+    expect(ids((await feed()).creations)).toContain(roommates);
+  });
+
+  it("lists a public scenario that defines no primary character at all", async () => {
+    await publishBarren("scenario", "ensemble");
+    const card = (await feed()).creations.find((creation) => creation.id === barren);
+    expect(card).toBeDefined();
+    expect(card!.creationType).toBe("scenario");
+  });
+
+  it("lists a public creation with zero saves", async () => {
+    await publishBarren("character");
+    const card = (await feed()).creations.find((creation) => creation.id === barren)!;
+    expect(card.saveCount).toBe(0);
+  });
+
+  it("lists a public creation with zero hashtags", async () => {
+    await publishBarren("character");
+    const card = (await feed()).creations.find((creation) => creation.id === barren)!;
+    expect(card.hashtags).toEqual([]);
+  });
+
+  it("lists a public creation with no tags", async () => {
+    await publishBarren("character");
+    expect((await feed()).creations.find((creation) => creation.id === barren)!.tags).toEqual([]);
+  });
+
+  it("lists a public creation with no world attached", async () => {
+    await publishBarren("character");
+    // No character_worlds row is ever written for it, and it appears anyway:
+    // world attachment is optional data, never a membership condition.
+    const links = await query("SELECT COUNT(*)::int count FROM character_worlds WHERE character_id=$1", [barren]);
+    expect(Number(links.rows[0].count)).toBe(0);
+    expect(ids((await feed()).creations)).toContain(barren);
+  });
+
+  it("lists a public creation whose creator has no published username", async () => {
+    await query("UPDATE profiles SET username=NULL WHERE id=$1", [alice]);
+    expect(ids((await feed()).creations).sort()).toEqual([seraphine, finalWar, roommates].sort());
+  });
+
+  it("lists the current user's own public creation", async () => {
+    account = { id: alice, email: null };
+    expect(ids((await feed()).creations)).toContain(seraphine);
+  });
+
+  it("does not list a private creation", async () => {
+    expect(ids((await feed()).creations)).not.toContain(draft);
+  });
+
+  it("does not list an unlisted creation, which is reachable only by link", async () => {
+    expect(ids((await feed()).creations)).not.toContain(unlisted);
+  });
+
+  it("hides an adult creation with 18+ off and lists it with 18+ on", async () => {
+    expect(ids((await rawFeed()).creations)).not.toContain(finalWar);
+    expect(ids((await rawFeed("?adult=include")).creations)).toContain(finalWar);
+  });
+
+  it("keeps listing a public creation after it is edited and saved again", async () => {
+    await query("UPDATE characters SET tagline='Edited tagline', updated_at=now() WHERE id=$1", [seraphine]);
+    expect(ids((await feed()).creations)).toContain(seraphine);
+  });
+
+  it("keeps listing a public creation that was unpublished and published again", async () => {
+    await query("UPDATE characters SET visibility='private', published_at=NULL WHERE id=$1", [seraphine]);
+    expect(ids((await feed()).creations)).not.toContain(seraphine);
+    await query("UPDATE characters SET visibility='public', published_at=now() WHERE id=$1", [seraphine]);
+    expect(ids((await feed()).creations)).toContain(seraphine);
+  });
+
+  it("does not lose a public creation whose published_at was never stamped", async () => {
+    // An ordering that reads published_at must not become a filter on it.
+    await query("UPDATE characters SET published_at=NULL WHERE id=$1", [roommates]);
+    expect(ids((await feed()).creations)).toContain(roommates);
+    expect(ids((await feed("?sort=new")).creations)).toContain(roommates);
+  });
+
+  it("never returns zero rows because of an optional stats or tag join", async () => {
+    await query("DELETE FROM character_likes");
+    await query("UPDATE characters SET like_count=0, chat_count=0, message_count=0, tags='{}'::text[], hashtags='{}'::text[]");
+    for (const sort of ["popular", "chatted", "new"]) {
+      expect((await feed(`?sort=${sort}`)).creations).toHaveLength(3);
     }
   });
 });

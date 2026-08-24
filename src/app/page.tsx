@@ -8,15 +8,17 @@ import { creationKindLine, creationSubject, creationTitle } from "@/lib/creation
 import { uploadImage } from "@/lib/uploads";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
 import { DiscoveryFeed, SavedCreations } from "@/components/feed";
+import { YourCreations } from "@/components/creations";
 import { WorldCard } from "@/components/world";
 import { draftFromCharacter, draftPayload } from "@/components/studio/draft";
+import { forgetAllStoredDrafts } from "@/components/studio/drafts";
 import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
 import { supabaseBrowser, supabaseBrowserConfigured } from "@/lib/supabase/client";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket, worldCoverBucket } from "@/lib/storage";
 import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
 
 type WorldWithCount = StudioWorld;
-type AppView = "home" | "chats" | "chat" | "worlds" | "personas" | "profile" | "saved";
+type AppView = "home" | "chats" | "chat" | "worlds" | "personas" | "profile" | "saved" | "creations";
 
 
 const defaultSettings: AppSettings = {
@@ -138,7 +140,7 @@ export default function Home() {
     const view=params.get("view");
     // "likes" was this view's name before saving replaced liking; old links still work.
     const resolvedView=(view==="likes"?"saved":view) as AppView|null;
-    if(resolvedView&&["home","chats","worlds","personas","profile","saved"].includes(resolvedView)){setActiveView(resolvedView);routeHandledRef.current=true;return;}
+    if(resolvedView&&["home","chats","worlds","personas","profile","saved","creations"].includes(resolvedView)){setActiveView(resolvedView);routeHandledRef.current=true;return;}
     if(params.get("create")==="1"){setEditing(null);setStudioStartSection("basics");setStudioOpen(true);routeHandledRef.current=true;return;}
     const characterId=params.get("editCharacter")||params.get("character");
     if(!characterId)return;
@@ -147,13 +149,19 @@ export default function Home() {
       setCharacters((items)=>items.some((item)=>item.id===character.id)?items:[character,...items]);
       setSelectedId(character.id);
       if(params.get("editCharacter")){
-        if(character.ownedByViewer){setEditing(character);setStudioStartSection("basics");setStudioOpen(true);}
-        else {router.replace(`/characters/${character.id}`);return;}
+        // Editing has a real page of its own now. Sending the reader there
+        // rather than opening the studio on top of Home is what keeps Back
+        // returning to wherever they pressed Edit.
+        router.replace(character.ownedByViewer?`/characters/${character.id}/edit`:`/characters/${character.id}`);
+        return;
       }else{
         requestedConversationRef.current=params.get("conversation");
         setActiveView("chat");
       }
-      window.history.replaceState({},"","/");
+      // The router's own state is carried across, which is where the
+      // navigation depth stamp lives: rewriting it away made every Back
+      // control on the pages below this one fall through to its fallback.
+      window.history.replaceState(window.history.state,"","/");
     }).catch((reason)=>setError(reason instanceof Error?reason.message:"Could not open character"));
   },[authenticated,router]);
   useEffect(() => {
@@ -390,17 +398,22 @@ export default function Home() {
           <button className={activeView === "worlds" ? "active" : ""} onClick={() => { setActiveView("worlds"); setSidebarOpen(false); }}><span>▤</span><strong>Worlds</strong></button>
           <button className={activeView === "profile" ? "active" : ""} onClick={() => { setActiveView("profile"); setSidebarOpen(false); }}><span>◉</span><strong>Profile</strong></button>
           <button className={activeView === "personas" ? "active" : ""} onClick={() => { setActiveView("personas"); setSidebarOpen(false); }}><span>◎</span><strong>Personas</strong></button>
+          <button className={activeView === "creations" ? "active" : ""} onClick={() => { setActiveView("creations"); setSidebarOpen(false); }}><span>✎</span><strong>Your Creations</strong></button>
           <button className={activeView === "saved" ? "active" : ""} onClick={() => { setActiveView("saved"); setSidebarOpen(false); }}><span>❏</span><strong>Saved</strong></button>
           <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><span>≛</span><strong>Settings</strong></button>
         </nav>
-        <section className="sidebar-characters" aria-label="Your Characters"><span className="sidebar-section-title">Your Characters</span>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button onClick={()=>openCharacterPage(character.id)}>View {creationTitle(character)}</button><button onClick={()=>{setStudioStartSection("basics");setEditing(character);setStudioOpen(true);setSidebarCharacterMenuId(null);setSidebarOpen(false);}}>Edit {creationTitle(character)}</button></div>}</div>)}</section>
-        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}><span>⇥</span><strong>Sign out</strong></button></div></div>
+        <section className="sidebar-characters" aria-label="Your Creations"><button className="sidebar-section-link" onClick={()=>{setActiveView("creations");setSidebarOpen(false);}}>Your Creations<span aria-hidden>›</span></button>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button onClick={()=>openCharacterPage(character.id)}>View {creationTitle(character)}</button><button onClick={()=>{setSidebarCharacterMenuId(null);setSidebarOpen(false);router.push(`/characters/${character.id}/edit`);}}>Edit {creationTitle(character)}</button></div>}</div>)}</section>
+        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}><span>⇥</span><strong>Sign out</strong></button></div></div>
       </aside>
       {/* Discover and Saved render this control inside their own header, so
           the floating one would be a second identical button. */}
-      {activeView !== "chat" && activeView !== "home" && activeView !== "saved" && <button className="global-mobile-menu" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>☰</button>}
+      {activeView !== "chat" && activeView !== "home" && activeView !== "saved" && activeView !== "creations" && <button className="global-mobile-menu" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>☰</button>}
 
-      {activeView === "home" ? <DiscoveryFeed onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "chats" ? <ChatLibrary characters={characters} conversations={chatIndex} personas={personas} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} /> : activeView === "worlds" ? <WorldLibrary worlds={worlds} onChange={() => void loadLibraries()} /> : activeView === "personas" ? <PersonaLibrary personas={personas} onClose={() => setActiveView(conversation ? "chat" : "chats")} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <AccountProfile profile={profile} onSaved={setProfile} /> : activeView === "saved" ? <SavedCreations onOpenMenu={() => setSidebarOpen(true)} /> : selected ? (
+      {activeView === "home" ? <DiscoveryFeed onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "chats" ? <ChatLibrary characters={characters} conversations={chatIndex} personas={personas} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} /> : activeView === "worlds" ? <WorldLibrary worlds={worlds} onChange={() => void loadLibraries()} /> : activeView === "personas" ? <PersonaLibrary personas={personas} onClose={() => setActiveView(conversation ? "chat" : "chats")} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <AccountProfile profile={profile} onSaved={setProfile} /> : activeView === "saved" ? <SavedCreations onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "creations" ? <YourCreations
+        onOpenMenu={() => setSidebarOpen(true)}
+        onCreate={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); }}
+        onChanged={() => { void loadCharacters(); void loadChatIndex().catch(() => undefined); }}
+      /> : selected ? (
         <section className="chat-panel">
           <header className="chat-header">
             <div className="chat-identity"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Open menu">☰</button><button className="identity-profile" title={`View ${creationTitle(selected)}`} onClick={() => openCharacterPage(selected.id)}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{creationTitle(selected)}</strong><small>{selected.creationType === "character" ? `Chatting as ${activePersona?.name || "You"}` : creationKindLine(selected)}</small></span></button></div>
