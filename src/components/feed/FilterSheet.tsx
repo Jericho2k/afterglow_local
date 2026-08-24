@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { creationTypeLabels } from "@/lib/creation";
-import { platformTagCategories } from "@/lib/tags";
+import { adultTagsIn, platformTagCategories } from "@/lib/tags";
 import { creationTypes, type CreationType } from "@/lib/types";
 import type { DiscoveryQuery } from "@/lib/discovery";
 import styles from "./feed.module.css";
@@ -20,7 +20,7 @@ import styles from "./feed.module.css";
  * Selections are held locally until "Show creations", so a phone is not
  * refetching the feed behind the sheet on every tap.
  */
-type Draft = Pick<DiscoveryQuery, "tags" | "types" | "hideAdult">;
+type Draft = Pick<DiscoveryQuery, "tags" | "types" | "includeAdult">;
 
 function toggle<T>(list: T[], value: T) {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
@@ -31,7 +31,10 @@ export function FilterSheet({ query, onApply, onClose }: {
   onApply: (draft: Draft) => void;
   onClose: () => void;
 }) {
-  const [draft, setDraft] = useState<Draft>({ tags: query.tags, types: query.types, hideAdult: query.hideAdult });
+  const [draft, setDraft] = useState<Draft>({ tags: query.tags, types: query.types, includeAdult: query.includeAdult });
+  // Set when picking an adult tag turned adult inclusion on by itself, so the
+  // change is announced rather than happening silently under the reader.
+  const [autoIncluded, setAutoIncluded] = useState(false);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
@@ -39,7 +42,27 @@ export function FilterSheet({ query, onApply, onClose }: {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const selected = draft.tags.length + draft.types.length + (draft.hideAdult ? 1 : 0);
+  const selected = draft.tags.length + draft.types.length + (draft.includeAdult ? 1 : 0);
+  const selectedAdultTags = useMemo(() => adultTagsIn(draft.tags), [draft.tags]);
+  /** An adult tag with adult content excluded can only ever return nothing. */
+  const contradictory = selectedAdultTags.length > 0 && !draft.includeAdult;
+
+  /**
+   * Selecting an adult tag opts the feed in, because the alternative is a
+   * filter that quietly guarantees zero results. Deselecting never opts back
+   * out: turning adult content off again is the reader's decision to make.
+   */
+  function toggleTag(tag: string, adult: boolean) {
+    setDraft((current) => {
+      const tags = toggle(current.tags, tag);
+      const adding = tags.length > current.tags.length;
+      if (adult && adding && !current.includeAdult) {
+        setAutoIncluded(true);
+        return { ...current, tags, includeAdult: true };
+      }
+      return { ...current, tags };
+    });
+  }
 
   return <div
     className={styles.sheetBackdrop}
@@ -73,34 +96,50 @@ export function FilterSheet({ query, onApply, onClose }: {
           <h3>Content</h3>
           <label className={styles.sheetToggle}>
             <span>
-              <strong>Hide 18+ creations</strong>
-              <small>Leaves out anything its creator marked as adult. Your account&apos;s own settings are unchanged.</small>
+              <strong>Include 18+ creations</strong>
+              <small>
+                Off, adult creations are left out of this feed. On, they appear alongside everything else.
+                This is a filter for browsing only — your account settings are unchanged.
+              </small>
             </span>
             <input
               type="checkbox"
-              checked={draft.hideAdult}
-              onChange={(event) => setDraft((current) => ({ ...current, hideAdult: event.target.checked }))}
+              checked={draft.includeAdult}
+              onChange={(event) => {
+                setAutoIncluded(false);
+                setDraft((current) => ({ ...current, includeAdult: event.target.checked }));
+              }}
             />
           </label>
+          {autoIncluded && draft.includeAdult && <p className={styles.sheetHelp} role="status">
+            18+ creations were included because you chose an adult tag. Turn the switch off to leave them out again.
+          </p>}
+          {contradictory && <p className={styles.sheetWarning} role="status">
+            {selectedAdultTags.length === 1 ? `“${selectedAdultTags[0]}” is an adult tag` : `${selectedAdultTags.length} adult tags are selected`} while
+            18+ creations are excluded, so this filter will find nothing. Turn on <strong>Include 18+ creations</strong> to see them.
+          </p>}
         </section>
 
         {platformTagCategories.map((category) => <section key={category.id} className={styles.sheetGroup}>
-          <h3>{category.label}</h3>
+          <h3>{category.label}{category.adult && <span className={styles.adultBadge}>18+</span>}</h3>
           <p>{category.hint}</p>
           <div className={styles.chipRow}>
             {category.tags.map((tag) => <button
               key={tag}
               type="button"
-              className={`${styles.chip} ${draft.tags.includes(tag) ? styles.chipSelected : ""}`}
+              className={`${styles.chip} ${category.adult ? styles.chipAdult : ""} ${draft.tags.includes(tag) ? styles.chipSelected : ""}`}
               aria-pressed={draft.tags.includes(tag)}
-              onClick={() => setDraft((current) => ({ ...current, tags: toggle(current.tags, tag) }))}
-            >{tag}</button>)}
+              // The badge is decorative for a screen reader; the restriction is
+              // carried by the accessible name instead of by colour or glyph.
+              aria-label={category.adult ? `${tag}, 18+` : undefined}
+              onClick={() => toggleTag(tag, Boolean(category.adult))}
+            >{tag}{category.adult && <span className={styles.chipAdultMark} aria-hidden>18+</span>}</button>)}
           </div>
         </section>)}
       </div>
 
       <footer className={styles.sheetFoot}>
-        <button type="button" className={styles.sheetReset} onClick={() => setDraft({ tags: [], types: [], hideAdult: false })}>
+        <button type="button" className={styles.sheetReset} onClick={() => { setAutoIncluded(false); setDraft({ tags: [], types: [], includeAdult: false }); }}>
           Clear{selected ? ` (${selected})` : ""}
         </button>
         <button type="button" className={styles.sheetApply} onClick={() => onApply(draft)}>Show creations</button>

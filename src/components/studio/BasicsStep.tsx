@@ -83,7 +83,12 @@ export function BasicsStep({ draft, update, onChangeType, onError }: {
       />
     </Field>
 
-    <TagSelector tags={draft.tags} onChange={(tags) => update({ tags })} />
+    <TagSelector
+      tags={draft.tags}
+      onChange={(tags) => update({ tags })}
+      adultMode={draft.nsfwEnabled}
+      onAdultMode={(nsfwEnabled) => update({ nsfwEnabled })}
+    />
     <HashtagInput hashtags={draft.hashtags} onChange={(hashtags) => update({ hashtags })} />
 
     <Disclosure

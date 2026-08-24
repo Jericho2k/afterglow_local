@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { creationTypes, responseLengths, roleplayEngineIds } from "./types";
-import { canonicalTag, maxHashtags, maxTags, normalizeHashtag } from "./tags";
+import { adultTagsIn, canonicalTag, maxHashtags, maxTags, normalizeHashtag } from "./tags";
 
 const text = (max: number, min = 0) => z.preprocess(
   (value) => value == null ? "" : typeof value === "string" ? value : String(value),
@@ -103,7 +103,16 @@ const characterFields = z.object({
  */
 export const characterSchema = characterFields.transform((value) => {
   const resolved = value.creationType ?? (value.profileType === "ensemble" ? "cast" : "character");
-  return { ...value, creationType: resolved, profileType: resolved === "character" ? "single" as const : "ensemble" as const };
+  // A creation carrying adult tags is adult, and discovery decides what to
+  // exclude from a feed that has not opted in by reading `nsfwEnabled` alone.
+  // So the two cannot be allowed to disagree on anything that leaves the
+  // creator's own library: an adult-tagged public or unlisted creation is
+  // marked adult here, whatever the payload claimed. A private draft is left
+  // as it is, because nobody else can reach it and a creator mid-edit should
+  // not have their settings rewritten under them.
+  const nsfwEnabled = value.nsfwEnabled
+    || (value.visibility !== "private" && adultTagsIn(value.tags).length > 0);
+  return { ...value, nsfwEnabled, creationType: resolved, profileType: resolved === "character" ? "single" as const : "ensemble" as const };
 });
 
 export function characterValidationMessage(error: z.ZodError) {

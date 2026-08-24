@@ -57,13 +57,18 @@ export type DiscoveryQuery = {
   tags: string[];
   /** Authoring structures to include. Empty means all of them. */
   types: CreationType[];
-  hideAdult: boolean;
+  /**
+   * Adult content is opt-in. False — the default for every query, shared link
+   * and fresh session — excludes anything its creator marked 18+; true lets
+   * adult creations appear alongside everything else rather than instead of it.
+   */
+  includeAdult: boolean;
   offset: number;
   limit: number;
 };
 
 export const emptyDiscoveryQuery: DiscoveryQuery = {
-  sort: defaultDiscoverySort, search: "", hashtag: "", tags: [], types: [], hideAdult: false, offset: 0, limit: discoveryPageSize,
+  sort: defaultDiscoverySort, search: "", hashtag: "", tags: [], types: [], includeAdult: false, offset: 0, limit: discoveryPageSize,
 };
 
 /**
@@ -95,7 +100,10 @@ export function parseDiscoveryQuery(params: URLSearchParams): DiscoveryQuery {
     (creationTypes as readonly string[]).includes(value))));
   const offset = Math.min(Math.max(0, Number.parseInt(params.get("offset") ?? "0", 10) || 0), 5000);
   const limit = Math.min(Math.max(1, Number.parseInt(params.get("limit") ?? "", 10) || discoveryPageSize), 48);
-  return { sort, search, hashtag, tags, types, hideAdult: params.get("adult") === "hide", offset, limit };
+  // Only "adult=include" opts in. Links written before adult content became
+  // opt-in carried "adult=hide" to exclude it, and they still exclude it —
+  // anything that is not the opt-in keyword leaves adult work out.
+  return { sort, search, hashtag, tags, types, includeAdult: params.get("adult") === "include", offset, limit };
 }
 
 /**
@@ -109,18 +117,23 @@ export function discoverySearchParams(query: Partial<DiscoveryQuery> & { term?: 
   if (term.trim()) params.set("q", term.trim());
   if (query.tags?.length) params.set("tags", query.tags.join(","));
   if (query.types?.length) params.set("type", query.types.join(","));
-  if (query.hideAdult) params.set("adult", "hide");
+  if (query.includeAdult) params.set("adult", "include");
   if (query.offset) params.set("offset", String(query.offset));
   if (query.limit && query.limit !== discoveryPageSize) params.set("limit", String(query.limit));
   return params;
 }
 
-/** True when anything beyond the ordering is narrowing the feed. */
-export function isFilteredQuery(query: Pick<DiscoveryQuery, "search" | "hashtag" | "tags" | "types" | "hideAdult">) {
-  return Boolean(query.search || query.hashtag || query.tags.length || query.types.length || query.hideAdult);
+/**
+ * True when anything beyond the ordering is narrowing the feed.
+ *
+ * Including adult content is deliberately not narrowing — it widens the feed —
+ * so an empty result is never blamed on it.
+ */
+export function isFilteredQuery(query: Pick<DiscoveryQuery, "search" | "hashtag" | "tags" | "types">) {
+  return Boolean(query.search || query.hashtag || query.tags.length || query.types.length);
 }
 
 /** How many filter chips the filter button should advertise. */
-export function activeFilterCount(query: Pick<DiscoveryQuery, "tags" | "types" | "hideAdult">) {
-  return query.tags.length + query.types.length + (query.hideAdult ? 1 : 0);
+export function activeFilterCount(query: Pick<DiscoveryQuery, "tags" | "types" | "includeAdult">) {
+  return query.tags.length + query.types.length + (query.includeAdult ? 1 : 0);
 }

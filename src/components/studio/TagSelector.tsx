@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Check, Plus, Search, Tag, X } from "lucide-react";
-import { canonicalTag, isPlatformTag, maxTags, platformTagCategories } from "@/lib/tags";
+import { adultTagsIn, canonicalTag, isAdultTag, isPlatformTag, maxTags, platformTagCategories } from "@/lib/tags";
 import styles from "./studio.module.css";
 
 /**
@@ -11,10 +11,32 @@ import styles from "./studio.module.css";
  * The taxonomy is the platform's, so the creator picks rather than types — but
  * a tag saved before the taxonomy existed still appears in the selected row
  * and can still be removed. Nothing is silently dropped.
+ *
+ * Adult tags are ordinary tags with one extra consequence: choosing one turns
+ * adult mode on, because a creation carrying them is adult by definition. It is
+ * announced rather than hidden, the creator can still turn adult mode off on
+ * the publish step, and publishing then stops with a problem that says exactly
+ * which tags disagree — so nothing tagged 18+ ships as safe content.
  */
-export function TagSelector({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
+export function TagSelector({ tags, onChange, adultMode, onAdultMode }: {
+  tags: string[];
+  onChange: (tags: string[]) => void;
+  adultMode?: boolean;
+  onAdultMode?: (enabled: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [autoAdult, setAutoAdult] = useState("");
   const full = tags.length >= maxTags;
+  const selectedAdult = adultTagsIn(tags);
+
+  function change(next: string[]) {
+    const added = next.filter((tag) => !tags.includes(tag)).find(isAdultTag);
+    if (added && onAdultMode && !adultMode) {
+      onAdultMode(true);
+      setAutoAdult(added);
+    }
+    onChange(next);
+  }
 
   return <div className={styles.field}>
     <span className={styles.fieldLabel}>Tags<span className={styles.optional}>platform categories</span></span>
@@ -24,10 +46,11 @@ export function TagSelector({ tags, onChange }: { tags: string[]; onChange: (tag
         key={tag}
         type="button"
         className={`${styles.chip} ${styles.chipSelected}`}
-        onClick={() => onChange(tags.filter((item) => item !== tag))}
-        aria-label={`Remove tag ${tag}`}
+        onClick={() => change(tags.filter((item) => item !== tag))}
+        aria-label={isAdultTag(tag) ? `Remove tag ${tag}, 18+` : `Remove tag ${tag}`}
       >
         {tag}
+        {isAdultTag(tag) && <span className={styles.adultMark} aria-hidden>18+</span>}
         <X size={13} aria-hidden />
       </button>)}
       <button type="button" className={`${styles.chip} ${styles.chipAdd}`} onClick={() => setOpen(true)}>
@@ -35,7 +58,13 @@ export function TagSelector({ tags, onChange }: { tags: string[]; onChange: (tag
       </button>
     </div>
     {full && <span className={styles.hint}>That is the maximum of {maxTags} tags.</span>}
-    {open && <TagPicker tags={tags} onChange={onChange} onClose={() => setOpen(false)} />}
+    {autoAdult && adultMode && <span className={styles.adultNotice} role="status">
+      Adult mode was switched on because &ldquo;{autoAdult}&rdquo; is an 18+ tag. This creation will be marked 18+.
+    </span>}
+    {selectedAdult.length > 0 && adultMode === false && <span className={styles.adultNotice} role="status">
+      {selectedAdult.length === 1 ? "This 18+ tag needs" : `These ${selectedAdult.length} 18+ tags need`} adult mode on before you can publish.
+    </span>}
+    {open && <TagPicker tags={tags} onChange={change} onClose={() => setOpen(false)} />}
   </div>;
 }
 
@@ -88,7 +117,7 @@ function TagPicker({ tags, onChange, onClose }: { tags: string[]; onChange: (tag
         </div>}
         {categories.map((category) => <div key={category.id} className={styles.tagGroup}>
           <div className={styles.tagGroupHead}>
-            <strong>{category.label}</strong>
+            <strong>{category.label}{category.adult && <span className={styles.adultMark}>18+</span>}</strong>
             <small>{category.hint}</small>
           </div>
           <div className={styles.chipRow}>
@@ -99,10 +128,12 @@ function TagPicker({ tags, onChange, onClose }: { tags: string[]; onChange: (tag
                 type="button"
                 aria-pressed={active}
                 className={`${styles.chip} ${active ? styles.chipSelected : ""}`}
+                aria-label={category.adult ? `${tag}, 18+` : undefined}
                 onClick={() => toggle(tag)}
                 disabled={!active && tags.length >= maxTags}
               >
                 {active && <Check size={13} aria-hidden />}{tag}
+                {category.adult && <span className={styles.adultMark} aria-hidden>18+</span>}
               </button>;
             })}
           </div>

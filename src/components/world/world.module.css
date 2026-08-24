@@ -1,0 +1,126 @@
+/**
+ * The world card, shared by creation pages and the Worlds page.
+ *
+ * The one thing worth reading carefully here is the fade. It exists to make the
+ * title legible, not to dim the artwork, so it is anchored to the text rather
+ * than to the card: `.scrim` fills `.copy`, and `.copy` is only as tall as the
+ * title, description and metadata plus one ramp's worth of padding above them.
+ * Everything above that band is untouched artwork at any card height — which is
+ * what the old card got wrong, by ramping from a fixed share of the image and
+ * so starting around its middle.
+ */
+
+.card {
+  position: relative;
+  isolation: isolate;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .09));
+  background: #100b13;
+  transition: transform .2s, border-color .2s;
+}
+.card:hover { transform: translateY(-2px); border-color: rgba(232, 121, 169, .34); }
+
+/* The card's height lives here rather than on the copy, so the copy stays the
+   size of its own text and the fade stays the size of the copy. */
+.link {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  text-decoration: none;
+  color: inherit;
+}
+.link:focus-visible {
+  outline: 2px solid rgba(232, 121, 169, .75);
+  outline-offset: -3px;
+  border-radius: 15px;
+}
+
+.media { position: absolute; inset: 0; z-index: 0; display: block; }
+.media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fallback {
+  display: grid; place-items: center;
+  width: 100%; height: 100%;
+  background: radial-gradient(circle at 50% 34%, rgba(232, 121, 169, .22), #171020 68%, #0c0810);
+  color: rgba(232, 121, 169, .8);
+}
+
+.copy {
+  position: relative; z-index: 2;
+  display: grid; gap: 6px;
+  /* The top padding is the fade's run-up: darkening begins here, well below
+     the artwork's own subject, and is only at full weight behind the title. */
+  padding: 72px 16px 16px;
+}
+
+/*
+ * The fade.
+ *
+ * Transparent at the top of its band and dense behind the text, in enough steps
+ * that no stop reads as an edge. There is no horizontal gradient: darkening one
+ * side of the artwork was the other half of what made these cards look
+ * prematurely covered.
+ */
+.scrim {
+  position: absolute; inset: 0; z-index: 0;
+  background:
+    linear-gradient(to top,
+      rgba(9, 6, 11, .95) 0%,
+      rgba(9, 6, 11, .89) 26%,
+      rgba(9, 6, 11, .7) 46%,
+      rgba(9, 6, 11, .45) 62%,
+      rgba(9, 6, 11, .22) 78%,
+      rgba(9, 6, 11, .07) 91%,
+      rgba(9, 6, 11, 0) 100%);
+}
+
+/* Positioned, so the text paints above the absolutely positioned fade. */
+.name, .description, .meta { position: relative; z-index: 1; }
+
+.name {
+  display: block;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 20px; font-weight: 600; line-height: 1.2;
+  color: #ffd9ea;
+  /* Keeps the title readable over an unexpectedly bright cover without
+     needing a heavier fade over the artwork. */
+  text-shadow: 0 1px 14px rgba(6, 4, 8, .75);
+}
+/* Inline rather than a flex item, so a title that wraps onto a second line
+   keeps its mark beside the last word instead of at the card's far edge. */
+.name svg { display: inline; vertical-align: -1px; margin-left: 7px; color: var(--accent, #e879a9); }
+.description {
+  margin: 0;
+  font-size: 12.5px; line-height: 1.55;
+  color: #d6c9d4;
+  max-width: 52ch;
+  text-shadow: 0 1px 10px rgba(6, 4, 8, .7);
+  /* Two lines on a card; the world's own page carries the full text. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.meta {
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+  font-size: 11px; color: #b9a9b6;
+  text-shadow: 0 1px 10px rgba(6, 4, 8, .7);
+}
+
+/* An owner control sits above the link so it is reachable by tap and by tab
+   without the whole card swallowing the press. */
+.action { position: absolute; z-index: 3; top: 10px; right: 10px; }
+
+.attached .link { min-height: 152px; }
+.feature .link { min-height: 208px; }
+
+@media (min-width: 560px) {
+  .copy { padding: 84px 20px 20px; }
+  .attached .link { min-height: 176px; }
+  .attached .name { font-size: 22px; }
+  .feature .link { min-height: 240px; }
+  .feature .name { font-size: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none; }
+  .card:hover { transform: none; }
+}

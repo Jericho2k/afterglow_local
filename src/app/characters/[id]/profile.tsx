@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images,
+  BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images,
   MessageCircle, MoreHorizontal, Share2, Sparkles, Tag, UserRound, Users,
 } from "lucide-react";
 import type { Character, CharacterComment, World } from "@/lib/types";
@@ -14,7 +14,10 @@ import {
 } from "@/lib/creation";
 import { compactCount } from "@/lib/format";
 import { toggleCreationSave } from "@/lib/saves";
-import { avatarSource, characterAvatarBucket, profileAvatarBucket, worldCoverBucket } from "@/lib/storage";
+import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
+import { backFallbacks } from "@/lib/back-navigation";
+import { BackButton } from "@/components/nav";
+import { WorldCard } from "@/components/world";
 import styles from "./profile.module.css";
 
 type Detail = { character: Character; worlds: World[]; owner: boolean };
@@ -210,7 +213,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
       </div>
 
       <div className={styles.heroBar}>
-        <Link href="/" className={styles.circleButton} aria-label="Back to Afterglow"><ArrowLeft size={18} /></Link>
+        <BackButton className={styles.circleButton} fallback={backFallbacks.creation} />
         <div className={styles.heroBarActions}>
           {!detail.owner && <button className={styles.circleButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
             <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
@@ -350,17 +353,9 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         {worlds.length > 0 && <section id="world" className={`${styles.card} ${illuminated === "world" ? styles.illuminate : ""}`}>
           <header><Globe2 size={16} /><h2>{worlds.length === 1 ? "World" : "Worlds"}</h2></header>
           <div className={styles.worldList}>
-            {worlds.map((world) => {
-              const cover = avatarSource(worldCoverBucket, world.coverPath, world.coverUrl);
-              return <Link key={world.id} href={`/worlds/${world.id}`} className={styles.worldCard}>
-                {cover && <img src={cover} alt="" />}
-                <div className={styles.worldScrim} />
-                <div>
-                  <strong>{world.name}<Sparkles size={14} /></strong>
-                  {world.description && <p>{world.description}</p>}
-                </div>
-              </Link>;
-            })}
+            {/* The same card the Worlds page uses, so a world looks like a
+                world wherever it is met. */}
+            {worlds.map((world) => <WorldCard key={world.id} world={world} variant="attached" />)}
           </div>
         </section>}
 

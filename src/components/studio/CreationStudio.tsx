@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, Sparkles, X } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { creationTitle, creationTypeLabels } from "@/lib/creation";
+import { adultTagsIn } from "@/lib/tags";
 import type { Character, CharacterGalleryImage, CreationType, World } from "@/lib/types";
 import { BasicsStep } from "./BasicsStep";
 import { CastDefinitionStep } from "./CastDefinitionStep";
@@ -15,7 +16,7 @@ import { PublishStep } from "./PublishStep";
 import { ScenarioDefinitionStep } from "./ScenarioDefinitionStep";
 import { WorldStep, type StudioWorld } from "./WorldStep";
 import { Counter, Field, TextArea, TextInput } from "./fields";
-import { blankCastMember, draftFromCharacter, draftPayload, draftProblems, type CreationDraft, type StagedGalleryImage } from "./draft";
+import { blankCastMember, draftFromCharacter, draftPayload, draftProblems, isMeaningfulDraft, type CreationDraft, type StagedGalleryImage } from "./draft";
 import styles from "./studio.module.css";
 
 /**
@@ -52,6 +53,10 @@ function readStoredDraft(id: string | null): StoredDraft | null {
   } catch { return null; }
 }
 
+function forgetStoredDraft(key: string) {
+  try { window.localStorage.removeItem(key); } catch { /* nothing to forget */ }
+}
+
 function sameGallery(a: StagedGalleryImage[], b: StagedGalleryImage[]) {
   if (a.length !== b.length) return false;
   return a.every((image, index) => image.storagePath === b[index].storagePath && image.externalUrl === b[index].externalUrl && image.caption === b[index].caption);
@@ -78,6 +83,10 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
   const [restored, setRestored] = useState(false);
   const [localWorlds, setLocalWorlds] = useState<StudioWorld[]>(worlds);
   const savedGallery = useRef<StagedGalleryImage[]>(draftFromCharacter(character).gallery);
+  // What "unchanged" currently means: the blank draft for a new creation, the
+  // loaded record while editing, and the saved copy after every save. Every
+  // decision about whether there is unsaved work is made against this.
+  const baseline = useRef<CreationDraft | null>(character ? draftFromCharacter(character) : null);
   // Autosave key. A creation saved for the first time moves from the shared
   // "new" slot to its own, so a later Create does not resurrect it.
   const storageKey = useRef(draftStorageKey(character?.id ?? null));
@@ -110,6 +119,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
         if (cancelled) return;
         const loaded = draftFromCharacter(full);
         savedGallery.current = loaded.gallery;
+        baseline.current = loaded;
         setRecord(full);
         // A restored local draft is newer than the server copy, so it wins.
         setDraft((current) => (restoredRef.current ? { ...current, gallery: current.gallery.length ? current.gallery : loaded.gallery } : loaded));
@@ -119,20 +129,39 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
     return () => { cancelled = true; };
   }, [character]);
 
-  // Restore an interrupted session before anything else touches the draft.
+  /**
+   * Restore an interrupted session before anything else touches the draft.
+   *
+   * Only work that actually differs from where the session started is
+   * restorable. A stored draft that turns out to hold nothing — written by an
+   * older build, or left behind by a session that was opened and abandoned — is
+   * deleted here rather than resurrected, so the intro screen comes back and no
+   * notice claims work was recovered.
+   */
   useEffect(() => {
+    const key = draftStorageKey(character?.id ?? null);
     const stored = readStoredDraft(character?.id ?? null);
     if (!stored) return;
+    const restoredDraft = draftFromCharacter(stored.draft as unknown as Character);
+    if (!isMeaningfulDraft(restoredDraft, baseline.current)) { forgetStoredDraft(key); return; }
     restoredRef.current = true;
-    setDraft(draftFromCharacter(stored.draft as unknown as Character));
+    setDraft(restoredDraft);
     setRestored(true);
     if (!character) setPhase("steps");
   }, [character]);
 
-  // Autosave. Long definitions are exactly the thing a lost tab destroys.
+  /**
+   * Autosave. Long definitions are exactly the thing a lost tab destroys.
+   *
+   * Nothing is written until the session holds work, and the moment it stops
+   * holding work — everything typed was deleted again, the draft was discarded,
+   * the creation was saved — the stored copy is removed. An empty session
+   * therefore leaves no trace at all.
+   */
   useEffect(() => {
     if (!hydrated.current && character) return;
     const timeout = window.setTimeout(() => {
+      if (!isMeaningfulDraft(draft, baseline.current)) { forgetStoredDraft(storageKey.current); return; }
       try { window.localStorage.setItem(storageKey.current, JSON.stringify({ savedAt: new Date().toISOString(), draft })); }
       catch { /* storage can be full or blocked; the draft simply is not mirrored */ }
     }, 600);
@@ -186,6 +215,16 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
    * gallery is written through its own endpoint once an id exists.
    */
   async function save({ close }: { close: boolean }) {
+    // Adult tags and adult mode cannot disagree on anything anybody else can
+    // reach. The server enforces this too, but stopping here is what lets the
+    // creator decide which of the two to change rather than being corrected
+    // after the fact.
+    const adult = adultTagsIn(draft.tags);
+    if (adult.length && !draft.nsfwEnabled && draft.visibility !== "private") {
+      setError(`${adult.slice(0, 3).join(", ")}${adult.length > 3 ? ` and ${adult.length - 3} more` : ""} ${adult.length === 1 ? "is an adult tag" : "are adult tags"}, so this cannot be shared without adult mode. Turn adult mode on, remove ${adult.length === 1 ? "it" : "them"}, or keep the creation private.`);
+      goToStep("publish");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -222,7 +261,14 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
       clearStoredDraft();
       storageKey.current = draftStorageKey(complete.id);
       setRecord(complete);
-      setDraft((current) => ({ ...current, worldIds, lorebook: "" }));
+      const settled = { ...draft, worldIds, lorebook: "" };
+      // The saved copy is the new "unchanged", so a creation that was just
+      // published is not immediately mistaken for unsaved work.
+      baseline.current = settled;
+      forgetStoredDraft(storageKey.current);
+      setDraft(settled);
+      setRestored(false);
+      restoredRef.current = false;
       if (close) { onSaved(complete); return; }
       setNotice(complete.visibility === "public" ? "Saved and published." : "Draft saved to your library.");
     } catch (reason) {
@@ -275,7 +321,9 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
           <span>Unsaved work from your last session was restored.</span>
           <button type="button" onClick={() => {
             clearStoredDraft();
-            setDraft(draftFromCharacter(record ?? character));
+            // Back to where the session started, which is also the state the
+            // autosave treats as "nothing to keep" — so it stays discarded.
+            setDraft(baseline.current ? { ...baseline.current } : draftFromCharacter(null));
             setRestored(false);
             restoredRef.current = false;
           }}>Discard</button>

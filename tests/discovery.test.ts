@@ -41,10 +41,24 @@ type Summary = {
   ownedByViewer: boolean; creator: { username: string } | null;
 };
 
-async function feed(search = "") {
+/** The route exactly as a caller writes it, with no opt-in added. */
+async function rawFeed(search = "") {
   const response = await discovery.GET(new Request(`http://test/api/discovery${search}`));
   const body = await response.json() as { creations: Summary[]; hasMore: boolean; nextOffset: number };
   return { status: response.status, ...body };
+}
+
+/**
+ * A page of the feed with adult content opted in.
+ *
+ * Adult content is opt-in, so a feed that did not ask for it would leave The
+ * Final War out and every assertion below about ordering, search, paging and
+ * card contents would quietly be describing a two-row corpus instead of a
+ * three-row one. The opt-in itself is the subject of its own block, which
+ * calls `rawFeed` so it can observe the default.
+ */
+function feed(search = "") {
+  return rawFeed(search ? `${search}&adult=include` : "?adult=include");
 }
 const ids = (creations: Summary[]) => creations.map((creation) => creation.id);
 
@@ -249,9 +263,51 @@ describe("filtering", () => {
     expect(ids((await feed("?q=%23mha")).creations)).toEqual([finalWar]);
   });
 
-  it("can leave adult creations out", async () => {
-    expect(ids((await feed("?adult=hide")).creations)).not.toContain(finalWar);
-    expect(ids((await feed("?adult=hide")).creations).sort()).toEqual([seraphine, roommates].sort());
+});
+
+/**
+ * Adult content is opt-in.
+ *
+ * The default — a fresh session, a shared link, a URL nobody edited — leaves
+ * adult creations out, and asking for them widens the feed rather than
+ * narrowing it to only adult work.
+ */
+describe("18+ inclusion", () => {
+  it("excludes adult creations by default", async () => {
+    const { creations } = await rawFeed();
+    expect(ids(creations)).not.toContain(finalWar);
+    expect(ids(creations).sort()).toEqual([seraphine, roommates].sort());
+  });
+
+  it("excludes adult creations for every filter, ordering and search that did not opt in", async () => {
+    expect(ids((await rawFeed("?sort=popular")).creations)).not.toContain(finalWar);
+    expect(ids((await rawFeed("?sort=new")).creations)).not.toContain(finalWar);
+    expect((await rawFeed("?q=final")).creations).toHaveLength(0);
+    expect((await rawFeed("?tags=Superhero")).creations).toHaveLength(0);
+    expect((await rawFeed("?q=%23mha")).creations).toHaveLength(0);
+    expect((await rawFeed("?type=scenario")).creations).toHaveLength(0);
+  });
+
+  it("lets adult creations appear alongside everything else once included", async () => {
+    const { creations } = await rawFeed("?adult=include");
+    expect(ids(creations)).toContain(finalWar);
+    // Included, not exclusive: opting in must not turn the feed adult-only.
+    expect(ids(creations).sort()).toEqual([seraphine, finalWar, roommates].sort());
+  });
+
+  it("treats anything other than the opt-in keyword as not opting in", async () => {
+    // Links written while the filter was an opt-out carried "adult=hide"; they
+    // excluded adult content then and they still exclude it now.
+    for (const value of ["hide", "", "1", "true", "exclude", "yes"]) {
+      expect(ids((await rawFeed(`?adult=${value}`)).creations)).not.toContain(finalWar);
+    }
+  });
+
+  it("does not persist the opt-in anywhere on the account", async () => {
+    await rawFeed("?adult=include");
+    // The next request without the opt-in is adult-free again, so browsing
+    // never quietly rewrites an account-level preference.
+    expect(ids((await rawFeed()).creations)).not.toContain(finalWar);
   });
 });
 
