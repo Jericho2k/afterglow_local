@@ -42,12 +42,38 @@ const knownModels: InternalModelDefinition[] = [
     description: "Dialogue-first roleplay model for expressive, character-driven conversations.",
     supportsThinking: false,
   },
+  /*
+   * Moonshot's long-context writers.
+   *
+   * K2.5 is kept exactly as it is. Conversations persist the model they were
+   * started with, so quietly repointing this slug at a successor would change
+   * the writer inside somebody's ongoing story without anybody saying so —
+   * which is precisely the thing this catalogue exists to prevent. If Moonshot
+   * retires it upstream, the chat route answers with a sentence that says so
+   * and offers the picker; see the retirement handling in the chat route.
+   *
+   * K2.6 is offered ALONGSIDE it as its own selectable model, so a creator can
+   * move deliberately. NOTE FOR OPERATORS: the K2.6 slug below was taken from
+   * secondary sources and could not be checked against the live OpenRouter
+   * catalogue from the build environment, which has no egress to
+   * openrouter.ai. Confirm it before relying on it; an incorrect slug now
+   * surfaces as a friendly "model is not available" rather than as raw
+   * provider JSON, and `ALLOWED_MODELS` can exclude it in the meantime.
+   */
   {
     id: "kimi-k2.5",
     providerId: "openrouter",
     providerModelId: "moonshotai/kimi-k2.5",
     label: "MoonshotAI Kimi K2.5",
     description: "Long-context comparison writer with strong scene comprehension and planning.",
+    supportsThinking: true,
+  },
+  {
+    id: "kimi-k2.6",
+    providerId: "openrouter",
+    providerModelId: "moonshotai/kimi-k2.6",
+    label: "MoonshotAI Kimi K2.6",
+    description: "Moonshot's newer long-context writer. Same strengths as K2.5 with a larger context window.",
     supportsThinking: true,
   },
   {

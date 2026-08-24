@@ -12,6 +12,7 @@ import { toggleWorldSave } from "@/lib/world-saves";
 import { compactCount } from "@/lib/format";
 import type { CharacterComment, CreationSummary, World } from "@/lib/types";
 import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
+import { iconButtonClass } from "@/components/ui";
 import { CreationGrid } from "@/components/feed";
 import { RichContent } from "@/components/rich";
 import styles from "./profile.module.css";
@@ -136,17 +137,17 @@ export default function WorldProfile({ worldId }: { worldId: string }) {
         <div className={styles.heroScrim} />
       </div>
       <div className={styles.heroBar}>
-        <BackButton className={styles.circleButton} fallback={backFallbacks.worlds} />
+        <BackButton className={iconButtonClass("media")} fallback={backFallbacks.worlds} />
         <div className={styles.heroBarActions}>
           {/* Saving your own world is not a thing the backend allows, so the
               owner gets management rather than a control that would fail. */}
           {!owner && <button
-            className={styles.circleButton}
+            className={iconButtonClass("media")}
             aria-pressed={world.savedByViewer}
             aria-label={world.savedByViewer ? "Remove from your saved worlds" : "Save this world"}
             onClick={() => void toggleSave()}
           ><Bookmark size={18} fill={world.savedByViewer ? "currentColor" : "none"} /></button>}
-          {menuItems.length > 0 && <MoreMenu className={styles.circleButton} label={`More actions for ${world.name}`} items={menuItems} />}
+          {menuItems.length > 0 && <MoreMenu className={iconButtonClass("media")} label={`More actions for ${world.name}`} items={menuItems} />}
         </div>
       </div>
       <div className={styles.heroCopy}>

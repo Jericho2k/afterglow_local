@@ -1,5 +1,6 @@
 import { afterEach,describe,expect,it,vi } from "vitest";
 import { completionWithUsage,embeddingWithUsage,streamCompletion } from "@/lib/llm";
+import { ProviderError } from "@/lib/provider-errors";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -52,6 +53,85 @@ describe("OpenRouter provider", () => {
     }));
     const stream = await streamCompletion({ providerId:"openrouter",modelId:"kimi-k2.5" },[{ role:"user",content:"Hi" }]);
     expect(stream).toBeInstanceOf(ReadableStream);
+  });
+
+  it("fails over a temporary 429 to another provider serving the SAME model", async () => {
+    enable();
+    process.env.ALLOWED_MODELS = "midnight-cherry,kimi-k2.5";
+    const models:string[]=[];
+    const fetchMock=vi.fn(async (_url:string,init?:RequestInit) => {
+      const body=JSON.parse(String(init?.body));
+      models.push(String(body.model));
+      if (models.length === 1) {
+        // The exact shape that used to reach a reader's screen.
+        return new Response('{"error":{"message":"Provider Parasail returned 429 from shared pool","metadata":{"provider_name":"Parasail"}}}',{status:429});
+      }
+      // The second attempt explicitly permits another host for the same model.
+      expect(body.provider).toEqual({allow_fallbacks:true,sort:"throughput"});
+      return new Response('data: {"choices":[{"delta":{"content":"Recovered"}}]}\n\ndata: [DONE]\n\n');
+    });
+    vi.stubGlobal("fetch",fetchMock);
+    await streamCompletion({providerId:"openrouter",modelId:"midnight-cherry"},[{role:"user",content:"Hi"}]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Provider failover is not model failover: the reader's chosen writer is
+    // identical on both attempts, and there is exactly one generation.
+    expect(new Set(models)).toEqual(new Set(["thedrummer/skyfall-36b-v2"]));
+  });
+
+  it("never retries a credential, billing or malformed-request failure", async () => {
+    enable();
+    for (const [status,category] of [[401,"auth"],[402,"billing"],[400,"bad_request"]] as const) {
+      const fetchMock=vi.fn(async () => new Response('{"error":{"message":"nope"}}',{status}));
+      vi.stubGlobal("fetch",fetchMock);
+      const failure = await streamCompletion({providerId:"openrouter",modelId:"kimi-k2.5"},[{role:"user",content:"Hi"}]).catch((error) => error);
+      expect(failure).toBeInstanceOf(ProviderError);
+      expect((failure as ProviderError).category).toBe(category);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("gives up after a bounded number of attempts rather than cascading", async () => {
+    enable();
+    const fetchMock=vi.fn(async () => new Response('{"error":{"message":"busy"}}',{status:429}));
+    vi.stubGlobal("fetch",fetchMock);
+    const failure = await streamCompletion({providerId:"openrouter",modelId:"kimi-k2.5"},[{role:"user",content:"Hi"}]).catch((error) => error);
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(3);
+    expect((failure as ProviderError).message).toBe("The model is temporarily busy. Please try again in a moment.");
+    // The upstream body is kept for the operator and only for the operator.
+    expect((failure as ProviderError).diagnostic.detail).toContain("busy");
+  });
+
+  it("asks for usage accounting and sends a session id only when given one", async () => {
+    enable();
+    const bodies:Record<string,unknown>[]=[];
+    vi.stubGlobal("fetch",vi.fn(async (_url:string,init?:RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n');
+    }));
+    await streamCompletion({providerId:"openrouter",modelId:"kimi-k2.5"},[{role:"user",content:"Hi"}],{sessionId:"abc123"});
+    await streamCompletion({providerId:"openrouter",modelId:"kimi-k2.5"},[{role:"user",content:"Hi"}]);
+
+    // Without this, a streamed generation reports no tokens, no cost and no
+    // cached-token counts at all — which is what made caching unmeasurable.
+    expect(bodies[0]).toMatchObject({ usage:{ include:true }, session_id:"abc123" });
+    expect(bodies[1]).toMatchObject({ usage:{ include:true } });
+    expect(bodies[1]).not.toHaveProperty("session_id");
+  });
+
+  it("carries cached-token and provider metadata through to usage", async () => {
+    enable();
+    vi.stubGlobal("fetch",vi.fn(async () => Response.json({
+      id:"gen-9",model:"moonshotai/kimi-k2.5",provider:"Moonshot AI",
+      choices:[{ message:{ content:"reply" } }],
+      usage:{ prompt_tokens:9000,completion_tokens:200,cost:0.0031,
+        prompt_tokens_details:{ cached_tokens:7400,cache_write_tokens:1600 } },
+    })));
+    const result = await completionWithUsage({ providerId:"openrouter",modelId:"kimi-k2.5" },[{ role:"user",content:"Hi" }]);
+    expect(result.usage).toMatchObject({
+      actual_model:"moonshotai/kimi-k2.5", upstream_provider:"Moonshot AI", cost:0.0031,
+      prompt_tokens_details:{ cached_tokens:7400,cache_write_tokens:1600 },
+    });
   });
 
   it("retries a stale provider deployment through a healthy fallback", async () => {

@@ -1,5 +1,6 @@
 import type { AppSettings, Character, ChatInstructionPreset, CoreCanonEntry, Memory, MemoryArc, Message, Persona, World } from "./types";
 import { enginePrompt } from "./provider";
+import { responseLengthInstruction } from "./response-length";
 import { creationTitle, creationType } from "./creation";
 import { arcSceneTag, hasHistoricalScenes, renderCurrentScene, sceneIsEmpty, sceneTag, type SceneStateFields } from "./scene-state";
 
@@ -36,13 +37,12 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
   };
   const chatInstructions = (chatContext?.instructionPresets ?? []).map((item) => `- ${instructionText[item]}`).concat(chatContext?.customInstructions?.trim() ? [`- ${chatContext.customInstructions.trim()}`] : []);
   // Natural deliberately adds no new instruction so it remains behaviorally
-  // identical to the pre-preference quality baseline. The other choices guide
-  // shape and pacing without imposing a hard token ceiling.
-  const responseLength = settings?.responseLength === "concise"
-    ? `\nRESPONSE LENGTH PREFERENCE\nCONCISE: Prefer a tighter reply with fewer beats and less incidental description. Stay complete, vivid, and in character; do not truncate an important action or emotional consequence.`
-    : settings?.responseLength === "detailed"
-      ? `\nRESPONSE LENGTH PREFERENCE\nDETAILED: When the scene supports it, allow fuller action, dialogue, sensory texture, subtext, and consequences. Do not pad a simple exchange or turn every reply into an essay.`
-      : "";
+  // identical to the pre-preference quality baseline. Concise and Detailed are
+  // written as active requirements with a named word target, because the RULES
+  // block above explicitly tells the writer to vary its own length and a
+  // gentler phrasing simply loses that argument. The matching output budget is
+  // applied at the provider layer; see src/lib/response-length.ts.
+  const responseLength = responseLengthInstruction(settings?.responseLength ?? "natural");
 
   // Scene State is the temporal/spatial spine: one small block that says where
   // and when NOW is, so a correctly recalled memory from another place or day

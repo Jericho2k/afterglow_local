@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Compass, Menu, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { Compass, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { AppMenuButton } from "@/components/ui";
 import { creationTypeLabels } from "@/lib/creation";
 import {
   activeFilterCount, applyPreferences, discoveryPageSize, discoverySearchParams, discoverySortHints,
@@ -272,7 +273,7 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
 
     <div className={`${styles.controls} ${stuck ? styles.controlsStuck : ""}`}>
       <div className={styles.controlRow}>
-        {onOpenMenu && <button type="button" className={styles.menuButton} aria-label="Open menu" onClick={onOpenMenu}><Menu size={18} /></button>}
+        {onOpenMenu && <AppMenuButton className={styles.menuButton} onOpen={onOpenMenu} />}
         <label className={styles.search}>
           <Search size={15} aria-hidden />
           <input

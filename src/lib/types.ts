@@ -532,6 +532,11 @@ export type UsageSummary = {
   completionTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  cacheWriteTokens: number;
+  /** cacheHitTokens / promptTokens, or null when the bucket has no prompt tokens. */
+  cachedRatio: number | null;
+  avgLatencyMs: number | null;
+  avgTtftMs: number | null;
   requests: number;
   estimatedCostUsd: number;
 };
@@ -549,5 +554,6 @@ export type UsageResponse = {
   byEngine: UsageBreakdown[];
   byFunding: UsageBreakdown[];
   byType: UsageBreakdown[];
+  byUpstreamProvider?: UsageBreakdown[];
   pricingAsOf: string;
 };

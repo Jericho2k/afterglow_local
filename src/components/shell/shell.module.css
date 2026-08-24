@@ -1,0 +1,490 @@
+/*
+ * The surfaces that were still first-generation.
+ *
+ * Chats, Personas, Profile, Saved and Settings were the last pages built
+ * against the original global stylesheet: document rows, 9px uppercase labels,
+ * bordered boxes, and a floating hamburger that had no base rule and rendered
+ * in normal flow above 760px. Everything newer — Discovery, the Studio, the
+ * creation page, Worlds V2 — had moved on without them, so the product read as
+ * two products depending on which tab you were in.
+ *
+ * This module is the shared material those five pages are rebuilt from, and it
+ * is deliberately the SAME material the modern pages use: near-black ground,
+ * thin light borders, an editorial serif for the page title, a clean sans for
+ * every control, restrained rose, and artwork given room. Nothing here is a new
+ * design language — it is the existing one, finally applied.
+ */
+
+.page {
+  --surface: #141017;
+  --surface-raised: #191320;
+  --edge: rgba(255, 255, 255, .07);
+  --ink: #f6eff4;
+  --muted: #a99cab;
+  --faint: #7b6f7e;
+  --accent: #e879a9;
+
+  min-height: 100dvh;
+  overflow-y: auto;
+  background:
+    radial-gradient(90% 44% at 50% 0%, rgba(123, 50, 80, .13), transparent 62%),
+    #0b080d;
+  color: var(--ink);
+  padding:
+    max(20px, env(safe-area-inset-top))
+    max(18px, env(safe-area-inset-right))
+    max(52px, env(safe-area-inset-bottom))
+    max(18px, env(safe-area-inset-left));
+}
+
+.inner { max-width: 1120px; margin: 0 auto; }
+
+/* ----------------------------------------------------------- header --- */
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 22px;
+}
+
+.headerCopy { flex: 1; min-width: 0; }
+
+.eyebrow {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--faint);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(30px, 8vw, 42px);
+  line-height: 1.04;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.lede {
+  margin: 8px 0 0;
+  max-width: 56ch;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.headerActions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* ------------------------------------------------------------- tabs --- */
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 20px;
+  padding: 4px;
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .022);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+
+.tab {
+  flex: 1;
+  min-width: max-content;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--faint);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .18s ease, color .18s ease;
+}
+.tab:hover { color: var(--ink); }
+.tabActive { background: rgba(232, 121, 169, .13); color: #f7c9de; }
+.tab em { font-style: normal; opacity: .6; margin-left: 6px; font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------ cards --- */
+
+.card {
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  background: var(--surface);
+  padding: 18px;
+}
+
+.cardHeader {
+  display: flex; align-items: center; gap: 9px;
+  margin: 0 0 14px;
+  color: var(--accent);
+}
+.cardHeader h2 {
+  flex: 1; margin: 0;
+  font-size: 14px; font-weight: 620; color: var(--ink);
+}
+.cardHeader em {
+  font-style: normal; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums;
+}
+
+.stack { display: grid; gap: 12px; }
+
+/* ------------------------------------------------- conversation rows --- */
+
+/*
+ * Chats, grouped by creation.
+ *
+ * A flat list of every conversation buried the thing people actually scan for
+ * — whose story is this — under a row of identical titles. So the artwork and
+ * the creation's own title lead, and its stories nest beneath it. Nothing is
+ * hidden: every conversation that existed before still has a row.
+ */
+.chatGroup {
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  background: var(--surface);
+  overflow: hidden;
+  transition: border-color .18s ease;
+}
+.chatGroup:hover { border-color: rgba(232, 121, 169, .22); }
+
+.chatHead {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 13px;
+}
+
+.chatArt {
+  flex: none;
+  width: 62px; height: 62px;
+  border-radius: 15px;
+  overflow: hidden;
+  display: grid; place-items: center;
+  border: 1px solid var(--edge);
+  background: linear-gradient(150deg, var(--creation-accent-deep, #2b2028), #141115);
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 22px;
+  color: rgba(255, 255, 255, .55);
+}
+.chatArt img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 25%; }
+
+.chatIdentity {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 3px;
+  border: 0; background: none; padding: 0;
+  color: inherit; text-align: left; cursor: pointer;
+}
+.chatIdentity strong {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 19px; font-weight: 600; line-height: 1.15;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chatIdentity:hover strong { color: #f7c9de; }
+.chatMeta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--faint);
+}
+.chatMeta span { display: inline-flex; align-items: center; gap: 4px; }
+
+.chatPreview {
+  margin: 1px 0 0;
+  font-size: 12.5px; line-height: 1.45; color: var(--muted);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; line-clamp: 1;
+  overflow: hidden;
+}
+
+.chatStories {
+  display: grid;
+  border-top: 1px solid var(--edge);
+}
+
+.storyRow {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  border: 0; border-top: 1px solid var(--edge);
+  background: transparent;
+  padding: 11px 13px;
+  color: inherit; text-align: left; cursor: pointer;
+  transition: background .16s ease;
+}
+.storyRow:first-child { border-top: 0; }
+.storyRow:hover { background: rgba(255, 255, 255, .035); }
+.storyRow > span { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.storyRow strong {
+  font-size: 13px; font-weight: 580;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.storyRow small { font-size: 11px; color: var(--faint); }
+.storyRow time { flex: none; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.newStory {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  border: 0; border-top: 1px solid var(--edge);
+  background: transparent;
+  padding: 11px 13px;
+  color: #f0aecb; font-size: 12.5px; font-weight: 580;
+  cursor: pointer; text-align: left;
+}
+.newStory:hover { background: rgba(232, 121, 169, .07); }
+
+/* ------------------------------------------------------ persona grid --- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+  gap: 12px;
+}
+
+.personaCard {
+  display: flex; align-items: flex-start; gap: 12px;
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  background: var(--surface);
+  padding: 15px;
+  color: inherit; text-align: left; cursor: pointer;
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+.personaCard:hover {
+  transform: translateY(-2px);
+  border-color: rgba(232, 121, 169, .28);
+  background: var(--surface-raised);
+}
+
+.avatar {
+  flex: none;
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid; place-items: center;
+  border: 1px solid var(--edge);
+  background: rgba(232, 121, 169, .12);
+  font-size: 16px; font-weight: 600; color: #f0d9e7;
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+/* Bigger, for a profile header where the avatar is the subject. */
+.avatarLarge { width: 78px; height: 78px; font-size: 24px; }
+
+.personaBody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.personaBody strong { font-size: 14.5px; font-weight: 600; }
+.personaBody small { font-size: 11px; color: var(--faint); }
+.personaBody p {
+  margin: 4px 0 0;
+  font-size: 12.5px; line-height: 1.5; color: var(--muted);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3;
+  overflow: hidden;
+}
+
+.defaultBadge {
+  align-self: flex-start;
+  border: 1px solid rgba(232, 121, 169, .3);
+  border-radius: 999px;
+  background: rgba(232, 121, 169, .1);
+  padding: 2px 8px;
+  font-size: 10px; font-weight: 640; color: #f0d9e7;
+}
+
+/* ----------------------------------------------------------- fields --- */
+
+.field { display: flex; flex-direction: column; gap: 7px; }
+.fieldLabel { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.fieldHint { font-size: 11px; line-height: 1.5; color: var(--faint); }
+
+.input, .textarea, .select {
+  width: 100%;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: #100c12;
+  color: var(--ink);
+  padding: 11px 12px;
+  font-size: 14px;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+.textarea { resize: vertical; line-height: 1.6; min-height: 96px; }
+
+.input:focus, .textarea:focus, .select:focus,
+.input:focus-visible, .textarea:focus-visible, .select:focus-visible {
+  outline: none;
+  border-color: rgba(232, 121, 169, .5);
+  box-shadow: 0 0 0 3px rgba(232, 121, 169, .1);
+}
+
+.counter { align-self: flex-end; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.toggleRow {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .022);
+  padding: 13px 14px;
+}
+.toggleRow > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.toggleRow strong { font-size: 13px; font-weight: 600; }
+.toggleRow small { font-size: 11px; line-height: 1.45; color: var(--faint); }
+.toggleRow input { flex: none; width: 18px; height: 18px; accent-color: var(--accent); }
+
+/* ------------------------------------------------------- statistics --- */
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 1px;
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  background: var(--edge);
+  overflow: hidden;
+}
+.metric { background: var(--surface); padding: 14px 12px; display: grid; gap: 5px; }
+.metric dt {
+  font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint);
+  overflow-wrap: anywhere;
+}
+.metric dd { margin: 0; font-size: 19px; font-weight: 640; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.metric small { font-size: 10.5px; color: var(--faint); font-weight: 500; }
+
+/* --------------------------------------------------------- feedback --- */
+
+.empty {
+  display: grid; justify-items: center; gap: 10px;
+  border: 1px dashed var(--edge);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .015);
+  padding: 44px 22px;
+  text-align: center;
+}
+.empty svg { color: rgba(232, 121, 169, .55); }
+.empty h2 {
+  margin: 0;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 22px; font-weight: 600;
+}
+.empty p { margin: 0; max-width: 40ch; color: var(--muted); font-size: 13px; line-height: 1.55; }
+
+.notice {
+  border: 1px solid rgba(112, 201, 154, .24);
+  border-radius: 12px;
+  background: rgba(78, 167, 119, .08);
+  padding: 10px 12px;
+  color: #b7e4ca; font-size: 12.5px;
+}
+
+.error {
+  border: 1px solid rgba(238, 104, 137, .3);
+  border-radius: 12px;
+  background: rgba(238, 104, 137, .09);
+  padding: 10px 12px;
+  color: #ffb4c6; font-size: 12.5px;
+}
+
+.quiet { margin: 0; color: var(--faint); font-size: 12.5px; }
+
+/* ---------------------------------------------------------- dialogs --- */
+
+/*
+ * One sheet, used by everything that used to open its own modal.
+ *
+ * On a phone it is a bottom sheet with a safe-area-aware footer; on a desktop
+ * it is a centred panel. Same radii, same borders, same button treatment as
+ * the rest of the product.
+ */
+.sheetBackdrop {
+  position: fixed; inset: 0; z-index: 40;
+  display: grid; align-items: end;
+  background: rgba(5, 4, 6, .72);
+  backdrop-filter: blur(8px);
+  animation: sheetFade .16s ease-out;
+}
+
+.sheet {
+  display: flex; flex-direction: column;
+  width: 100%;
+  max-height: min(90dvh, 780px);
+  border: 1px solid var(--edge);
+  border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+  background: #15111a;
+  box-shadow: 0 -20px 60px rgba(0, 0, 0, .55);
+  animation: sheetRise .22s ease-out;
+  overflow: hidden;
+}
+
+.sheetHeader {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--edge);
+}
+.sheetHeader > div { flex: 1; min-width: 0; }
+.sheetHeader h2 {
+  margin: 2px 0 0;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 23px; font-weight: 600; line-height: 1.1;
+}
+
+.sheetBody {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: grid; gap: 14px;
+  align-content: start;
+}
+
+.sheetFooter {
+  display: flex; gap: 9px;
+  padding: 12px 16px max(12px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--edge);
+  background: rgba(12, 9, 14, .7);
+}
+.sheetFooter > *:last-child { margin-left: auto; }
+.sheetFooter .grow { flex: 1; }
+
+@keyframes sheetFade { from { opacity: 0; } }
+@keyframes sheetRise { from { transform: translateY(18px); opacity: 0; } }
+
+@media (min-width: 700px) {
+  .page { padding: 34px 30px max(56px, env(safe-area-inset-bottom)); }
+  .header { margin-bottom: 26px; }
+  .sheetBackdrop { align-items: center; justify-items: center; padding: 24px; }
+  .sheet {
+    width: min(660px, 100%);
+    border-bottom: 1px solid var(--edge);
+    border-radius: 22px;
+    animation: sheetFade .18s ease-out;
+  }
+  .sheetFooter { padding: 12px 16px; }
+}
+
+@media (min-width: 1100px) {
+  .page { padding: 42px max(34px, calc((100% - 1180px) / 2)) 64px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .personaCard, .chatGroup, .storyRow, .tab { transition: none; }
+  .personaCard:hover { transform: none; }
+  .sheetBackdrop, .sheet { animation: none; }
+}
+
+/*
+ * The menu control in a shell header.
+ *
+ * Placement only — the button itself is the shared rounded-square primitive.
+ * It is hidden once the sidebar is permanently visible, because a second way
+ * to open navigation that is already on screen is clutter, not affordance.
+ */
+.menuButton { display: none; flex: none; margin-top: 2px; }
+
+@media (max-width: 500px) {
+  .menuButton { display: inline-grid; }
+}
+
+/* A toggle row reads as chosen, not merely as ticked. */
+.toggleRow[data-active="true"] {
+  border-color: rgba(232, 121, 169, .3);
+  background: rgba(232, 121, 169, .07);
+}

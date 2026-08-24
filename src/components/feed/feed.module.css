@@ -80,17 +80,13 @@
 
 .controlRow { display: flex; align-items: center; gap: 8px; }
 
-.menuButton {
-  display: none;
-  flex: none;
-  width: 40px; height: 40px;
-  place-items: center;
-  border: 1px solid var(--edge);
-  border-radius: 12px;
-  background: var(--surface);
-  color: var(--ink);
-  cursor: pointer;
-}
+/*
+ * Placement only. The control itself is the shared rounded-square icon button
+ * (src/components/ui) — this rule decides where it sits and when it shows,
+ * because on a wide screen the sidebar is already visible and a menu control
+ * would be a second way to reach the same thing.
+ */
+.menuButton { display: none; }
 
 .search {
   flex: 1;
@@ -231,16 +227,23 @@
   transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
 }
 /*
- * The creation's accent on hover and focus.
+ * The creation's accent, at rest and on hover.
  *
- * A tinted edge rather than a tinted card: the accent says which creation this
- * is without competing with its artwork, and a grid of cards in eight
- * different colours still reads as one grid.
+ * The rule that keeps the feed from becoming a rainbow: artwork stays
+ * dominant and the accent is an edge, a faint wash under the copy and a glow
+ * that appears when the card is reached for. A grid of cards in eight
+ * different colours still reads as one grid, because the surface underneath
+ * every one of them is the same near-black.
  */
+.card {
+  border-color: color-mix(in srgb, var(--creation-accent-border, transparent) 45%, var(--edge));
+  background:
+    linear-gradient(to top, var(--creation-accent-surface, var(--surface)) 0%, var(--surface) 46%);
+}
 .card:hover {
   transform: translateY(-3px);
   border-color: var(--creation-accent-border, rgba(232, 121, 169, .3));
-  box-shadow: 0 18px 40px rgba(0, 0, 0, .38);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .38), 0 6px 26px var(--creation-accent-glow, transparent);
 }
 .card:focus-within { border-color: var(--creation-accent-border, rgba(232, 121, 169, .4)); }
 
@@ -252,14 +255,14 @@
   color: inherit;
   text-decoration: none;
 }
-.cardLink:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 15px; }
+.cardLink:focus-visible { outline: 2px solid var(--creation-accent-readable, var(--accent)); outline-offset: -2px; border-radius: 15px; }
 
 .cover {
   position: relative;
   /* Portrait, but not a poster: two of these still leave room for the copy. */
   aspect-ratio: 3 / 4;
   overflow: hidden;
-  background: linear-gradient(150deg, color-mix(in srgb, var(--accent-card) 30%, #2b2028), #141115);
+  background: linear-gradient(150deg, var(--creation-accent-deep, #2b2028), var(--creation-accent-surface, #141115) 72%, #141115);
 }
 .cover img {
   width: 100%;
@@ -283,7 +286,11 @@
 /* A gradient, not a panel: the badges stay legible and the art stays vivid. */
 .coverScrim {
   position: absolute; inset: 0;
-  background: linear-gradient(to bottom, rgba(8, 6, 9, .5) 0%, transparent 32%, transparent 62%, rgba(20, 16, 21, .72) 100%);
+  background:
+    /* The accent enters where the art meets the copy, so the two halves of the
+       card belong to each other instead of being a picture above a panel. */
+    linear-gradient(to bottom, transparent 58%, var(--creation-accent-glow, transparent) 100%),
+    linear-gradient(to bottom, rgba(8, 6, 9, .5) 0%, transparent 32%, transparent 62%, rgba(20, 16, 21, .72) 100%);
   pointer-events: none;
 }
 
@@ -647,7 +654,7 @@
 /* The drawer trigger belongs to the phone layout, where the shell hides its
    sidebar. It is the app's existing drawer, not a new navigation. */
 @media (max-width: 500px) {
-  .menuButton { display: grid; }
+  .menuButton { display: inline-grid; }
 }
 
 @media (prefers-reduced-motion: reduce) {

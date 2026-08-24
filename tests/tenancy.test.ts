@@ -267,6 +267,42 @@ describeTenancy("multi-tenant isolation", () => {
     expect(rows.rows[0]?.name).toBe("Alice Public World");
   });
 
+  /**
+   * Locked world previews.
+   *
+   * A public creation may be built on a private world, and the creation page
+   * shows that association without showing its content. Row level security
+   * correctly refuses to return the world row itself, which is why the
+   * association used to vanish entirely — so a preview function supplies the
+   * four columns the card needs and nothing else. These are the tests that
+   * matter: what a visitor gets, what they cannot get, and that the function
+   * cannot be pointed at a creation they were never allowed to read.
+   */
+  it("previews a private world attached to a public creation without its lore", async () => {
+    await asAccount(pool, alice, (run) => run("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [alicePublicCharacter, aliceWorld]));
+
+    // The row itself is still invisible to Bob. Nothing was loosened.
+    expect(await visibleCount(pool, bob, "worlds", "id=$1", [aliceWorld])).toBe(0);
+
+    const preview = await asAccount(pool, bob, (run) => run("SELECT * FROM creation_world_previews($1)", [alicePublicCharacter]));
+    const locked = preview.rows.find((row) => String(row.id) === aliceWorld);
+    expect(locked).toBeTruthy();
+    expect(locked?.name).toBe("Alice World");
+    // Four columns, so there is no lore to omit rather than lore that was
+    // omitted carefully.
+    expect(Object.keys(locked ?? {}).sort()).toEqual(["cover_path", "cover_url", "id", "name"]);
+    expect(JSON.stringify(preview.rows)).not.toContain("Secret canon");
+  });
+
+  it("refuses to preview the worlds of a creation the caller cannot read", async () => {
+    await asAccount(pool, alice, (run) => run("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [alicePrivateCharacter, aliceWorld]));
+    const preview = await asAccount(pool, bob, (run) => run("SELECT * FROM creation_world_previews($1)", [alicePrivateCharacter]));
+    expect(preview.rows).toHaveLength(0);
+    // The owner still sees their own.
+    const owner = await asAccount(pool, alice, (run) => run("SELECT * FROM creation_world_previews($1)", [alicePrivateCharacter]));
+    expect(owner.rows).toHaveLength(1);
+  });
+
   it("keeps a saved-worlds library private to the account that saved", async () => {
     await asAccount(pool, bob, (run) => run("INSERT INTO world_saves (user_id,world_id) VALUES ($1,$2)", [bob, alicePublicWorld]));
     expect(await visibleCount(pool, bob, "world_saves", "world_id=$1", [alicePublicWorld])).toBe(1);

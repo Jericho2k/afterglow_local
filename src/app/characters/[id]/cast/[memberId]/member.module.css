@@ -57,14 +57,13 @@
   display: flex; align-items: center;
   padding: max(12px, env(safe-area-inset-top)) 16px 0;
 }
-.circleButton {
-  display: grid; place-items: center; width: 38px; height: 38px;
-  border-radius: 50%; border: 1px solid var(--edge);
-  background: rgba(14, 10, 16, .58); backdrop-filter: blur(14px);
-  color: var(--ink); cursor: pointer; transition: background .18s, transform .18s;
-}
-.circleButton:hover { background: rgba(232, 121, 169, .16); }
-.circleButton:active { transform: scale(.94); }
+/*
+ * The hero controls use the shared rounded-square icon button now
+ * (src/components/ui). Back, More, Share and Save are the same kind of action
+ * everywhere in Afterglow, so they are the same shape everywhere. Circles are
+ * kept only where the circle means something — an avatar, a floating create
+ * control — and those are not built from this class.
+ */
 
 .heroCopy {
   position: relative; z-index: 2;
@@ -136,6 +135,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .circleButton { transition: none; }
   .spin { animation: none; }
 }

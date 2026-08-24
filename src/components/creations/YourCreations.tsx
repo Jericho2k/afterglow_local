@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Compass, Eye, Link2, Lock, Menu, Pencil, PenLine, Plus, Trash2, Users } from "lucide-react";
+import { Compass, Eye, Link2, Lock, Pencil, PenLine, Plus, Trash2, Users } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { AppMenuButton } from "@/components/ui";
 import { creationTitle, creationType, creationTypeLabels } from "@/lib/creation";
 import { creationActions, creationEditHref } from "@/lib/creation-actions";
 import { compactCount } from "@/lib/format";
@@ -122,7 +123,7 @@ export function YourCreations({ onOpenMenu, onCreate, onChanged }: {
 
   return <section className={styles.page} aria-label="Your creations">
     <header className={styles.head}>
-      {onOpenMenu && <button type="button" className={styles.menuButton} aria-label="Open menu" onClick={onOpenMenu}><Menu size={18} /></button>}
+      {onOpenMenu && <AppMenuButton className={styles.menuButton} onOpen={onOpenMenu} />}
       <span className={styles.eyebrow}>Everything you have made</span>
       <h1 className={styles.title}>Your Creations</h1>
       <p className={styles.lede}>Characters, casts and scenarios you own — published or not. Only you can see this list.</p>

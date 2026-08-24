@@ -1,3 +1,5 @@
+import { ProviderError, classifyProviderFailure } from "./provider-errors";
+
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 export type DeepSeekUsage = {
   prompt_tokens?: number;
@@ -12,7 +14,7 @@ export const model = () => process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
 
 function apiKey() {
   const key = process.env.DEEPSEEK_API_KEY;
-  if (!key) throw new Error("DEEPSEEK_API_KEY is not configured");
+  if (!key) throw new ProviderError("auth", { provider: "deepseek", detail: "DEEPSEEK_API_KEY is not configured" });
   return key;
 }
 
@@ -24,8 +26,15 @@ async function request(body: Record<string, unknown>, signal?: AbortSignal) {
     signal,
   });
   if (!response.ok) {
+    // Classified rather than stringified: the upstream body stays in the
+    // diagnostic bag and the reader is told one calm sentence instead.
     const detail = (await response.text()).slice(0, 500);
-    throw new Error(`DeepSeek request failed (${response.status}): ${detail}`);
+    throw new ProviderError(classifyProviderFailure(response.status, detail), {
+      provider: "deepseek",
+      model: String(body.model ?? ""),
+      status: response.status,
+      detail,
+    });
   }
   return response;
 }
@@ -50,7 +59,7 @@ export async function completionWithUsage(
   }, options.signal);
   const data = await response.json();
   const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("DeepSeek returned an empty response");
+  if (typeof content !== "string") throw new ProviderError("empty_response", { provider: "deepseek", model: options.model || model() });
   return { content, usage: (data?.usage ?? null) as DeepSeekUsage | null };
 }
 
@@ -67,7 +76,7 @@ export async function streamCompletion(
     max_tokens: options.maxTokens ?? 1800,
     ...(thinking ? {} : { temperature: options.temperature ?? 0.95 }),
   }, options.signal);
-  if (!response.body) throw new Error("DeepSeek returned no stream");
+  if (!response.body) throw new ProviderError("empty_response", { provider: "deepseek", model: options.model || model(), detail: "response carried no stream" });
   return response.body;
 }
 
