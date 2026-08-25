@@ -249,6 +249,29 @@ export const conversationUpdateSchema = z.object({
   temperature: z.number().min(0).max(2).nullable().optional(),
 }).refine((value) => Object.values(value).some((item) => item !== undefined), "Provide a conversation change");
 
+/**
+ * A reader's continuity complaint.
+ *
+ * The categories are the reader-facing wording of the failure taxonomy in
+ * src/lib/eval/taxonomy.ts — plain language rather than jargon, because the
+ * person answering is in the middle of a story, not filing a bug.
+ */
+export const memoryFeedbackCategories = [
+  "forgot_something",
+  "contradicted_itself",
+  "brought_back_finished",
+  "wrong_place_or_time",
+  "confused_who_is_present",
+  "other",
+] as const;
+
+export const memoryFeedbackSchema = z.object({
+  messageId: z.string().uuid(),
+  conversationId: z.string().uuid(),
+  category: z.enum(memoryFeedbackCategories),
+  note: text(2000).default(""),
+});
+
 export const personaSchema = z.object({
   name: text(100, 1),
   description: text(6000).default(""),

@@ -40,6 +40,7 @@ const consolidate = await import("@/app/api/memories/consolidate/route");
 const sceneState = await import("@/app/api/scene-state/route");
 const backup = await import("@/app/api/backup/route");
 const usage = await import("@/app/api/usage/route");
+const memoryFeedback = await import("@/app/api/memory-feedback/route");
 
 const aliceCharacter = "aaaaaaaa-0000-4000-8000-000000000001";
 const alicePublic = "aaaaaaaa-0000-4000-8000-000000000002";
@@ -242,6 +243,54 @@ describe("cross-account access", () => {
     const mine = await (await backup.GET()).json();
     expect(mine.characters).toHaveLength(2);
     expect(mine.messages).toHaveLength(1);
+  });
+});
+
+describe("continuity feedback", () => {
+  const assistantMessage = "dddddddd-0000-4000-8000-000000000009";
+
+  it("records a label against the caller's own reply and links its retrieval run", async () => {
+    account = { id: alice, email: null };
+    await query(
+      "INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'assistant','*She looks up.*')",
+      [assistantMessage, aliceConversation, alice],
+    );
+
+    const response = await memoryFeedback.POST(post("http://test/api/memory-feedback", {
+      messageId: assistantMessage, conversationId: aliceConversation,
+      category: "forgot_something", note: "she forgot the letters",
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json() as { feedback: { category: string } };
+    expect(body.feedback.category).toBe("forgot_something");
+
+    // Re-labelling replaces rather than duplicating: one reader, one verdict.
+    const again = await memoryFeedback.POST(post("http://test/api/memory-feedback", {
+      messageId: assistantMessage, conversationId: aliceConversation, category: "other", note: "",
+    }));
+    expect(again.status).toBe(200);
+    const rows = await query("SELECT category FROM memory_feedback WHERE message_id=$1", [assistantMessage]);
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0].category).toBe("other");
+  });
+
+  it("refuses to attach a label to somebody else's reply", async () => {
+    account = { id: bob, email: null };
+    const response = await memoryFeedback.POST(post("http://test/api/memory-feedback", {
+      messageId: assistantMessage, conversationId: aliceConversation, category: "other", note: "",
+    }));
+    // A crafted id is a 404, never a label on a stranger's story.
+    expect(response.status).toBe(404);
+    const rows = await query("SELECT user_id FROM memory_feedback WHERE message_id=$1", [assistantMessage]);
+    expect(rows.rows.every((row) => String(row.user_id) === alice)).toBe(true);
+  });
+
+  it("refuses an unauthenticated label", async () => {
+    account = null;
+    const response = await memoryFeedback.POST(post("http://test/api/memory-feedback", {
+      messageId: assistantMessage, conversationId: aliceConversation, category: "other", note: "",
+    }));
+    expect(response.status).toBe(401);
   });
 });
 
