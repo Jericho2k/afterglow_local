@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { normalizeBlocks } from "./rich-content";
+import { maxLoreBlockText, normalizeBlocks } from "./rich-content";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type SceneStamp, type SceneState, type World, type WorldSummary } from "./types";
 
@@ -830,7 +830,7 @@ export function worldFromRow(row: Record<string, unknown>, viewerId?: string): W
     name: String(row.name),
     description: String(row.description || ""),
     content: String(row.content || ""),
-    contentRich: normalizeBlocks(row.content_rich),
+    contentRich: normalizeBlocks(row.content_rich, maxLoreBlockText),
     coverPath: String(row.cover_path || ""),
     coverUrl: String(row.cover_url || ""),
     visibility: (["private", "unlisted", "public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as World["visibility"],

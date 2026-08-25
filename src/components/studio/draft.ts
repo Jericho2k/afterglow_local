@@ -186,6 +186,21 @@ export function draftProblems(draft: CreationDraft): DraftProblem[] {
   if (draft.creationType === "cast" && draft.cast.length === 0) {
     problems.push({ step: "definition", message: "Add at least one character to the cast." });
   }
+  /*
+   * A member somebody wrote into but never named.
+   *
+   * An untouched placeholder is dropped on save — it is editing state, not a
+   * character. One with a role or a definition in it is real work, so it is
+   * named here rather than discarded, and the creator is told which card to
+   * open instead of being handed "cast → 1 → name" by the server.
+   */
+  const unnamed = draft.cast
+    .map((member, index) => ({ member, position: index + 1 }))
+    .filter(({ member }) => !member.name.trim()
+      && [member.role, member.description, member.tagline, member.avatarPath, member.avatarUrl].some((value) => String(value ?? "").trim()));
+  for (const { position } of unnamed) {
+    problems.push({ step: "definition", message: `Cast member ${position} needs a name.` });
+  }
   if (draft.creationType === "scenario" && !draft.scenario.trim() && !draft.backstory.trim()) {
     problems.push({ step: "definition", message: "Describe what happens in this scenario." });
   }

@@ -10,6 +10,7 @@ import { avatarSource, profileAvatarBucket, worldCoverBucket } from "@/lib/stora
 import { toggleCreationSave } from "@/lib/saves";
 import { toggleWorldSave } from "@/lib/world-saves";
 import { compactCount } from "@/lib/format";
+import { maxLoreBlockText } from "@/lib/rich-content";
 import type { CharacterComment, CreationSummary, World } from "@/lib/types";
 import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
 import { iconButtonClass } from "@/components/ui";
@@ -183,6 +184,7 @@ export default function WorldProfile({ worldId }: { worldId: string }) {
           text={world.content}
           bucket={worldCoverBucket}
           className={styles.prose}
+          maxTextLength={maxLoreBlockText}
         />
       </section>}
 

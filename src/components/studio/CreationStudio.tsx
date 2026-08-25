@@ -70,6 +70,16 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [restored, setRestored] = useState(false);
+  /*
+   * True until the complete record has been fetched for an edit.
+   *
+   * Saving before it lands would write the list's copy of the creation, which
+   * is deliberately not the whole record — it carries no gallery and no import
+   * source material. Both would be blanked. The gallery case was already
+   * handled by loading the record; this closes the window before that load
+   * finishes, which is the same bug with a stopwatch attached.
+   */
+  const [loadingRecord, setLoadingRecord] = useState(Boolean(character));
   const [aiNotices, setAiNotices] = useState<CreationAiNotice[]>([]);
   const [localWorlds, setLocalWorlds] = useState<StudioWorld[]>(worlds);
   const savedGallery = useRef<StagedGalleryImage[]>(draftFromCharacter(character).gallery);
@@ -115,7 +125,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
         setDraft((current) => (restoredRef.current ? { ...current, gallery: current.gallery.length ? current.gallery : loaded.gallery } : loaded));
       })
       .catch(() => undefined)
-      .finally(() => { hydrated.current = true; });
+      .finally(() => { hydrated.current = true; if (!cancelled) setLoadingRecord(false); });
     return () => { cancelled = true; };
   }, [character]);
 
@@ -201,7 +211,10 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
     setStepIndex(0);
     if (summary.creationId) {
       // The saved record is fetched so the gallery and the server's own copy
-      // are available; the resumed draft stays in front of it.
+      // are available; the resumed draft stays in front of it. Saving waits
+      // for it, because until `record` exists a save would create a SECOND
+      // creation rather than updating the one being resumed.
+      setLoadingRecord(true);
       api<{ character: Character }>(`/api/characters/${summary.creationId}`)
         .then(({ character: full }) => {
           const loaded = draftFromCharacter(full);
@@ -209,7 +222,8 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
           baseline.current = loaded;
           setRecord(full);
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => setLoadingRecord(false));
     }
     scrollTop();
   }, []);
@@ -320,7 +334,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
   }
 
   const title = creationTitle({ title: draft.title, name: draft.name, creationType: draft.creationType, profileType: draft.profileType });
-  const savable = Boolean(draft.title.trim() || draft.name.trim());
+  const savable = Boolean(draft.title.trim() || draft.name.trim()) && !loadingRecord;
   const last = stepIndex >= steps.length - 1;
   const publishLabel = record
     ? "Save changes"
@@ -427,8 +441,8 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
             Continue<ArrowRight size={17} aria-hidden />
           </button>
           : last
-            ? <button type="button" className={styles.primaryCta} disabled={busy || problems.length > 0} onClick={() => void save({ close: true })}>
-              {busy ? "Saving…" : publishLabel}
+            ? <button type="button" className={styles.primaryCta} disabled={busy || loadingRecord || problems.length > 0} onClick={() => void save({ close: true })}>
+              {busy ? "Saving…" : loadingRecord ? "Loading…" : publishLabel}
             </button>
             : <button type="button" className={styles.primaryCta} onClick={() => { setStepIndex(stepIndex + 1); scrollTop(); }}>
               Next: {steps[stepIndex + 1].label}<ArrowRight size={17} aria-hidden />

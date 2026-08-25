@@ -2,7 +2,7 @@ import { z } from "zod";
 import { creationTypes, responseLengths, roleplayEngineIds } from "./types";
 import { discoverySorts } from "./discovery";
 import { adultTagsIn, canonicalTag, maxHashtags, maxTags, normalizeHashtag } from "./tags";
-import { maxBlockText, maxBlocks, maxCaption } from "./rich-content";
+import { maxBlockText, maxBlocks, maxCaption, maxLoreBlockText } from "./rich-content";
 
 const text = (max: number, min = 0) => z.preprocess(
   (value) => value == null ? "" : typeof value === "string" ? value : String(value),
@@ -43,8 +43,8 @@ const visibility = z.enum(["private", "unlisted", "public"]).default("private");
  * which accepts an http(s) address and nothing else. A block cannot express an
  * injection because the format has nowhere to put one.
  */
-const richBlockSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("text"), text: text(maxBlockText) }),
+const richBlockSchemaFor = (limit: number) => z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: text(limit) }),
   z.object({
     type: z.literal("image"),
     path: storagePath,
@@ -66,10 +66,52 @@ const richBlockSchema = z.discriminatedUnion("type", [
  * applies the same rule on the way back out, so a value that survives one
  * survives both.
  */
-const richContent = z.preprocess(
-  (value) => (Array.isArray(value) ? value : []).filter((block) => richBlockSchema.safeParse(block).success),
-  z.array(richBlockSchema).max(maxBlocks),
-).default([]);
+const richContentFor = (limit: number) => {
+  const block = richBlockSchemaFor(limit);
+  return z.preprocess(
+    (value) => (Array.isArray(value) ? value : []).filter((entry) => block.safeParse(entry).success),
+    z.array(block).max(maxBlocks),
+  ).default([]);
+};
+
+const richContent = richContentFor(maxBlockText);
+
+/**
+ * World lore blocks.
+ *
+ * Held to `worldSchema.content`'s own ceiling rather than the creation-field
+ * one. The two used to differ, so a creator who pasted 100,000 characters of
+ * canon had the block silently rejected by this preprocess, fell back to the
+ * plain column, and then had that sliced to 30,000 by `normalizeBlocks`. Both
+ * halves now stop in the same place, which is the place the editor advertises.
+ */
+const loreContent = richContentFor(maxLoreBlockText);
+
+/**
+ * Cast entries, with untouched placeholder rows dropped.
+ *
+ * "Add character" in the studio appends an empty member for the creator to
+ * type into, which is correct editing state and is not content. Sending that
+ * row here used to fail the whole save — a creation with fifty finished fields
+ * was rejected because one placeholder had no name yet, and the creator was
+ * told "cast → 1 → name". A row nobody has touched is therefore not a member
+ * and is dropped, exactly as an empty rich-content paragraph is.
+ *
+ * A row that carries anything at all still needs a name: discarding a member
+ * somebody wrote a definition for would be silent data loss, so that stays an
+ * error — with a message that names the member rather than an array index.
+ */
+function castEntries(value: unknown) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) return value;
+  const touched = (entry: unknown) => {
+    if (!entry || typeof entry !== "object") return true;
+    const member = entry as Record<string, unknown>;
+    return ["name", "role", "description", "tagline", "avatarPath", "avatarUrl"]
+      .some((field) => String(member[field] ?? "").trim().length > 0);
+  };
+  return value.filter(touched);
+}
 
 export const characterCastMemberSchema = z.object({
   // Optional because every member written before cast pages existed has none.
@@ -108,7 +150,7 @@ const characterFields = z.object({
   avatarPath: storagePath,
   accent,
   backstory: text(30000).default(""),
-  cast: z.preprocess((value) => value == null ? [] : value, z.array(characterCastMemberSchema).max(50)).default([]),
+  cast: z.preprocess(castEntries, z.array(characterCastMemberSchema).max(50)).default([]),
   lorebook: text(50000).default(""),
   personality: text(12000).default(""),
   scenario: text(12000).default(""),
@@ -168,6 +210,14 @@ export const characterSchema = characterFields.transform((value) => {
 export function characterValidationMessage(error: z.ZodError) {
   const issue = error.issues[0];
   if (!issue) return "Invalid character";
+  // A cast problem is about a person, not about an array index. "cast → 1 →
+  // name" is accurate and unusable; the creator needs to know which card in
+  // the editor to open.
+  if (issue.path[0] === "cast" && typeof issue.path[1] === "number") {
+    const position = issue.path[1] + 1;
+    if (issue.path[2] === "name") return `Cast member ${position} needs a name.`;
+    return `Cast member ${position}: ${String(issue.path[2] ?? "value")} — ${issue.message}`;
+  }
   const field = issue.path.length ? issue.path.join(" → ") : "Character";
   return `${field}: ${issue.message}`;
 }
@@ -303,7 +353,7 @@ export const worldSchema = z.object({
   name: text(120, 1),
   description: text(500).default(""),
   content: text(100000, 1),
-  contentRich: richContent,
+  contentRich: loreContent,
   coverPath: storagePath,
   coverUrl: imageSource,
   visibility,

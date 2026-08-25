@@ -102,7 +102,26 @@
   color: var(--faint);
   transition: border-color .18s, background .18s;
 }
+/*
+ * One focus treatment, on the control the reader sees.
+ *
+ * The search field is a rounded pill with an input inside it, and the global
+ * `input:focus-visible` rule drew a second, square, 2px rose outline around
+ * that inner input — the rectangle inside the control. It won on source order,
+ * not on intent: a CSS module and globals.css have identical specificity here
+ * (0,1,1), and Next emits the module chunk first.
+ *
+ * So the reset below is pinned to `:focus-visible` as well, which makes it
+ * (0,2,1) and settles the question by specificity rather than by whatever
+ * order the bundler happens to emit. The focus state itself moves to the pill,
+ * where it follows the pill's own radius: a lit border for any focus, plus a
+ * ring for keyboard focus, so the state is never removed — only relocated.
+ */
 .search:focus-within { border-color: rgba(232, 121, 169, .42); background: var(--surface-raised); }
+.search:has(:focus-visible) {
+  border-color: var(--accent, #e879a9);
+  box-shadow: 0 0 0 3px rgba(232, 121, 169, .22);
+}
 .search input {
   flex: 1;
   min-width: 0;
@@ -113,7 +132,15 @@
   font-size: 13px;
   outline: none;
 }
+.search input:focus,
+.search input:focus-visible { outline: none; box-shadow: none; }
 .search input::placeholder { color: var(--faint); }
+/* WebKit decorates type="search" with its own control. This field already has
+   a real Clear button beside it, so the native one is a second, unstyled copy. */
+.search input::-webkit-search-decoration,
+.search input::-webkit-search-cancel-button,
+.search input::-webkit-search-results-button,
+.search input::-webkit-search-results-decoration { -webkit-appearance: none; appearance: none; }
 .clearSearch {
   flex: none;
   display: grid; place-items: center;

@@ -1,7 +1,7 @@
 "use client";
 
 import { avatarSource } from "@/lib/storage";
-import { renderableBlocks, type RichBlock } from "@/lib/rich-content";
+import { maxBlockText, renderableBlocks, type RichBlock } from "@/lib/rich-content";
 import styles from "./rich.module.css";
 
 /**
@@ -17,7 +17,7 @@ import styles from "./rich.module.css";
  * it reaches this component. There is no `dangerouslySetInnerHTML` in this
  * feature, at any layer.
  */
-export function RichContent({ blocks, text, bucket, className = "", imageSize = "full" }: {
+export function RichContent({ blocks, text, bucket, className = "", imageSize = "full", maxTextLength = maxBlockText }: {
   blocks: RichBlock[] | null | undefined;
   /** The plain text this content falls back to. Every legacy record is this. */
   text: string;
@@ -26,8 +26,14 @@ export function RichContent({ blocks, text, bucket, className = "", imageSize = 
   className?: string;
   /** `inset` narrows images inside a already-narrow column, such as a chat. */
   imageSize?: "full" | "inset";
+  /**
+   * The field's own text ceiling. World lore is allowed far more than a
+   * creation description, and rendering must not be the place a document is
+   * quietly shortened.
+   */
+  maxTextLength?: number;
 }) {
-  const resolved = renderableBlocks(blocks, text);
+  const resolved = renderableBlocks(blocks, text, maxTextLength);
   if (!resolved.length) return null;
 
   return <div className={`${styles.content} ${className}`}>

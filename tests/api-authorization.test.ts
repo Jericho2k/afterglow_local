@@ -322,14 +322,23 @@ describe("public characters", () => {
 
   it("gives the owner the private world itself rather than a locked card", async () => {
     const privateWorld=crypto.randomUUID();
-    await query("INSERT INTO worlds (id,user_id,name,content,visibility) VALUES ($1,$2,'Private world','Creator-only canon','private')",[privateWorld,alice]);
+    await query("INSERT INTO worlds (id,user_id,name,description,content,visibility) VALUES ($1,$2,'Private world','A creator-only setting','Creator-only canon','private')",[privateWorld,alice]);
     await query("INSERT INTO character_worlds (character_id,world_id) VALUES ($1,$2)",[alicePublic,privateWorld]);
 
     account={id:alice,email:null};
     const body=await (await characterDetail.GET(new Request(`http://test/api/characters/${alicePublic}`),{params:Promise.resolve({id:alicePublic})})).json();
     expect(body.worlds).toHaveLength(1);
     expect(body.worlds[0].locked).toBeUndefined();
-    expect(body.worlds[0].content).toBe("Creator-only canon");
+    // The owner gets a real, openable world card: identity, cover and the one
+    // line the card renders.
+    expect(body.worlds[0].name).toBe("Private world");
+    expect(body.worlds[0].description).toBe("A creator-only setting");
+    expect(body.worlds[0].visibility).toBe("private");
+    // And not the lore. This page draws cards; the canon lives on the world's
+    // own page, which is what stops a creation attached to a hundred-thousand
+    // character world from shipping that document on every view.
+    expect(body.worlds[0].content).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("Creator-only canon");
   });
 
   it("enforces owner-only character mutation at the route boundary", async () => {

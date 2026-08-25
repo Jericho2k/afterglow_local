@@ -128,25 +128,43 @@ function closeTruncated(input: string) {
 }
 
 /**
- * Parses provider JSON, repairing it only when a strict parse fails.
+ * What had to be done to make the document parse.
+ *
+ * `truncated` is the one worth telling somebody about: the response stopped
+ * early, `closeTruncated` discarded the partial tail, and whatever the model
+ * had not finished writing is simply not there. Everything that did arrive is
+ * intact — but the caller should say so rather than present a short result as
+ * a complete one.
+ */
+export type JsonRepair = "none" | "structure" | "truncated";
+
+export type LenientJson<T> = { value: T; repair: JsonRepair };
+
+/**
+ * Parses provider JSON, repairing it only when a strict parse fails, and
+ * reporting which repair was needed.
  *
  * Valid documents are never rewritten, so this cannot corrupt well-formed
  * output; it only widens what counts as recoverable.
  */
-export function parseLenientJson<T>(raw: string): T {
+export function parseLenientJsonWithRepair<T>(raw: string): LenientJson<T> {
   const isolated = isolate(raw);
 
-  const attempts = [
-    isolated,
-    repairStructure(isolated),
-    closeTruncated(repairStructure(isolated)),
+  const attempts: { text: string; repair: JsonRepair }[] = [
+    { text: isolated, repair: "none" },
+    { text: repairStructure(isolated), repair: "structure" },
+    { text: closeTruncated(repairStructure(isolated)), repair: "truncated" },
   ];
 
   let lastError: unknown = null;
   for (const attempt of attempts) {
-    try { return JSON.parse(attempt) as T; } catch (error) { lastError = error; }
+    try { return { value: JSON.parse(attempt.text) as T, repair: attempt.repair }; } catch (error) { lastError = error; }
   }
 
   const detail = lastError instanceof Error ? lastError.message : String(lastError);
   throw new Error(`The importer returned malformed JSON that could not be repaired (${detail}). Try the import again.`);
+}
+
+export function parseLenientJson<T>(raw: string): T {
+  return parseLenientJsonWithRepair<T>(raw).value;
 }

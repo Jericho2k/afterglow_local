@@ -3,14 +3,36 @@
 import { useState } from "react";
 import { Check, Globe2, Map, Plus, Upload, X } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { maxLoreBlockText } from "@/lib/rich-content";
 import { avatarSource, worldCoverBucket } from "@/lib/storage";
 import { uploadImage } from "@/lib/uploads";
-import type { World } from "@/lib/types";
+import type { World, WorldSummary } from "@/lib/types";
 import { Counter, Field, TextArea, TextInput } from "./fields";
 import type { CreationDraft } from "./draft";
 import styles from "./studio.module.css";
 
-export type StudioWorld = World & { characterCount?: number };
+/**
+ * A world as the studio's picker knows one.
+ *
+ * Built on `WorldSummary`, not `World`, because that is what `/api/worlds`
+ * actually returns — card columns with no lore in them. Declaring it as a full
+ * `World` was a lie the compiler could not catch, and it crashed this step:
+ * the card below read `world.content.length` on a value that was never sent,
+ * so opening the World step with any world whose short description was empty
+ * threw and took the whole shell down with it.
+ */
+export type StudioWorld = WorldSummary & { characterCount?: number };
+
+/** A freshly created world, reduced to what a picker card needs. */
+export function studioWorldFromRecord(world: World, characterCount = 0): StudioWorld {
+  return {
+    id: world.id, name: world.name, description: world.description,
+    coverPath: world.coverPath, coverUrl: world.coverUrl, visibility: world.visibility,
+    saveCount: world.saveCount, savedByViewer: world.savedByViewer, ownedByViewer: world.ownedByViewer,
+    creationCount: characterCount, creator: world.creator, updatedAt: world.updatedAt,
+    characterCount,
+  };
+}
 
 /**
  * Worlds.
@@ -91,7 +113,9 @@ function WorldCard({ world, selected, onToggle }: { world: StudioWorld; selected
     </span>
     <span className={styles.worldCopy}>
       <strong>{world.name}</strong>
-      <p>{world.description || `${world.content.length.toLocaleString()} characters of world canon`}</p>
+      {/* A card describes a world; it never reaches for the lore, which a
+          listing deliberately does not carry. */}
+      <p>{world.description || "Reusable setting and lore"}</p>
       <span>{world.characterCount ? `Used by ${world.characterCount} creation${world.characterCount === 1 ? "" : "s"}` : "Not attached anywhere else yet"}</span>
     </span>
     {selected && <span className={styles.worldMark} aria-hidden><Check size={14} /></span>}
@@ -117,7 +141,7 @@ function WorldCreator({ onCreated, onCancel, onError }: {
         method: "POST",
         body: JSON.stringify({ name, description, content, coverPath, coverUrl: "", visibility: "private" }),
       });
-      onCreated({ ...data.world, characterCount: 0 });
+      onCreated(studioWorldFromRecord(data.world));
     } catch (error) {
       onError(error instanceof Error ? error.message : "Could not create that world");
     } finally { setBusy(false); }
@@ -152,8 +176,8 @@ function WorldCreator({ onCreated, onCancel, onError }: {
     <Field label="Short description" optional hint="Write one line for the world card.">
       <TextInput value={description} maxLength={500} onChange={setDescription} placeholder="One line about this setting" />
     </Field>
-    <Field label="World canon" required hint="Write everything the AI should consistently know about this setting: rules, factions, locations, history, terminology and constraints." counter={<Counter value={content.length} max={100000} />}>
-      <TextArea value={content} maxLength={100000} size="tall" onChange={setContent} placeholder="Write the rules, places, factions and history of this world" />
+    <Field label="World canon" required hint="Write everything the AI should consistently know about this setting: rules, factions, locations, history, terminology and constraints." counter={<Counter value={content.length} max={maxLoreBlockText} />}>
+      <TextArea value={content} maxLength={maxLoreBlockText} size="tall" onChange={setContent} placeholder="Write the rules, places, factions and history of this world" />
     </Field>
     <button type="button" className={styles.primaryCta} disabled={busy || !name.trim() || !content.trim()} onClick={() => void create()}>
       {busy ? "Creating…" : "Create & attach"}

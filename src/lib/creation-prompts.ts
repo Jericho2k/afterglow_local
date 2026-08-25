@@ -75,14 +75,29 @@ PLATFORM TAXONOMY
 ${tagVocabulary()}`;
 }
 
-const outputContract = `Return ONLY valid JSON with exactly these fields:
+/*
+ * The output contract, in the order the fields must be written.
+ *
+ * The order is load-bearing, which is not obvious and cost a real bug. Output
+ * is capped (see `creationTokenBudget`), a long import routinely reaches that
+ * cap, and a response that stops early loses everything after the cut — the
+ * repair pass discards the partial tail so the rest still parses. `cast` used
+ * to sit second from last, immediately after the two longest prose fields in
+ * the document, so on exactly the imports a cast matters for it was the first
+ * thing to disappear. Every other field survived, which is why the importer
+ * looked like it "worked well overall" while losing cast members.
+ *
+ * So the structure comes first and the open-ended prose comes last: the cast
+ * is written before anything long enough to run the budget out, and what a
+ * truncated response now loses is the tail of an opening rather than a person.
+ */
+const outputContract = `Return ONLY valid JSON with exactly these fields, written in this order:
 {
   "creationType": "character | cast | scenario",
   "title": "string",
   "name": "string",
   "tagline": "string",
-  "description": "string",
-  "userRole": "string",
+  "cast": [{ "name": "string", "role": "string", "tagline": "string", "description": "string" }],
   "tags": ["exact platform tag"],
   "hashtags": ["lowercase word"],
   "quickFacts": [{ "label": "string", "value": "string" }],
@@ -90,6 +105,8 @@ const outputContract = `Return ONLY valid JSON with exactly these fields:
   "ageWarnings": ["string"],
   "accent": "#RRGGBB",
   "avatarUrl": "string",
+  "userRole": "string",
+  "description": "string",
   "personality": "string",
   "backstory": "string",
   "scenario": "string",
@@ -98,9 +115,10 @@ const outputContract = `Return ONLY valid JSON with exactly these fields:
   "exampleDialogue": "string",
   "greeting": "string",
   "alternateGreetings": ["string"],
-  "cast": [{ "name": "string", "role": "string", "tagline": "string", "description": "string" }],
   "world": { "name": "string", "description": "string", "content": "string" }
-}`;
+}
+
+Write "cast" in full before the long prose fields below it. Every character the material defines belongs in it, complete, even if that means the later fields are shorter.`;
 
 const typeInstruction: Record<CreationType, string> = {
   character: "The creator has already chosen Character. Build one primary character; leave \"cast\" for genuinely supporting people only.",
@@ -265,6 +283,13 @@ export function creationTokenBudget(mode: "idea" | "import", sourceLength: numbe
   if (mode === "idea") return 3000;
   return Math.min(8000, Math.max(4800, Math.ceil(sourceLength / 5)));
 }
+
+/**
+ * How long a source has to be before one organising pass reliably runs out of
+ * room. Above this, the field order in the contract is what decides which
+ * material survives — which is why `cast` is written near the top of it.
+ */
+export const budgetPressureThreshold = 40_000;
 
 /** The inventory pass is proportional to the source too, but much smaller. */
 export function inventoryTokenBudget(sourceLength: number) {

@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {useRouter} from "next/navigation";
 import type { AppSettings, Character, Conversation, Memory, MemoryArc, Message, ModelCatalog, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
 import { api } from "@/lib/api-client";
-import { creationKindLine, creationSubject, creationTitle } from "@/lib/creation";
-import { CreationStudio, type StudioWorld } from "@/components/studio";
+import { creationKindLine, creationSubject, creationTitle, inlineTitle } from "@/lib/creation";
+import { CreationStudio, studioWorldFromRecord, type StudioWorld } from "@/components/studio";
 import { DiscoveryFeed } from "@/components/feed";
 import { YourCreations } from "@/components/creations";
 import { WorldsHub, WorldEditor } from "@/components/worlds";
@@ -20,6 +20,7 @@ import { AppMenuButton } from "@/components/ui";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
 import { claimDepth, justCreatedParam, rootDepth } from "@/lib/back-navigation";
+import { savedCreationDestination } from "@/lib/creation-actions";
 
 type WorldWithCount = StudioWorld;
 type AppView = "home" | "chats" | "chat" | "worlds" | "personas" | "profile" | "saved" | "creations";
@@ -190,6 +191,19 @@ export default function Home() {
     ]);
     setPersonas(personaData.personas); setWorlds(worldData.worlds);
   }, []);
+
+  /**
+   * Bring every cached list back in step, in the background.
+   *
+   * Never awaited by anything that navigates. A refresh is housekeeping; a
+   * navigation is the reader's decision, and one must not wait on the other —
+   * which is exactly what produced the delayed post-creation redirect.
+   */
+  const refreshLibraries = useCallback(() => {
+    void loadCharacters();
+    void loadChatIndex().catch(() => undefined);
+    void loadLibraries().catch(() => undefined);
+  }, [loadCharacters, loadChatIndex, loadLibraries]);
 
   useEffect(() => {
     setAgeAccepted(localStorage.getItem("afterglow_age_verified") === "yes");
@@ -482,7 +496,7 @@ export default function Home() {
           <button className={activeView === "saved" ? "active" : ""} onClick={() => goToView("saved")}><span>❏</span><strong>Saved</strong></button>
           <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><span>≛</span><strong>Settings</strong></button>
         </nav>
-        <section className="sidebar-characters" aria-label="Your Creations"><button className="sidebar-section-link" onClick={()=>goToView("creations")}>Your Creations<span aria-hidden>›</span></button>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button onClick={()=>openCharacterPage(character.id)}>View {creationTitle(character)}</button><button onClick={()=>{setSidebarCharacterMenuId(null);setSidebarOpen(false);router.push(`/characters/${character.id}/edit`);}}>Edit {creationTitle(character)}</button></div>}</div>)}</section>
+        <section className="sidebar-characters" aria-label="Your Creations"><button className="sidebar-section-link" onClick={()=>goToView("creations")}>Your Creations<span aria-hidden>›</span></button>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button aria-label={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}>View creation</button><button aria-label={`Edit ${creationTitle(character)}`} onClick={()=>{setSidebarCharacterMenuId(null);setSidebarOpen(false);router.push(`/characters/${character.id}/edit`);}}>Edit creation</button></div>}</div>)}</section>
         <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}><span>⇥</span><strong>Sign out</strong></button></div></div>
       </aside>
       {/* The floating hamburger is gone. Every shell view now renders the one
@@ -538,7 +552,7 @@ export default function Home() {
             </div>}
             <div className="composer">
               <button className={`composer-plus ${composerToolsOpen ? "active" : ""}`} aria-label="Chat tools" onClick={() => setComposerToolsOpen((value) => !value)}>{composerToolsOpen ? "×" : "+"}</button>
-              <textarea ref={composerRef} value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${selected.name}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
+              <textarea ref={composerRef} value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${inlineTitle(creationSubject(selected), 24)}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
               <button className="send-button" aria-label="Send message" disabled={streaming || !composer.trim()} onClick={() => void send()}>↑</button>
             </div>
             <small className="composer-hint"><span className="desktop-composer-hint">Enter to send · Shift + Enter for a new line</span><span className="mobile-composer-hint">Enter for a new line · Tap ↑ to send</span></small>
@@ -554,21 +568,33 @@ export default function Home() {
         onSaved={() => { setEditingWorld(null); void loadLibraries(); }}
         onDeleted={() => { setEditingWorld(null); void loadLibraries(); }}
       />}
-      {studioOpen && <CreationStudio character={editing} worlds={worlds} startStep={studioStartSection} onLibrariesChanged={() => void loadLibraries()} onClose={() => { setStudioOpen(false); setEditing(null); }} onSaved={async (character,{created}) => {
-        const wasNew=created;
+      {studioOpen && <CreationStudio character={editing} worlds={worlds} startStep={studioStartSection} onLibrariesChanged={() => void loadLibraries()} onClose={() => { setStudioOpen(false); setEditing(null); }} onSaved={(character,{created}) => {
         setStudioOpen(false); setEditing(null);
-        await Promise.all([loadCharacters(),loadLibraries(),loadChatIndex()]);
-        if(wasNew){
-          // A brand-new creation lands on its own page so the creator sees
-          // what they made. The studio's entry is replaced rather than stacked
-          // on, and the marker tells that page's Back control to go to
-          // Discovery instead of back into the completed form.
+        const destination=savedCreationDestination(character.id,{created,justCreatedParam});
+        if(destination.kind==="creation"){
+          /*
+           * A brand-new creation lands on its own page, immediately and once.
+           *
+           * The three library refreshes below used to be AWAITED before this
+           * navigation. The studio had already closed, so the reader was
+           * looking at the feed while six requests finished, and then the
+           * detail page opened by itself five to ten seconds later — the
+           * "delayed surprise redirect". The refreshes are still wanted, but
+           * they are background work and are no longer allowed to decide when
+           * or whether anything navigates.
+           *
+           * The studio's entry is replaced rather than stacked on, and the
+           * marker tells that page's Back control to go to Discovery instead
+           * of back into the completed form.
+           */
           claimDepth(window.sessionStorage,rootDepth);
-          router.replace(`/characters/${character.id}?${justCreatedParam}=1`);
+          router.replace(destination.href);
+          refreshLibraries();
           return;
         }
         setSelectedId(character.id); setActiveView("chat");
-      }} onDeleted={async () => { setStudioOpen(false); setEditing(null); await Promise.all([loadCharacters(),loadChatIndex()]); goToView("chats"); }} />}
+        refreshLibraries();
+      }} onDeleted={() => { setStudioOpen(false); setEditing(null); goToView("chats"); void Promise.all([loadCharacters(),loadChatIndex()]).catch(()=>undefined); }} />}
       {isAdmin && memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); setMemoryArcs(data.arcs); }} />}
       {storyNavigation.surface==="story" && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setStoryNavigation(closedStoryNavigation)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={async (id) => { await loadChat(selected.id,id); setStoryNavigation(closedStoryNavigation); }} onChange={() => void loadChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>setStoryNavigation(openStoryChild("model"))} onOpenPersona={()=>setStoryNavigation(openStoryChild("persona"))} onOpenInstructions={()=>setStoryNavigation(openStoryChild("instructions"))} onOpenWorld={()=>setStoryNavigation(openStoryChild("world"))} />}
       {settingsOpen && <SettingsSheet isAdmin={isAdmin} settings={settings} models={models} catalog={modelCatalog} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings({...defaultSettings,...value}); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings; catalog: ModelCatalog }>("/api/settings"); setSettings({...defaultSettings,...data.settings}); if(data.catalog)setModelCatalog(data.catalog); }} />}
@@ -708,9 +734,18 @@ function ConversationDrawer({ character, conversation, settings, catalog, person
 
 function WorldPicker({character,worlds,onClose,onCreated,onSaved}:{character:Character;worlds:WorldWithCount[];onClose:()=>void;onCreated:(world:WorldWithCount)=>void;onSaved:(character:Character)=>void}) {
   const [selected,setSelected]=useState<string[]>(character.worldIds); const [creating,setCreating]=useState(false); const [name,setName]=useState(""); const [description,setDescription]=useState(""); const [content,setContent]=useState(""); const [busy,setBusy]=useState(false); const [error,setError]=useState("");
-  async function create(){setBusy(true);setError("");try{const data=await api<{world:World}>("/api/worlds",{method:"POST",body:JSON.stringify({name,description,content,visibility:"private"})});const world={...data.world,characterCount:0};onCreated(world);setSelected((items)=>[...items,world.id]);setCreating(false);setName("");setDescription("");setContent("");}catch(e){setError(e instanceof Error?e.message:"Could not create world");}finally{setBusy(false);}}
-  async function save(){setBusy(true);setError("");try{const data=await api<{character:Character}>(`/api/characters/${character.id}`,{method:"PATCH",body:JSON.stringify({...draftPayload(draftFromCharacter(character)),worldIds:selected})});onSaved(data.character);}catch(e){setError(e instanceof Error?e.message:"Could not attach worlds");setBusy(false);}}
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e)=>{if(e.currentTarget===e.target)onClose();}}><aside className="memory-drawer picker-drawer"><header><div><span className="eyebrow">Character canon</span><h2>Worlds for {character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="picker-body"><p>Worlds remain attached to the character, so every story with this character shares the same canon.</p><div className="world-picker-list">{worlds.map((world)=><label key={world.id} className={selected.includes(world.id)?"selected":""}><input type="checkbox" checked={selected.includes(world.id)} onChange={(e)=>setSelected(e.target.checked?[...selected,world.id]:selected.filter((id)=>id!==world.id))}/><span><strong>{world.name}</strong><small>{world.description||compactMessagePreview(world.content,130)}</small></span></label>)}</div>{!worlds.length&&!creating&&<div className="empty-library-note">Create a world here, then it will be attached to this character.</div>}{creating?<div className="inline-create"><label>World name<input value={name} onChange={(e)=>setName(e.target.value)}/></label><label>Short description<input value={description} onChange={(e)=>setDescription(e.target.value)}/></label><label>World canon<textarea rows={8} value={content} onChange={(e)=>setContent(e.target.value)}/></label><div><button className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary" disabled={busy||!name.trim()||!content.trim()} onClick={()=>void create()}>{busy?"Creating…":"Create & attach"}</button></div></div>:<button className="secondary create-from-picker" onClick={()=>setCreating(true)}>＋ Create world</button>}{error&&<div className="form-error">{error}</div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={()=>void save()}>{busy?"Saving…":"Save worlds"}</button></footer></aside></div>;
+  async function create(){setBusy(true);setError("");try{const data=await api<{world:World}>("/api/worlds",{method:"POST",body:JSON.stringify({name,description,content,visibility:"private"})});const world=studioWorldFromRecord(data.world);onCreated(world);setSelected((items)=>[...items,world.id]);setCreating(false);setName("");setDescription("");setContent("");}catch(e){setError(e instanceof Error?e.message:"Could not create world");}finally{setBusy(false);}}
+  /**
+   * Attaching worlds is a full update, so it is built from the full record.
+   *
+   * The shell's list is deliberately trimmed — it carries no import source
+   * material, because nothing in the shell renders it — and this endpoint
+   * replaces every field it is sent. Reading the complete creation first is
+   * what keeps changing a world link from quietly blanking the creator's
+   * original paste.
+   */
+  async function save(){setBusy(true);setError("");try{const current=await api<{character:Character}>(`/api/characters/${character.id}`);const data=await api<{character:Character}>(`/api/characters/${character.id}`,{method:"PATCH",body:JSON.stringify({...draftPayload(draftFromCharacter(current.character)),worldIds:selected})});onSaved(data.character);}catch(e){setError(e instanceof Error?e.message:"Could not attach worlds");setBusy(false);}}
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e)=>{if(e.currentTarget===e.target)onClose();}}><aside className="memory-drawer picker-drawer"><header><div><span className="eyebrow">Character canon</span><h2>Worlds for {character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="picker-body"><p>Worlds remain attached to the character, so every story with this character shares the same canon.</p><div className="world-picker-list">{worlds.map((world)=><label key={world.id} className={selected.includes(world.id)?"selected":""}><input type="checkbox" checked={selected.includes(world.id)} onChange={(e)=>setSelected(e.target.checked?[...selected,world.id]:selected.filter((id)=>id!==world.id))}/><span><strong>{world.name}</strong><small>{world.description||"Reusable setting and lore"}</small></span></label>)}</div>{!worlds.length&&!creating&&<div className="empty-library-note">Create a world here, then it will be attached to this character.</div>}{creating?<div className="inline-create"><label>World name<input value={name} onChange={(e)=>setName(e.target.value)}/></label><label>Short description<input value={description} onChange={(e)=>setDescription(e.target.value)}/></label><label>World canon<textarea rows={8} value={content} onChange={(e)=>setContent(e.target.value)}/></label><div><button className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary" disabled={busy||!name.trim()||!content.trim()} onClick={()=>void create()}>{busy?"Creating…":"Create & attach"}</button></div></div>:<button className="secondary create-from-picker" onClick={()=>setCreating(true)}>＋ Create world</button>}{error&&<div className="form-error">{error}</div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={()=>void save()}>{busy?"Saving…":"Save worlds"}</button></footer></aside></div>;
 }
 
 function PersonaAvatar({ persona }: { persona: Persona }) { const source = avatarSource(profileAvatarBucket, persona.avatarPath, persona.avatarUrl); return <div className="persona-preview" style={{"--accent":persona.accent} as React.CSSProperties}>{source?<img src={source} alt=""/>:<span>{initials(persona.name)}</span>}</div>; }

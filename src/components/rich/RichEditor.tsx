@@ -21,7 +21,7 @@ import styles from "./editor.module.css";
  * textarea it has always been until somebody adds a picture, and it goes back
  * to being one if they remove the last one.
  */
-export function RichEditor({ blocks, text, bucket, onChange, placeholder, size = "tall", onError }: {
+export function RichEditor({ blocks, text, bucket, onChange, placeholder, size = "tall", onError, maxTextLength = maxBlockText }: {
   blocks: RichBlock[];
   /** The plain text the field currently holds, for content with no blocks yet. */
   text: string;
@@ -31,6 +31,8 @@ export function RichEditor({ blocks, text, bucket, onChange, placeholder, size =
   placeholder?: string;
   size?: "tall" | "epic";
   onError: (message: string) => void;
+  /** The field's own text ceiling, which is not the same for every surface. */
+  maxTextLength?: number;
 }) {
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -70,18 +72,18 @@ export function RichEditor({ blocks, text, bucket, onChange, placeholder, size =
    * clicked through; this component only draws it and reports what would be
    * stored.
    */
-  const incoming = normalizeBlocks(blocks);
-  const [draft, setDraft] = useState<EditorState>(() => editorStateFrom(blocks, text));
+  const incoming = normalizeBlocks(blocks, maxTextLength);
+  const [draft, setDraft] = useState<EditorState>(() => editorStateFrom(blocks, text, maxTextLength));
   // What this component last handed upward, so a parent echoing our own value
   // back is not mistaken for someone else replacing the content.
   const emitted = useRef<string>(JSON.stringify({ blocks: incoming, text }));
 
   useEffect(() => {
-    const next = JSON.stringify({ blocks: normalizeBlocks(blocks), text });
+    const next = JSON.stringify({ blocks: normalizeBlocks(blocks, maxTextLength), text });
     if (next === emitted.current) return;
     emitted.current = next;
-    setDraft(editorStateFrom(blocks, text));
-  }, [blocks, text]);
+    setDraft(editorStateFrom(blocks, text, maxTextLength));
+  }, [blocks, text, maxTextLength]);
 
   const editing = draft;
   const withImages = hasImages(editing);
@@ -90,8 +92,8 @@ export function RichEditor({ blocks, text, bucket, onChange, placeholder, size =
   function apply(next: EditorState) {
     const collapsed = collapseIfPlain(next);
     setDraft(collapsed);
-    const value = storedValue(collapsed);
-    emitted.current = JSON.stringify({ blocks: normalizeBlocks(value.blocks), text: value.text });
+    const value = storedValue(collapsed, maxTextLength);
+    emitted.current = JSON.stringify({ blocks: normalizeBlocks(value.blocks, maxTextLength), text: value.text });
     onChange(value);
   }
 
@@ -122,7 +124,7 @@ export function RichEditor({ blocks, text, bucket, onChange, placeholder, size =
         <textarea
           className={`${styles.textarea} ${withImages ? styles.compact : size === "epic" ? styles.epic : styles.tall}`}
           value={block.text}
-          maxLength={maxBlockText}
+          maxLength={maxTextLength}
           placeholder={index === 0 ? placeholder : "Keep writing…"}
           onChange={(event) => setText(index, event.target.value)}
         />

@@ -51,8 +51,10 @@
  * below Back instead of opposite it. The flex context lives here now, beside
  * the rest of the bar's geometry, so the pair cannot come apart again.
  */
+/* Same construction and the same menu as the creation hero, so the same rank:
+   the bar that owns the More menu must paint above the copy it opens over. */
 .heroBar {
-  position: relative; z-index: 2;
+  position: relative; z-index: 8;
   display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
   padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-left)) 0 max(16px, env(safe-area-inset-right));
 }
@@ -64,7 +66,8 @@
  * control — and those are not built from this class.
  */
 
-.heroCopy { position: relative; z-index: 2; align-self: end; padding: 0 20px 26px; display: grid; gap: 10px; }
+.heroCopy { position: relative; z-index: 2; align-self: end; padding: 0 20px 26px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.heroCopy > * { min-width: 0; }
 .kicker {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent);
@@ -74,10 +77,20 @@
   font-size: clamp(36px, 10vw, 54px); line-height: 1.02; font-weight: 600;
   background: linear-gradient(102deg, #ffd9ea, #e879a9 46%, #a874f0);
   -webkit-background-clip: text; background-clip: text; color: transparent;
+  /* A world name is authored text and may be one unbroken string. */
+  min-width: 0; overflow-wrap: anywhere; word-break: break-word;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden;
 }
-.tagline { margin: 0; max-width: 48ch; color: #ded2dc; font-size: 14.5px; line-height: 1.55; }
+.tagline {
+  margin: 0; max-width: 48ch; color: #ded2dc; font-size: 14.5px; line-height: 1.55;
+  overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden;
+}
 
-.body { padding: 20px 16px 0; display: grid; gap: 14px; }
+/* Grid items sized to their content are how a single unbreakable token in a
+   lore document widens the whole page. `minmax(0, …)` forbids it. */
+.body { padding: 20px 16px 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.body > * { min-width: 0; }
 .card {
   border: 1px solid var(--edge); border-radius: 18px;
   background: linear-gradient(180deg, var(--surface-raised), var(--surface));
@@ -85,7 +98,9 @@
 }
 .card > header { display: flex; align-items: center; gap: 9px; margin: 0 0 14px; color: var(--accent); }
 .card > header h2 { margin: 0; flex: 1; font-size: 14px; font-weight: 620; color: var(--ink); }
-.prose { margin: 0; color: #d6c9d4; font-size: 14px; line-height: 1.72; white-space: pre-wrap; }
+/* World lore is the surface most likely to be pasted JSON, a route table or a
+   code block, none of which contain a space. It wraps rather than widening. */
+.prose { margin: 0; min-width: 0; color: #d6c9d4; font-size: 14px; line-height: 1.72; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .characters { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .characters a {
@@ -102,8 +117,9 @@
   font-size: 13px; font-weight: 600;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
-.characters strong { display: block; font-size: 13.5px; }
-.characters small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--faint); }
+.characters a > div, .characters a > span:last-child { min-width: 0; }
+.characters strong { display: block; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.characters small { display: block; min-width: 0; margin-top: 2px; font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .state { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 12px; background: #0b080d; color: #f6eff4; text-align: center; padding: 30px; }
 .state h1 { margin: 0; font-family: var(--font-serif), Georgia, serif; font-size: 26px; font-weight: 600; }
@@ -119,7 +135,7 @@
   .heroCopy { padding: 0 max(34px, calc((100% - 1120px) / 2)) 40px; }
   .body { padding: 24px max(34px, calc((100% - 1120px) / 2)) 0; }
   .card { padding: 22px; }
-  .characters { grid-template-columns: 1fr 1fr; }
+  .characters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }
 
 /* --------------------------------------------------------- Worlds V2 ---- */

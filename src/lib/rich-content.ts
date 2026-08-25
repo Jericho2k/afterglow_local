@@ -33,7 +33,22 @@ export type RichBlock = RichTextBlock | RichImageBlock;
 
 /** How many blocks one field may hold. Matches the database constraints. */
 export const maxBlocks = 200;
+/**
+ * How much text one block may carry, by field.
+ *
+ * A block is a paragraph of an authored field, so its ceiling belongs to that
+ * field rather than to the format. One shared constant is what made the World
+ * editor promise 100,000 characters of lore and then silently store 30,000:
+ * the lore travelled through `normalizeBlocks`, which sliced it to the
+ * creation-field limit on the way past.
+ *
+ * `maxBlockText` stays the default for creation fields, whose own limits
+ * (description 6,000, opening 8,000) are smaller again. `maxLoreBlockText`
+ * matches `worldSchema.content` exactly, so the two halves of a world's lore
+ * pair can never disagree about how much of it survives.
+ */
 export const maxBlockText = 30_000;
+export const maxLoreBlockText = 100_000;
 export const maxCaption = 200;
 
 export function isTextBlock(block: RichBlock): block is RichTextBlock {
@@ -58,7 +73,7 @@ function str(value: unknown, limit: number) {
  * rather than rendered or thrown on — a page must not go blank because one
  * image entry lost its path.
  */
-export function normalizeBlocks(value: unknown): RichBlock[] {
+export function normalizeBlocks(value: unknown, limit = maxBlockText): RichBlock[] {
   if (!Array.isArray(value)) return [];
   const blocks: RichBlock[] = [];
   for (const entry of value) {
@@ -78,7 +93,7 @@ export function normalizeBlocks(value: unknown): RichBlock[] {
     // Everything that is not an image is text. A block from a future version
     // of this format degrades to whatever text it carries rather than
     // disappearing silently.
-    const text = str(item.text ?? item.content, maxBlockText);
+    const text = str(item.text ?? item.content, limit);
     if (!text.trim()) continue;
     blocks.push({ type: "text", text });
   }
@@ -121,8 +136,8 @@ export function textToRich(text: string): RichBlock[] {
  * Blocks win when there are any; otherwise the plain text is presented as one
  * block. Callers therefore never branch on which era a record was written in.
  */
-export function renderableBlocks(blocks: RichBlock[] | null | undefined, fallbackText: string): RichBlock[] {
-  const normalized = normalizeBlocks(blocks);
+export function renderableBlocks(blocks: RichBlock[] | null | undefined, fallbackText: string, limit = maxBlockText): RichBlock[] {
+  const normalized = normalizeBlocks(blocks, limit);
   return normalized.length ? normalized : textToRich(fallbackText ?? "");
 }
 
@@ -138,8 +153,8 @@ export function imageCount(blocks: RichBlock[] | null | undefined) {
  * column for no benefit and makes every such row look "rich" in the editor.
  * When the blocks are just the text, the field goes back to being plain.
  */
-export function blocksAreJustText(blocks: RichBlock[], text: string) {
-  const normalized = normalizeBlocks(blocks);
+export function blocksAreJustText(blocks: RichBlock[], text: string, limit = maxBlockText) {
+  const normalized = normalizeBlocks(blocks, limit);
   if (normalized.some(isImageBlock)) return false;
   return richToText(normalized) === text.trim();
 }
@@ -150,8 +165,8 @@ export function blocksAreJustText(blocks: RichBlock[], text: string) {
  * One call site for the invariant, so the text column and the block column can
  * never disagree about what the content says.
  */
-export function richFieldPayload(blocks: RichBlock[]): { text: string; rich: RichBlock[] } {
-  const normalized = normalizeBlocks(blocks);
+export function richFieldPayload(blocks: RichBlock[], limit = maxBlockText): { text: string; rich: RichBlock[] } {
+  const normalized = normalizeBlocks(blocks, limit);
   const text = richToText(normalized);
-  return { text, rich: blocksAreJustText(normalized, text) ? [] : normalized };
+  return { text, rich: blocksAreJustText(normalized, text, limit) ? [] : normalized };
 }

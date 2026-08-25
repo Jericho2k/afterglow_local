@@ -1,5 +1,5 @@
 import { asUser, creationSummaryFromRow, worldFromRow } from "@/lib/db";
-import { richFieldPayload } from "@/lib/rich-content";
+import { maxLoreBlockText, richFieldPayload } from "@/lib/rich-content";
 import { worldSchema } from "@/lib/schemas";
 import { currentAccount, unauthorized } from "@/lib/session";
 
@@ -64,7 +64,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const parsed = worldSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message || "Invalid world" }, { status: 400 });
   const value = parsed.data;
-  const lore = richFieldPayload(value.contentRich.length ? value.contentRich : [{ type: "text", text: value.content }]);
+  const lore = richFieldPayload(value.contentRich.length ? value.contentRich : [{ type: "text", text: value.content }], maxLoreBlockText);
   // user_id in the predicate means a request naming somebody else's world
   // updates nothing rather than being silently accepted.
   const result = await asUser(account.id, (client) => client.query(

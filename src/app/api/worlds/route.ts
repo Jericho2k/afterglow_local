@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asUser, worldFromRow, worldSummaryFromRow } from "@/lib/db";
-import { richFieldPayload } from "@/lib/rich-content";
+import { maxLoreBlockText, richFieldPayload } from "@/lib/rich-content";
 import { worldSchema } from "@/lib/schemas";
 import { currentAccount, unauthorized } from "@/lib/session";
 
@@ -107,7 +107,7 @@ export async function POST(request: Request) {
   const id = randomUUID(); const value = parsed.data;
   // Text and blocks are written from one place, so the column a prompt reads
   // and the column a page renders can never disagree about what the lore says.
-  const lore = richFieldPayload(value.contentRich.length ? value.contentRich : [{ type: "text", text: value.content }]);
+  const lore = richFieldPayload(value.contentRich.length ? value.contentRich : [{ type: "text", text: value.content }], maxLoreBlockText);
   const result = await asUser(account.id, (client) => client.query(
     `INSERT INTO worlds (id,user_id,name,description,content,content_rich,visibility,cover_path,cover_url)
      VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9) RETURNING *`,

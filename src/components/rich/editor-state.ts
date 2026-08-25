@@ -1,4 +1,4 @@
-import { normalizeBlocks, richToText, textToRich, type RichBlock } from "@/lib/rich-content";
+import { maxBlockText, normalizeBlocks, richToText, textToRich, type RichBlock } from "@/lib/rich-content";
 
 /**
  * The rich editor's block algebra, separated from the component that draws it.
@@ -25,8 +25,8 @@ import { normalizeBlocks, richToText, textToRich, type RichBlock } from "@/lib/r
 export type EditorState = RichBlock[];
 
 /** Editing state for a stored pair. Always has at least one block to type in. */
-export function editorStateFrom(blocks: RichBlock[] | null | undefined, text: string): EditorState {
-  const normalized = normalizeBlocks(blocks);
+export function editorStateFrom(blocks: RichBlock[] | null | undefined, text: string, limit = maxBlockText): EditorState {
+  const normalized = normalizeBlocks(blocks, limit);
   if (normalized.length) return normalized;
   const fromText = textToRich(text ?? "");
   return fromText.length ? fromText : [{ type: "text", text: "" }];
@@ -92,8 +92,8 @@ export function collapseIfPlain(state: EditorState): EditorState {
  * what keeps every creation written before rich content existed from growing a
  * blocks column merely by being opened.
  */
-export function storedValue(state: EditorState): { blocks: RichBlock[]; text: string } {
-  const cleaned = normalizeBlocks(state);
+export function storedValue(state: EditorState, limit = maxBlockText): { blocks: RichBlock[]; text: string } {
+  const cleaned = normalizeBlocks(state, limit);
   const text = richToText(cleaned);
   return hasImages(cleaned) ? { blocks: cleaned, text } : { blocks: [], text };
 }
