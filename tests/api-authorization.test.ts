@@ -89,7 +89,7 @@ describe("unauthenticated access", () => {
       conversations.GET(new Request("http://test/api/conversations?characterId=" + aliceCharacter)),
       memories.GET(new Request("http://test/api/memories?characterId=" + aliceCharacter)),
       backup.GET(),
-      usage.GET(),
+      usage.GET(new Request("http://test/api/usage")),
       chat.POST(post("http://test/api/chat", { conversationId: aliceConversation, content: "hi", action: "send" })),
     ]);
     for (const response of responses) expect(response.status).toBe(401);
@@ -126,7 +126,7 @@ describe("cross-account access", () => {
     const retry=await (await conversations.POST(post("http://test/api/conversations",requestBody))).json();
     expect(retry.conversation.id).toBe(first.conversation.id);
     expect(Number((await query("SELECT COUNT(*) count FROM conversations WHERE user_id=$1 AND branch_request_id=$2",[alice,branchRequestId])).rows[0].count)).toBe(1);
-    const ledger=await (await usage.GET()).json();
+    const ledger=await (await usage.GET(new Request("http://test/api/usage"))).json();
     expect(ledger.userMessages).toBe(1);
   });
 
@@ -135,7 +135,7 @@ describe("cross-account access", () => {
     streamCompletion.mockRejectedValueOnce(new Error("provider unavailable"));
     const failed=await chat.POST(post("http://test/api/chat",{conversationId:aliceConversation,content:"This never reached generation",action:"send"}));
     expect(failed.status).toBe(502);
-    expect((await (await usage.GET()).json()).userMessages).toBe(1);
+    expect((await (await usage.GET(new Request("http://test/api/usage"))).json()).userMessages).toBe(1);
 
     const encoder=new TextEncoder();
     streamCompletion.mockResolvedValueOnce(new ReadableStream({start(controller){
@@ -146,7 +146,7 @@ describe("cross-account access", () => {
     const generated=await chat.POST(post("http://test/api/chat",{conversationId:aliceConversation,content:"This reaches generation",action:"send"}));
     expect(generated.status).toBe(200);
     await generated.text();
-    expect((await (await usage.GET()).json()).userMessages).toBe(2);
+    expect((await (await usage.GET(new Request("http://test/api/usage"))).json()).userMessages).toBe(2);
   });
 
   it("lists only the caller's complete chat index", async () => {
@@ -225,10 +225,10 @@ describe("cross-account access", () => {
 
   it("keeps the usage ledger admin-only and account-scoped", async () => {
     account = { id: bob, email: null };
-    expect((await usage.GET()).status).toBe(403);
+    expect((await usage.GET(new Request("http://test/api/usage"))).status).toBe(403);
 
     account = { id: alice, email: null };
-    const own = await (await usage.GET()).json();
+    const own = await (await usage.GET(new Request("http://test/api/usage"))).json();
     expect(own.usage.requests).toBe(1);
   });
 

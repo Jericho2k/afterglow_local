@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Database, Download, Gauge, Sparkles, Upload } from "lucide-react";
 import type { AppSettings, ModelCatalog, UsageResponse } from "@/lib/types";
+import type { UsageRangeId } from "@/lib/usage-range";
 import { api } from "@/lib/api-client";
 import { responseLengthBudget } from "@/lib/response-length";
 import { responseLengths } from "@/lib/types";
@@ -32,6 +33,16 @@ const usd = (value: number) => new Intl.NumberFormat(undefined, {
 }).format(value);
 const percent = (value: number | null) => value == null ? "—" : `${Math.round(value * 100)}%`;
 
+/** The windows an operator actually asks about. */
+const usageRanges: Array<{ id: UsageRangeId; label: string }> = [
+  { id: "today", label: "Today" },
+  { id: "7d", label: "7 days" },
+  { id: "30d", label: "30 days" },
+  { id: "month", label: "This month" },
+  { id: "all", label: "All time" },
+  { id: "custom", label: "Custom" },
+];
+
 const usageLabels: Record<string, string> = {
   chat: "Replies", regenerate: "Regenerations", continue: "Continuations",
   memory_consolidation: "Memory updates", memory_curation: "Canon curation",
@@ -56,11 +67,38 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
 }) {
   const [form, setForm] = useState(settings);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
+  const [usageRange, setUsageRange] = useState<UsageRangeId>("30d");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [usageLoading, setUsageLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  useEffect(() => { if (isAdmin) api<UsageResponse>("/api/usage").then(setUsage).catch(() => undefined); }, [isAdmin]);
+  /*
+   * The ledger for one window.
+   *
+   * The offset goes with the request because "today" and "this month" are the
+   * READER'S day and month, and the server cannot know which clock they are on.
+   * The filtering itself is SQL: an account with a year of history must not
+   * download its ledger to a browser to have it sliced there.
+   *
+   * A custom range only asks once both ends exist, so typing a start date does
+   * not fire a request for a range with no end.
+   */
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (usageRange === "custom" && !(customFrom && customTo)) return;
+    const query = new URLSearchParams({ range: usageRange, offset: String(new Date().getTimezoneOffset()) });
+    if (usageRange === "custom") { query.set("from", customFrom); query.set("to", customTo); }
+    let live = true;
+    setUsageLoading(true);
+    api<UsageResponse>(`/api/usage?${query}`)
+      .then((data) => { if (live) setUsage(data); })
+      .catch(() => undefined)
+      .finally(() => { if (live) setUsageLoading(false); });
+    return () => { live = false; };
+  }, [isAdmin, usageRange, customFrom, customTo]);
 
   async function save() {
     setBusy(true); setError("");
@@ -203,6 +241,27 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
 
     {isAdmin && usage && <section className={styles.card}>
       <div className={styles.cardHeader}><Database size={16} aria-hidden /><h2>Usage &amp; cost</h2></div>
+
+      {/* Every figure in this card describes the selected window. A report
+          whose parts cover different periods is worse than one that covers the
+          wrong period, so the range is chosen once and applied to all of it. */}
+      <div className={styles.rangePicker} role="group" aria-label="Reporting period">
+        {usageRanges.map((option) => <button
+          key={option.id}
+          type="button"
+          className={usageRange === option.id ? `${styles.rangeChip} ${styles.rangeChipActive}` : styles.rangeChip}
+          aria-pressed={usageRange === option.id}
+          onClick={() => setUsageRange(option.id)}
+        >{option.label}</button>)}
+      </div>
+      {usageRange === "custom" && <div className={styles.rangeCustom}>
+        <label className={styles.fieldLabel}>From<input className={styles.input} type="date" value={customFrom} max={customTo || undefined} onChange={(event) => setCustomFrom(event.target.value)} /></label>
+        <label className={styles.fieldLabel}>To<input className={styles.input} type="date" value={customTo} min={customFrom || undefined} onChange={(event) => setCustomTo(event.target.value)} /></label>
+      </div>}
+      <p className={styles.fieldHint} style={{ margin: "0 0 12px" }}>
+        {usageLoading ? "Reading the ledger…" : `${usage.range?.label ?? "All time"} · ${number(usage.replies ?? 0)} replies · ${number(usage.userMessages ?? 0)} messages sent`}
+      </p>
+
       <dl className={styles.metrics}>
         <div className={styles.metric}><dt>API calls</dt><dd>{number(usage.usage.requests)}</dd></div>
         <div className={styles.metric}><dt>Input tokens</dt><dd>{number(usage.usage.promptTokens)}</dd></div>

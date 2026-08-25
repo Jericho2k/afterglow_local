@@ -529,20 +529,49 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
       linear-gradient(to top, #0b080d 1%, rgba(11, 8, 13, .35) 26%, transparent 60%);
   }
   .heroBar { padding: 22px 34px 0; max-width: 1280px; width: 100%; margin: 0 auto; }
+  /*
+   * The copy column, which is now a column.
+   *
+   * It used to be six independent children, each `width: 100%` capped at its
+   * own maximum and pushed right with `margin-left: auto`. So each one computed
+   * its own left edge: the title started at 620px from the right, the tagline —
+   * capped at 42ch, roughly 500px — started 120px further in, and the CTA row,
+   * sized to its content, started further in again. That is the misaligned
+   * subtitle in the report, and the "small floating-looking button" is the same
+   * bug: a control shrink-wrapped around its label and parked at the right.
+   *
+   * Making `.heroCopy` itself the 620px column, right-aligned inside the
+   * 1280px page as the design intends, gives every child ONE left edge to sit
+   * on. Children stop needing `margin-left: auto`, because the column already
+   * carries the offset.
+   */
   .heroCopy {
     align-self: end;
-    width: 100%; max-width: 1280px; margin: 0 auto;
-    padding: 0 34px 46px; margin-left: auto;
-    align-items: flex-start;
+    box-sizing: content-box;
+    width: 100%; max-width: 620px;
+    /* The right-hand padding of the 1280px page, held on the column itself. */
+    margin: 0 max(34px, calc((100% - 1280px) / 2 + 34px)) 0 auto;
+    padding: 0 0 46px;
+    align-items: stretch;
   }
-  .heroCopy > * { max-width: 620px; margin-left: auto; width: 100%; }
+  .heroCopy > * { max-width: 100%; margin-left: 0; width: 100%; }
   /* More room than a card gets, and still a bounded number of lines. */
   .name { font-size: clamp(56px, 5.4vw, 78px); -webkit-line-clamp: 3; line-clamp: 3; }
   .verified { margin-left: .16em; }
+  /* Measure is a reading constraint, not an alignment one: the tagline stays
+     short and starts exactly where the title starts. */
   .tagline { font-size: 16px; max-width: 42ch; }
-  .ctaRow { width: auto; max-width: 620px; }
-  .primaryCta { flex: 0 1 auto; padding: 0 30px; }
-  .stats { max-width: 620px; }
+  /*
+   * The primary call to action, at the width it deserves.
+   *
+   * From the left edge of the content column to the Save control on the right,
+   * which is what makes it read as this page's main action rather than as a
+   * chip that happens to be first. Height is unchanged — a wide button, not a
+   * tall one.
+   */
+  .ctaRow { width: 100%; max-width: 100%; }
+  .primaryCta { flex: 1 1 auto; min-width: 0; padding: 0 30px; }
+  .stats { max-width: 100%; }
   .stat { padding: 16px 10px; }
   .stat dd { font-size: 20px; }
 
@@ -564,6 +593,12 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
 
 @media (min-width: 1440px) {
   .heroCopy { padding-bottom: 56px; }
+}
+
+/* A wider column once there is room for one, so the CTA does not look stranded
+   in the middle of a very wide hero. The alignment rule above is unchanged. */
+@media (min-width: 1200px) {
+  .heroCopy { max-width: 660px; }
 }
 
 /* Wide phones keep the same composition with a little more breathing room. */

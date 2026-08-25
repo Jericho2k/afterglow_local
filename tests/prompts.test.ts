@@ -46,7 +46,11 @@ describe("roleplay prompt", () => {
 
   it("supports a direct but autonomous adult roleplay preset", () => {
     const prompt = roleplayPrompt(character, "", [], [], { ownerName:"Alex", ownerProfile:"", roleplayPreset:"raw" });
-    expect(prompt).toContain("RAW ADULT");
+    expect(prompt).toContain("AFTERGLOW ROLEPLAY ENGINE — DIRECT");
+    // The restraint that keeps a manner from becoming a subject. Without it,
+    // choosing Direct made every conversation sexual, which is the failure the
+    // engine rework exists to prevent.
+    expect(prompt).toContain("Directness is a manner, not a subject");
     expect(prompt).toContain("do not sanitize");
     expect(prompt).toContain("they are not wish-fulfillment puppets");
     expect(prompt).toContain("initiate, hesitate, negotiate, refuse, stop, or leave");
