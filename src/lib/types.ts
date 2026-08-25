@@ -298,7 +298,16 @@ export type LockedWorldPreview = {
 };
 
 /** Either a world the viewer may open, or the locked stand-in for one they may not. */
-export type AttachedWorld = (World & { locked?: false }) | LockedWorldPreview;
+/**
+ * A world as a creation page shows one: a card.
+ *
+ * Built on `WorldSummary` rather than `World` because the creation page renders
+ * a cover, a name and a description and never the lore. It used to carry the
+ * whole canon document per attached world — so a creation built on a
+ * hundred-thousand-character world downloaded that document on every view, to
+ * display none of it. The world's own page is where lore is read.
+ */
+export type AttachedWorld = (WorldSummary & { locked?: false }) | LockedWorldPreview;
 
 /** The lean row a world card is built from. Never carries lore. */
 export type WorldSummary = {

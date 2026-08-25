@@ -1,2 +1,2 @@
 export { CreationStudio } from "./CreationStudio";
-export type { StudioWorld } from "./WorldStep";
+export { studioWorldFromRecord, type StudioWorld } from "./WorldStep";

@@ -95,3 +95,11 @@ html,body{max-width:100%;overflow-x:hidden}.memory-drawer{min-width:0;max-width:
  */
 .chat-menu-button{display:none;margin-right:4px}
 @media(max-width:500px){.chat-menu-button{display:inline-grid}}
+
+/* Long titles in the chat header.
+   The identity block already constrains its column, but the serif title itself
+   had no limit, so a three-hundred-character creation pushed the header's
+   actions off the right of the screen. One line, ellipsis, full text on hover —
+   the stored title is untouched. */
+.identity-profile>span{min-width:0;max-width:100%}.identity-profile strong{display:block;min-width:0;max-width:min(52vw,520px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:500px){.identity-profile strong{max-width:min(60vw,320px)}}

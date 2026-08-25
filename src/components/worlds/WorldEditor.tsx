@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Compass, Globe2, ImagePlus, Lock, Trash2, Upload, X } from "lucide-react";
 import { api } from "@/lib/api-client";
-import { normalizeBlocks, richToText, textToRich, type RichBlock } from "@/lib/rich-content";
+import { maxLoreBlockText, normalizeBlocks, richToText, textToRich, type RichBlock } from "@/lib/rich-content";
 import { avatarSource, worldCoverBucket } from "@/lib/storage";
 import { uploadImage } from "@/lib/uploads";
 import type { CharacterVisibility, World, WorldSummary } from "@/lib/types";
@@ -36,7 +36,7 @@ export function WorldEditor({ world, onSaved, onClose, onDeleted }: {
   const [description, setDescription] = useState(world?.description ?? "");
   const [content, setContent] = useState("content" in (world ?? {}) ? (world as World).content : "");
   const [blocks, setBlocks] = useState<RichBlock[]>(
-    world && "contentRich" in world ? normalizeBlocks((world as World).contentRich) : [],
+    world && "contentRich" in world ? normalizeBlocks((world as World).contentRich, maxLoreBlockText) : [],
   );
   const [visibility, setVisibility] = useState<CharacterVisibility>(world?.visibility ?? "private");
   const [coverPath, setCoverPath] = useState(world?.coverPath ?? "");
@@ -60,7 +60,7 @@ export function WorldEditor({ world, onSaved, onClose, onDeleted }: {
       .then(({ world: full }) => {
         if (cancelled || dirty.current) return;
         setContent(full.content);
-        setBlocks(normalizeBlocks(full.contentRich));
+        setBlocks(normalizeBlocks(full.contentRich, maxLoreBlockText));
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
@@ -159,13 +159,16 @@ export function WorldEditor({ world, onSaved, onClose, onDeleted }: {
           label="Lore & canon"
           required
           hint="Write everything the AI should consistently know about this setting: rules, places, factions, history, terminology and constraints. You can place maps and artwork between sections — readers see them, the AI does not."
-          counter={<Counter value={lore.length} max={100000} />}
+          counter={<Counter value={lore.length} max={maxLoreBlockText} />}
         >
           <RichEditor
             blocks={blocks}
             text={content}
             bucket={worldCoverBucket}
             size="epic"
+            // The number under the field and the number the field enforces are
+            // the same constant, and it is the same one `worldSchema` uses.
+            maxTextLength={maxLoreBlockText}
             onError={setError}
             onChange={({ blocks: next, text }) => { dirty.current = true; setBlocks(next); setContent(text); }}
             placeholder="Write the rules, places, factions and history of this world"

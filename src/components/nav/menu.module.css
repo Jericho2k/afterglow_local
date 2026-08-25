@@ -6,7 +6,9 @@
  * surface in the app.
  */
 
-.wrapper { position: relative; display: inline-flex; }
+/* An anchor for the panel, and a rank above the sibling controls in the same
+   bar so a menu never opens behind the button beside it. */
+.wrapper { position: relative; display: inline-flex; z-index: 1; }
 
 .panel {
   position: absolute;
@@ -17,10 +19,20 @@
   max-width: min(280px, calc(100vw - 32px));
   padding: 6px;
   border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(18, 14, 20, 0.97);
-  backdrop-filter: blur(18px);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  /*
+   * Opaque first, blurred second.
+   *
+   * The panel opens over cover art and over a large gradient heading, so its
+   * legibility cannot depend on what happens to be behind it. The base colour
+   * is solid; the blur and the faint sheen on top are what keep it feeling
+   * like an Afterglow surface rather than a grey box. A browser that drops the
+   * backdrop filter loses the atmosphere and keeps every label readable.
+   */
+  background: #16111b;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0));
+  backdrop-filter: blur(18px) saturate(130%);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(0, 0, 0, 0.4);
   display: flex;
   flex-direction: column;
   gap: 2px;

@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { DataType, newDb } from "pg-mem";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { characterSchema } from "@/lib/schemas";
-import { creationCtaLabel, creationOverview, creationTitle, creationType, primaryCharacterName } from "@/lib/creation";
+import { creationCtaDescription, creationCtaLabel, creationOverview, creationTitle, creationType, primaryCharacterName } from "@/lib/creation";
 import { normalizeHashtag } from "@/lib/tags";
 import type { Character } from "@/lib/types";
 
@@ -86,13 +86,19 @@ describe("creation presentation", () => {
   it("does not invent a primary character for a scenario", () => {
     const scenario = { ...base, creationType: "scenario" as const, profileType: "ensemble" as const, title: "The Final War", name: "The Final War" };
     expect(primaryCharacterName(scenario)).toBe("");
-    expect(creationCtaLabel(scenario)).toBe("Enter The Final War");
+    // The control says what pressing it does; the creation is named in the
+    // heading above it and in the button's accessible description, never
+    // spliced into the label where a 300-character title would break it.
+    expect(creationCtaLabel(scenario)).toBe("Enter story");
+    expect(creationCtaDescription(scenario)).toBe("Enter The Final War");
     expect(creationType(scenario)).toBe("scenario");
   });
 
   it("addresses a character by name and an experience by title", () => {
-    expect(creationCtaLabel({ ...base, title: "Your New Roommate", name: "Emily Carter" })).toBe("Chat with Emily Carter");
-    expect(creationCtaLabel({ ...base, creationType: "cast", profileType: "ensemble", title: "Roommates From Hell" })).toBe("Enter Roommates From Hell");
+    expect(creationCtaLabel({ ...base, title: "Your New Roommate", name: "Emily Carter" })).toBe("Start chat");
+    expect(creationCtaDescription({ ...base, title: "Your New Roommate", name: "Emily Carter" })).toBe("Start a chat with Emily Carter");
+    expect(creationCtaLabel({ ...base, creationType: "cast", profileType: "ensemble", title: "Roommates From Hell" })).toBe("Enter story");
+    expect(creationCtaDescription({ ...base, creationType: "cast", profileType: "ensemble", title: "Roommates From Hell" })).toBe("Enter Roommates From Hell");
   });
 
   it("treats an old ensemble record as a cast", () => {

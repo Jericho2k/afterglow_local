@@ -103,18 +103,46 @@ export function castSectionLabel(type: CreationType) {
 }
 
 /**
+ * How long a creation's own words may be inside a control.
+ *
+ * A control has a fixed job and a fixed size. A title has neither, and titles
+ * genuinely run to hundreds of characters — so anywhere one is spliced into a
+ * label, a placeholder or a menu item, it passes through here first. This is
+ * presentation only: nothing stored is ever shortened.
+ */
+export const inlineTitleLimit = 32;
+
+export function inlineTitle(value: string, limit = inlineTitleLimit) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= limit) return compact;
+  // Sliced by code point, so a title ending in an emoji or an astral character
+  // cannot be cut in half into a replacement glyph.
+  return `${Array.from(compact).slice(0, Math.max(1, limit - 1)).join("").trimEnd()}…`;
+}
+
+/**
  * The label on the button that enters the story.
  *
- * "Chat with Seraphine" reads right for a character and badly for
- * "Medieval Fantasy World RP", so the wording follows the structure.
+ * Stable product copy, not the creation's title. It used to be
+ * "Chat with {title}", which reads beautifully for "Seraphine" and destroys
+ * the page for a ninety-character title: measured at 1280px, one such button
+ * grew to 827px and pushed the layout past the right edge of the viewport.
+ *
+ * The wording still follows the structure, because "Chat" is wrong for a
+ * scenario and "Enter" is wrong for a person. What the button no longer does
+ * is try to contain the creation. The full title is one line above it in the
+ * heading, and `creationCtaDescription` supplies it to assistive technology,
+ * so nothing is lost by not repeating it inside a control.
  */
 export function creationCtaLabel(creation: Pick<Character, "name" | "title" | "creationType" | "profileType" | "cast">) {
+  return creationType(creation) === "character" ? "Start chat" : "Enter story";
+}
+
+/** The accessible name for that button, where the creation may be spelled out. */
+export function creationCtaDescription(creation: Pick<Character, "name" | "title" | "creationType" | "profileType" | "cast">) {
   const type = creationType(creation);
   const title = creationTitle(creation);
-  if (type === "character") {
-    const primary = primaryCharacterName(creation) || title;
-    return `Chat with ${primary}`;
-  }
+  if (type === "character") return `Start a chat with ${primaryCharacterName(creation) || title}`;
   return `Enter ${title}`;
 }
 

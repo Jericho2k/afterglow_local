@@ -9,8 +9,8 @@ import {
 } from "lucide-react";
 import type { AttachedWorld, Character, CharacterComment } from "@/lib/types";
 import {
-  castSectionLabel, creationCtaLabel, creationOverview, creationSubject, creationTitle, creationType,
-  publicCastMembers,
+  castSectionLabel, creationCtaDescription, creationCtaLabel, creationOverview, creationSubject,
+  creationTitle, creationType, inlineTitle, publicCastMembers,
 } from "@/lib/creation";
 import { accentVariables } from "@/lib/accent";
 import { castMemberKey } from "@/lib/cast";
@@ -316,8 +316,17 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         </p>
 
         <div className={styles.ctaRow}>
-          <button className={styles.primaryCta} onClick={() => void start()} disabled={starting}>
-            <Sparkles size={18} />{starting ? "Opening story…" : creationCtaLabel(character)}
+          {/* Stable copy inside the control, the creation's own name outside
+              it. The full title is the heading directly above, and the
+              accessible name spells it out for anybody who cannot see that. */}
+          <button
+            className={styles.primaryCta}
+            onClick={() => void start()}
+            disabled={starting}
+            aria-label={creationCtaDescription(character)}
+            title={creationCtaDescription(character)}
+          >
+            <Sparkles size={18} /><span>{starting ? "Opening story…" : creationCtaLabel(character)}</span>
           </button>
           <button className={styles.ghostButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
             <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
@@ -353,7 +362,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         </section>}
 
         {overview && <section id="overview" className={`${styles.card} ${illuminated === "overview" ? styles.illuminate : ""}`}>
-          <header><Sparkles size={16} /><h2>{kind === "character" ? `About ${creationSubject(character)}` : "Overview"}</h2></header>
+          <header><Sparkles size={16} /><h2>{kind === "character" ? `About ${inlineTitle(creationSubject(character))}` : "Overview"}</h2></header>
           {/* A description the creator illustrated renders as blocks; one they
               did not renders as the paragraph it has always been. The clamp
               only applies to the plain case, because collapsing a column that
@@ -453,7 +462,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         <section id="comments" className={`${styles.card} ${illuminated === "comments" ? styles.illuminate : ""}`}>
           <header><MessageCircle size={16} /><h2>Comments</h2>{comments?.length ? <em className={styles.count}>{comments.length}</em> : null}</header>
           <div className={styles.composer}>
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} maxLength={2000} placeholder={`Share what you think of ${creationSubject(character)}…`} />
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} maxLength={2000} placeholder={`Share what you think of ${inlineTitle(creationSubject(character))}…`} />
             <button className={styles.postButton} disabled={posting || !draft.trim()} onClick={() => void submitComment()}>{posting ? "Posting…" : "Post"}</button>
           </div>
           {comments === null && <p className={styles.quiet}>Loading comments…</p>}

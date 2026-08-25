@@ -1,5 +1,5 @@
 import { characterSchema } from "./schemas";
-import { parseLenientJson } from "./json-repair";
+import { parseLenientJsonWithRepair, type JsonRepair } from "./json-repair";
 import { adultTagsIn, canonicalTag, isAdultTag, isPlatformTag, maxHashtags, maxTags, normalizeHashtag } from "./tags";
 import type { CreationType } from "./types";
 import { creationTypes } from "./types";
@@ -55,6 +55,8 @@ export type CreationAiResult = {
     unknownTags: string[];
     worldCharacters: number;
     audited: boolean;
+    /** What had to be repaired to read the provider's answer. */
+    repair: JsonRepair;
   };
 };
 
@@ -84,7 +86,8 @@ function parseObject(raw: string) {
   // Large imports are exactly where models produce a missing comma, a raw
   // newline inside prose, or a response that stops mid-array. Recovering the
   // document beats discarding a long paste over a formatting slip.
-  return object(parseLenientJson<unknown>(raw));
+  const parsed = parseLenientJsonWithRepair<unknown>(raw);
+  return { value: object(parsed.value), repair: parsed.repair };
 }
 
 /**
@@ -239,8 +242,17 @@ export type NormalizeOptions = {
  *     conflict; it does not resolve it by editing the fiction.
  */
 export function normalizeCreationResult(raw: string, options: NormalizeOptions = {}): CreationAiResult {
-  const value = parseObject(raw);
+  const parsed = parseObject(raw);
+  const value = parsed.value;
   const notices: CreationAiNotice[] = [];
+  // A response that stopped early is recovered rather than discarded, and the
+  // creator is told. Silence here is what made a short import look complete.
+  if (parsed.repair === "truncated") {
+    notices.push({
+      kind: "source",
+      message: "The importer's response was cut short and had to be repaired, so some of the material may be missing. Check the cast and the openings before you publish, and re-run the import if something you wrote is not here.",
+    });
+  }
 
   const { members: cast, duplicates } = normalizeCast(value.cast ?? value.characters ?? value.castMembers);
   if (duplicates) notices.push({ kind: "structure", message: `${duplicates} duplicate cast ${duplicates === 1 ? "entry was" : "entries were"} merged into the character they described.` });
@@ -362,6 +374,7 @@ export function normalizeCreationResult(raw: string, options: NormalizeOptions =
       unknownTags: unknown,
       worldCharacters: world ? world.content.length : draft.lorebook.length,
       audited: Boolean(options.audited),
+      repair: parsed.repair,
     },
   };
 }

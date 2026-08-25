@@ -1,4 +1,4 @@
-import { asUser, characterFromRow, worldFromRow } from "@/lib/db";
+import { asUser, characterFromRow, worldSummaryFromRow } from "@/lib/db";
 import { characterSchema, characterValidationMessage } from "@/lib/schemas";
 import { withCastMemberIds } from "@/lib/cast";
 import { richFieldPayload, textToRich, type RichBlock } from "@/lib/rich-content";
@@ -85,21 +85,26 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const row = result.rows[0];
     const owner = String(row.user_id) === account.id;
     /*
-     * The worlds this viewer may actually open.
+     * The worlds this viewer may actually open — as cards, never as documents.
      *
-     * Row level security answers that question: a world resolves here when it
-     * is public, unlisted, or the viewer's own — which is what keeps an
+     * Row level security answers who may open one: a world resolves here when
+     * it is public, unlisted, or the viewer's own, which is what keeps an
      * owner's private world openable on their own creation page. The CASE
      * masks are kept as a second layer, so a policy mistake still cannot ship
-     * lore through this route. Worlds the viewer may NOT open are handled
-     * separately below, because RLS correctly refuses to return them at all.
+     * a description through this route. Worlds the viewer may NOT open are
+     * handled separately below, because RLS correctly refuses to return them.
+     *
+     * `content` and `content_rich` are deliberately absent from this list.
+     * This page draws a cover, a name and one line of description; it has
+     * never rendered lore. Selecting it anyway meant a creation attached to a
+     * hundred-thousand-character world shipped that document on every view of
+     * every card, which is the single largest cost this page used to carry.
+     * The lore lives one link away, on the world's own page, where it is read.
      */
     const worlds = await client.query(
       `SELECT w.id,w.name,w.cover_path,w.cover_url,
          (w.user_id=$2 OR w.visibility IN ('public','unlisted')) readable,
          CASE WHEN w.user_id=$2 OR w.visibility IN ('public','unlisted') THEN w.description ELSE '' END description,
-         CASE WHEN w.user_id=$2 OR w.visibility IN ('public','unlisted') THEN w.content ELSE '' END content,
-         CASE WHEN w.user_id=$2 OR w.visibility IN ('public','unlisted') THEN w.content_rich ELSE '[]'::jsonb END content_rich,
          CASE WHEN w.user_id=$2 OR w.visibility IN ('public','unlisted') THEN w.visibility ELSE 'private' END visibility,
          CASE WHEN w.user_id=$2 OR w.visibility IN ('public','unlisted') THEN w.save_count ELSE 0 END save_count,
          w.user_id,w.created_at,w.updated_at
@@ -159,7 +164,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         // The second layer: even if a policy change ever let an unreadable row
         // through the query above, it still leaves here as a locked card.
         ...worlds.rows.map((row) => row.readable
-          ? worldFromRow(row, account.id)
+          ? worldSummaryFromRow(row, account.id)
           : { id: String(row.id), name: String(row.name), coverPath: String(row.cover_path || ""), coverUrl: String(row.cover_url || ""), locked: true as const }),
         // Identity and a cover. No lore, no description, no creator, no
         // comments, no timestamps — there is nothing else in the row to leak.

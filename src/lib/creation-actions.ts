@@ -36,3 +36,31 @@ export function creationActions({ owner }: { owner: boolean }): CreationAction[]
 export function creationEditHref(creationId: string) {
   return `/characters/${creationId}/edit`;
 }
+
+/**
+ * Where a successful save lands.
+ *
+ * One decision, one destination, taken from the saved record itself — which is
+ * the whole point. The shell used to close the studio, await three library
+ * refreshes, and only then navigate: the reader saw the feed, and five to ten
+ * seconds later the creation page opened by itself. Two destinations, the
+ * second one arriving as a surprise.
+ *
+ * A creation exists the moment the save returns, so its id is available the
+ * moment the save returns, and nothing about a background refresh may decide
+ * where the reader is. `replace` rather than push because the completed form
+ * is not somewhere Back should return to.
+ */
+export type SavedCreationDestination =
+  | { kind: "creation"; href: string; replace: true }
+  | { kind: "chat" };
+
+export function savedCreationDestination(
+  creationId: string,
+  { created, justCreatedParam }: { created: boolean; justCreatedParam: string },
+): SavedCreationDestination {
+  // Editing an existing creation returns to its story, which is where the
+  // creator was. Only a brand-new creation gets its own page opened for it.
+  if (!created) return { kind: "chat" };
+  return { kind: "creation", href: `/characters/${creationId}?${justCreatedParam}=1`, replace: true };
+}

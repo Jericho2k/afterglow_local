@@ -85,9 +85,29 @@ export async function GET(request: Request) {
         const row=liveById.get(id); return row?characterFromRow({...row,world_ids:[]},account.id):null;
       }).filter((item): item is NonNullable<typeof item>=>Boolean(item));
     }
-    // Discovery has its own endpoint, which returns lean public summaries
-    // rather than whole characters; this route is the caller's own library.
-    const result = await client.query("SELECT * FROM characters WHERE user_id=$1 ORDER BY updated_at DESC", [account.id]);
+    /*
+     * The caller's own library, as the shell holds it.
+     *
+     * Discovery has its own endpoint returning lean public summaries; this one
+     * is deliberately the whole definition, because the shell chats with these
+     * records — openings, cast, adult mode and world links all come from here.
+     *
+     * `source_material` is the one exception, and it is a large one: it is the
+     * verbatim Paste Everything source, up to 100,000 characters per creation,
+     * and nothing in the shell reads it. It used to be downloaded for every
+     * creation on every boot. The studio fetches the complete record for the
+     * one creation being edited, which is the only place it is ever wanted.
+     */
+    const result = await client.query(
+      `SELECT c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,
+         c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,
+         c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,
+         c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,
+         c.nsfw_enabled,c.visibility,c.like_count,c.chat_count,c.message_count,
+         c.published_at,c.created_at,c.updated_at
+       FROM characters c WHERE c.user_id=$1 ORDER BY c.updated_at DESC`,
+      [account.id],
+    );
     const ids = result.rows.map((row) => String(row.id));
     const links = ids.length
       ? await client.query("SELECT character_id,world_id FROM character_worlds WHERE character_id = ANY($1::uuid[])", [ids])
