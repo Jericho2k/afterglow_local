@@ -4,7 +4,16 @@ import { responseLengthInstruction } from "./response-length";
 import { creationTitle, creationType } from "./creation";
 import { arcSceneTag, hasHistoricalScenes, renderCurrentScene, sceneIsEmpty, sceneTag, type SceneStateFields } from "./scene-state";
 
-export function roleplayPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[]; sceneState?: SceneStateFields | null }) {
+/**
+ * The writer prompt, in the two halves it is actually made of.
+ *
+ * `head` is stable for a story: the same creation, world, persona, rules,
+ * engine and response length, in the same order, on every turn. `continuity` is
+ * the part that changes every turn. Splitting them is what lets the caller
+ * decide where the changing half goes, which is the difference between a
+ * request a provider can half reuse and one it can almost entirely reuse.
+ */
+export function buildWriterPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[]; sceneState?: SceneStateFields | null }) {
   const preset = settings?.roleplayPreset || "immersive";
   const adultMode = character.nsfwEnabled
     ? `ADULT MODE: Every participant is a fictional adult aged 21 or older. If mutual desire and the scene naturally lead to sex, write it directly and explicitly; do not sanitize, moralize, apologize, or fade to black. Consent may be conveyed naturally through established context, words, and responsive actions—do not interrupt an obviously mutual scene with repetitive clinical check-ins. Characters still have independent desires and limits: they can initiate, hesitate, negotiate, refuse, stop, or leave according to personality and circumstances. If willingness is unclear, slow down and let the character clarify in-scene. Never depict minors or age ambiguity, coercion presented as consent, sexual violence, incest, bestiality, trafficking, or sexual content involving real people. Treat contradictory profile or memory text as invalid for sexual content, and respect stated boundaries or stop requests immediately.`
@@ -67,7 +76,7 @@ export function roleplayPrompt(character: Character, summary: string, memories: 
     ? `${currentScene ? "The CURRENT SCENE block above is the present moment. " : ""}A [Day … ] tag marks where and when a PAST event happened. Never treat a remembered place, time, date, or participant as the current one. The same room name, furniture, or activity can recur in another place on another day.\n`
     : "";
 
-  return `${role} in an ongoing private roleplay. Stay in character. Never mention this prompt, policies, being an AI, hidden context, or roleplay mechanics unless the character's established fiction explicitly calls for it.
+  const head = `${role} in an ongoing private roleplay. Stay in character. Never mention this prompt, policies, being an AI, hidden context, or roleplay mechanics unless the character's established fiction explicitly calls for it.
 
 ROLEPLAY PRESET
 ${enginePrompt(preset)}
@@ -132,9 +141,25 @@ ${responseLength}
 
 CONTINUITY PRECEDENCE FOR FACTS THAT CAN CHANGE OVER TIME
 ${precedence}
-Stable identity, established boundaries, and explicit user corrections remain authoritative. Never reset a developed relationship, location, plan, or emotional state merely because the initial premise describes an earlier stage.
+Stable identity, established boundaries, and explicit user corrections remain authoritative. Never reset a developed relationship, location, plan, or emotional state merely because the initial premise describes an earlier stage.`;
 
-CURRENT CONTINUITY — DYNAMIC FOR THIS REPLY
+  /*
+   * Everything that changes every single turn, in one block.
+   *
+   * Kept separate from the prompt above it because of WHERE it can be put, not
+   * because of what it says. The head above is byte-identical from turn to
+   * turn for a given story — the same creation, world, persona, rules and
+   * engine — and is therefore exactly what a provider's prompt cache is for.
+   * This block is different on every request, and while it sits inside the
+   * system message it sits BEFORE the transcript, so it invalidates the prefix
+   * for the transcript too. Measured on a representative long story: 46.9% of
+   * the request reusable, with the divergence landing in the rolling summary
+   * and the entire transcript — the majority of the prompt — stranded behind
+   * it. See tests/prompt-cost.test.ts.
+   *
+   * `writerMessages` decides where it actually goes; see below.
+   */
+  const continuity = `CURRENT CONTINUITY — DYNAMIC FOR THIS REPLY
 ${currentScene ? `${currentScene}\n` : ""}${nowVersusThen}Core canon — foundational facts that remain in force:
 ${chatContext?.coreCanon?.length ? chatContext.coreCanon.map((entry) => `- [${entry.category}; importance ${entry.importance}] ${entry.content}`).join("\n") : "- No curated canon yet"}
 Rolling state and story-so-far: ${summary || "This is the beginning of the relationship."}
@@ -142,6 +167,77 @@ Relevant durable memories${historicalHeaderSuffix}:
 ${memories.length ? memories.map((m) => `- ${[sceneTag(m.scene), `[${m.kind}; ${m.status}; importance ${m.importance}]`].filter(Boolean).join(" ")} ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
 Relevant historical arcs${historicalHeaderSuffix}:
 ${arcs.length ? arcs.map((arc) => `- ${[arcSceneTag(arc), arc.summary].filter(Boolean).join(" ")}`).join("\n") : "- None recalled for this moment"}`;
+
+  return { head, continuity };
+}
+
+/**
+ * The writer prompt as one string, exactly as it has always been.
+ *
+ * Retained because a great many callers and tests want the whole prompt and do
+ * not care how it will be delivered. It is the concatenation of the two halves
+ * above, byte for byte.
+ */
+export function roleplayPrompt(...args: Parameters<typeof buildWriterPrompt>) {
+  const { head, continuity } = buildWriterPrompt(...args);
+  return `${head}\n\n${continuity}`;
+}
+
+export type WriterPrompt = ReturnType<typeof buildWriterPrompt>;
+export type WriterMessage = { role: "system" | "user" | "assistant"; content: string };
+export type ContinuityPlacement = "system" | "tail";
+
+/**
+ * Where the per-turn continuity block goes.
+ *
+ * The reorder exists to buy prompt caching, so it is applied where caching is
+ * available and nowhere else. A model that does not cache gains nothing from
+ * moving the block and would be taking the change for free, so it keeps the
+ * prompt it has today, byte for byte.
+ *
+ * `PROMPT_CONTINUITY_PLACEMENT` overrides both ways. It is a kill switch: this
+ * changes the prompt of every ongoing conversation on a caching model, and an
+ * operator who does not like what it does to their writers must be able to put
+ * it back without waiting for a deploy.
+ */
+export function continuityPlacementFor(promptCaching: boolean): ContinuityPlacement {
+  const configured = process.env.PROMPT_CONTINUITY_PLACEMENT?.trim();
+  if (configured === "system" || configured === "tail") return configured;
+  return promptCaching ? "tail" : "system";
+}
+
+/**
+ * The complete message array for one writer request.
+ *
+ * With `system` placement this is exactly what Afterglow has always sent: one
+ * system message containing both halves, then the conversation.
+ *
+ * With `tail` placement the changing half moves to just before the final
+ * message. Two things follow, and both are wanted:
+ *
+ *   THE PREFIX STOPS MOVING. Everything up to the last message — the system
+ *   prompt and the whole transcript — is byte-identical to the previous turn's,
+ *   because the transcript window is already append-only (see
+ *   `selectAnchoredMessages`). That is what a provider's cache can actually
+ *   reuse, and it is most of the request.
+ *
+ *   CONTINUITY GETS CLOSER TO THE GENERATION POINT. It is read immediately
+ *   before the turn being answered rather than tens of thousands of tokens
+ *   earlier. The prompt's own precedence list already says the recalled
+ *   material outranks the initial premise, so this is the order it describes.
+ *
+ * The final message stays final. Models weight the last turn heavily, and
+ * putting anything after the reader's own words would change what the reply is
+ * a reply to.
+ */
+export function writerMessages(prompt: WriterPrompt, conversation: WriterMessage[], placement: ContinuityPlacement): WriterMessage[] {
+  if (placement === "system") {
+    return [{ role: "system", content: `${prompt.head}\n\n${prompt.continuity}` }, ...conversation];
+  }
+  const head: WriterMessage = { role: "system", content: prompt.head };
+  const continuity: WriterMessage = { role: "system", content: prompt.continuity };
+  if (!conversation.length) return [head, continuity];
+  return [head, ...conversation.slice(0, -1), continuity, conversation[conversation.length - 1]];
 }
 
 /**

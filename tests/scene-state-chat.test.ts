@@ -37,9 +37,17 @@ function post(body: unknown) {
 }
 
 /** The system prompt the provider was actually called with. */
+/**
+ * Everything the writer was told outside the transcript.
+ *
+ * The per-turn continuity block is delivered as its own system message on
+ * caching models — same words, later position, so the stable prefix in front of
+ * it can be reused. Joining the system messages asks the question these tests
+ * actually mean: what did the writer read?
+ */
 function systemPrompt() {
   const messages = streamCompletion.mock.calls[0][0] as Array<{ role: string; content: string }>;
-  return messages[0].content;
+  return messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
 }
 
 async function reply() {

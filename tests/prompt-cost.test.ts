@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyzePayload, analyzeSystemPrompt, firstDivergentSection, renderBreakdown, sharedPayloadPrefix } from "@/lib/prompt-metrics";
 import { anchoredFetchLimit, selectAnchoredMessages } from "@/lib/context";
-import { roleplayPrompt } from "@/lib/prompts";
+import { buildWriterPrompt, roleplayPrompt, writerMessages } from "@/lib/prompts";
 import type { LLMMessage } from "@/lib/llm";
 import type { Character, CoreCanonEntry, Memory, MemoryArc, Message, Persona, World } from "@/lib/types";
 
@@ -149,5 +149,60 @@ describe("prefix cache stability", () => {
     const starts = Array.from({ length: 16 }, (_, index) => windowFor(50 + index)[0].id);
     const distinct = [...new Set(starts)];
     expect(distinct.length).toBeLessThanOrEqual(3);
+  });
+});
+
+describe("moving the changing half changes what can be reused", () => {
+  const worlds = [world("Vale", 2_000)];
+
+  /** One turn's complete request, in either layout. */
+  function turn(total: number, summary: string, placement: "system" | "tail"): LLMMessage[] {
+    const prompt = buildWriterPrompt(character, summary, memories, arcs, settings, {
+      worlds, persona, coreCanon: canon, sceneState: null, instructionPresets: ["reduce_repetition"], customInstructions: "",
+    });
+    return writerMessages(prompt, windowFor(total).map((message) => ({ role: message.role, content: message.content })), placement) as LLMMessage[];
+  }
+
+  it("measures prefix reuse in both layouts", () => {
+    const rows: string[] = [];
+    const results: Record<string, number> = {};
+    const divergence: Record<string, string> = {};
+    for (const placement of ["system", "tail"] as const) {
+      const before = turn(56, summary, placement);
+      const after = turn(58, `${summary} And then the storm broke.`, placement);
+      const shared = sharedPayloadPrefix(before, after);
+      results[placement] = shared.ratio;
+      divergence[placement] = firstDivergentSection(before, after);
+      rows.push(`${placement.padEnd(7)} reuse ${(shared.ratio * 100).toFixed(1).padStart(5)}%  first divergence: ${divergence[placement]}`);
+    }
+    console.log(`\n${rows.join("\n")}`);
+
+    // The measurement the reorder exists for, and the property that matters
+    // more than the percentage: with the changing half inside the system
+    // message the request stops being reusable at the ROLLING SUMMARY, tens of
+    // thousands of tokens early, stranding the whole transcript behind it. With
+    // it at the tail the request stops being reusable where genuinely new
+    // content begins — the turns that were actually added. The residue is the
+    // new content itself, which no layout can make reusable.
+    expect(divergence.system).toBe("summary");
+    expect(divergence.tail).toBe("transcript");
+    expect(results.tail).toBeGreaterThan(results.system);
+  });
+
+  it("says exactly the same things in either layout", () => {
+    // The reorder must move words, never change them. Anything that appears in
+    // one layout appears in the other, exactly once.
+    const asSystem = turn(56, summary, "system").filter((message) => message.role === "system").map((m) => m.content).join("\n\n");
+    const asTail = turn(56, summary, "tail").filter((message) => message.role === "system").map((m) => m.content).join("\n\n");
+    expect(asTail).toBe(asSystem);
+  });
+
+  it("never puts anything after the turn being answered", () => {
+    // Models weight the final message heavily. Continuity goes before it, not
+    // after it, or the reply would be a reply to the wrong thing.
+    const messages = turn(56, summary, "tail");
+    const conversation = windowFor(56);
+    expect(messages.at(-1)!.content).toBe(conversation.at(-1)!.content);
+    expect(messages.at(-2)!.role).toBe("system");
   });
 });

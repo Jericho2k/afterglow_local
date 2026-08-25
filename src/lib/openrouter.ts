@@ -1,5 +1,6 @@
 import type { CompletionOptions, LLMMessage, LLMUsage } from "./llm";
 import { ProviderError, classifyProviderFailure } from "./provider-errors";
+import { providerPolicyFor } from "./provider";
 
 const baseUrl = () => (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
 
@@ -25,24 +26,44 @@ function headers() {
  *
  * A temporary upstream failure is a fact about one HOST, not about the model
  * the reader chose. So every attempt sends the identical `model` and changes
- * only how OpenRouter is allowed to reach it: attempt one takes the route it
- * would take anyway (warm, and sticky if a session id was supplied), and later
- * attempts explicitly permit another provider serving that same model, sorted
+ * only how OpenRouter is allowed to reach it: attempt one takes the warm path —
+ * the model's preferred endpoint first, fallbacks permitted, no re-sorting, so
+ * a session that is already sticky stays where its cache is — and later
+ * attempts explicitly exclude the endpoint that just failed and sort the rest
  * by live throughput.
  *
- * Nothing in this file may substitute one model for another. Skyfall failing
- * is never a reason to answer as Kimi — model fallback is a product decision
- * with its own semantics, and silently making it here would mean a reader's
- * chosen writer changed without anybody saying so.
+ * Excluding the failed host by name is the part that was missing. Retrying with
+ * `sort: throughput` and nothing else could route straight back to the provider
+ * that had just returned a 503, which spends an attempt to learn what the
+ * previous attempt already established.
+ *
+ * Nothing in this file may substitute one model for another. Skyfall failing is
+ * never a reason to answer as Kimi — model fallback is a product decision with
+ * its own semantics, and silently making it here would mean a reader's chosen
+ * writer changed without anybody saying so.
  */
-const attemptPolicies = [
-  { provider: undefined, delayMs: 0 },
-  { provider: { allow_fallbacks: true, sort: "throughput" }, delayMs: 350 },
-  { provider: { allow_fallbacks: true, sort: "throughput" }, delayMs: 900 },
-] as const;
+const attemptDelays = [0, 350, 900] as const;
 
 /** Bounded by construction: three attempts, ~1.25s of added delay at worst. */
-export const maxAttempts = attemptPolicies.length;
+export const maxAttempts = attemptDelays.length;
+
+/** The `provider` block for one attempt, or undefined for OpenRouter's default. */
+function providerBlock(modelId: string | undefined, attempt: number, failed: string[]) {
+  const policy = modelId ? providerPolicyFor(modelId, attempt, failed) : null;
+  if (policy) {
+    return {
+      ...(policy.order ? { order: policy.order } : {}),
+      ...(policy.only ? { only: policy.only } : {}),
+      ...(policy.ignore ? { ignore: policy.ignore } : {}),
+      allow_fallbacks: policy.allowFallbacks,
+      ...(policy.sort ? { sort: policy.sort } : {}),
+    };
+  }
+  // No catalogue policy: keep the previous behaviour exactly — untouched on the
+  // first attempt, throughput-sorted with fallbacks on the later ones.
+  if (attempt === 0 && !failed.length) return undefined;
+  return { ...(failed.length ? { ignore: failed } : {}), allow_fallbacks: true, sort: "throughput" as const };
+}
 
 function wait(ms: number, signal?: AbortSignal) {
   if (ms <= 0) return Promise.resolve();
@@ -53,14 +74,18 @@ function wait(ms: number, signal?: AbortSignal) {
   });
 }
 
-async function request(body: Record<string,unknown>, signal?: AbortSignal, diagnosticModel?: string) {
+async function request(body: Record<string,unknown>, options: CompletionOptions = {}, diagnosticModel?: string) {
+  const signal = options.signal;
   let lastError: ProviderError | null = null;
+  // Hosts this request has already been refused by. Grows as attempts fail, so
+  // the next attempt asks OpenRouter for anywhere else that serves this model.
+  const failed = [...(options.excludeProviders ?? [])];
 
-  for (let attempt = 0; attempt < attemptPolicies.length; attempt += 1) {
-    const policy = attemptPolicies[attempt];
-    if (policy.delayMs) await wait(policy.delayMs, signal);
+  for (let attempt = 0; attempt < attemptDelays.length; attempt += 1) {
+    if (attemptDelays[attempt]) await wait(attemptDelays[attempt], signal);
     const startedAt = Date.now();
-    const payload = policy.provider ? { ...body, provider: policy.provider } : body;
+    const provider = providerBlock(options.modelId, attempt, failed);
+    const payload = provider ? { ...body, provider } : body;
 
     let response: Response;
     try {
@@ -85,12 +110,16 @@ async function request(body: Record<string,unknown>, signal?: AbortSignal, diagn
     if (response.ok) return { response, startedAt };
 
     const detail = (await response.text()).slice(0, 500);
+    const upstreamProvider = response.headers.get("x-openrouter-provider") ?? undefined;
+    // Same model, somewhere else. A host that has just refused this request is
+    // not asked again on the next attempt.
+    if (upstreamProvider && !failed.includes(upstreamProvider)) failed.push(upstreamProvider);
     lastError = new ProviderError(classifyProviderFailure(response.status, detail), {
       provider: "openrouter",
       model: diagnosticModel,
       status: response.status,
       requestId: response.headers.get("x-request-id") ?? undefined,
-      upstreamProvider: response.headers.get("x-openrouter-provider") ?? undefined,
+      upstreamProvider,
       attempt: attempt + 1,
       latencyMs: Date.now() - startedAt,
       detail,
@@ -140,7 +169,7 @@ export async function completionWithUsage(messages: LLMMessage[], model: string,
     temperature: options.temperature ?? 0.85,
     ...(options.json ? { response_format: { type: "json_object" } } : {}),
     ...commonFields(options),
-  },options.signal,model);
+  },options,model);
   const data = await response.json() as Record<string,unknown> & { choices?: Array<{ message?: { content?: unknown } }> };
   const content = data.choices?.[0]?.message?.content;
   if (typeof content !== "string") {
@@ -157,7 +186,7 @@ export async function streamCompletion(messages: LLMMessage[], model: string, op
     max_tokens: options.maxTokens ?? 1800,
     temperature: options.temperature ?? 0.95,
     ...commonFields(options),
-  },options.signal,model);
+  },options,model);
   if (!response.body) throw new ProviderError("empty_response", { provider: "openrouter", model, detail: "response carried no stream" });
   return response.body;
 }

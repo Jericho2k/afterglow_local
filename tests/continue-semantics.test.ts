@@ -101,7 +101,9 @@ describe("what Continue sends to the writer", () => {
 
     const messages = sent();
     const cue = messages.at(-1)!;
-    const transcript = messages.slice(1, -1);
+    // The reader's own turns and the writer's replies, with the prompt layers
+    // (which are system messages, wherever they sit) taken out.
+    const transcript = messages.slice(0, -1).filter((message) => message.role !== "system");
     // The reply is present, and it is the newest thing in the story. When it is
     // absent the writer answers the reader's older turn again, which is exactly
     // how Continue came to behave like Regenerate.
