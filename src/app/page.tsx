@@ -9,24 +9,22 @@ import { CreationStudio, studioWorldFromRecord, type StudioWorld } from "@/compo
 import { DiscoveryFeed } from "@/components/feed";
 import { YourCreations } from "@/components/creations";
 import { WorldsHub, WorldEditor } from "@/components/worlds";
-import { RichMessage, openingBlocksFor } from "@/components/rich";
+import { RichMessage, StyledMessage, openingBlocksFor } from "@/components/rich";
 import { ChatsView, InstructionsSheet, LibraryView, MemoryFeedback, PersonasView, ProfileView, SettingsSheet } from "@/components/shell";
 import { activeInstructionCount, instructionSummary } from "@/lib/chat-instructions";
 import { draftFromCharacter, draftPayload } from "@/components/studio/draft";
 import { forgetAllStoredDrafts } from "@/components/studio/drafts";
-import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
+import { compactMessagePreview } from "@/lib/message-format";
 import { supabaseBrowser, supabaseBrowserConfigured } from "@/lib/supabase/client";
 import { AppMenuButton } from "@/components/ui";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
 import { claimDepth, justCreatedParam, rootDepth } from "@/lib/back-navigation";
+import { chatHref, commandFromSearch, isCurrentHref, routeFromSearch, viewHref, type AppView } from "@/lib/shell-route";
 import { savedCreationDestination } from "@/lib/creation-actions";
+import { mergeCreationLists } from "@/lib/shell-library";
 
 type WorldWithCount = StudioWorld;
-type AppView = "home" | "chats" | "chat" | "worlds" | "personas" | "profile" | "saved" | "creations";
-
-/** The views a URL may name. "chat" is entered with a character, never by name. */
-const shellViews: AppView[] = ["home", "chats", "worlds", "personas", "profile", "saved", "creations"];
 
 
 const defaultSettings: AppSettings = {
@@ -36,6 +34,12 @@ const defaultSettings: AppSettings = {
 
 function initials(name: string) { return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
 function time(value: string) { return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value)); }
+/** One settled `/api/characters` response, as the merge expects to read it. */
+function unwrap(settled: PromiseSettledResult<{ characters: Character[] }>) {
+  return settled.status === "fulfilled"
+    ? { ok: true as const, value: settled.value.characters }
+    : { ok: false as const, reason: settled.reason };
+}
 function memoriesUrl(characterId: string, conversationId?: string | null) { const params = new URLSearchParams({ characterId }); if (conversationId) params.set("conversationId",conversationId); return `/api/memories?${params}`; }
 export default function Home() {
   const router=useRouter();
@@ -50,7 +54,6 @@ export default function Home() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
-  const [memoryArcs, setMemoryArcs] = useState<MemoryArc[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [worlds, setWorlds] = useState<WorldWithCount[]>([]);
   const [composer, setComposer] = useState("");
@@ -75,13 +78,29 @@ export default function Home() {
   const [editWidth, setEditWidth] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [chatNotice, setChatNotice] = useState("");
+  /** A failure of the shell's own lists, shown on whichever surface is open. */
+  const [libraryError, setLibraryError] = useState("");
   const [accountNotice,setAccountNotice]=useState("");
   const [branchPendingMessageId, setBranchPendingMessageId] = useState<string | null>(null);
   const [sidebarCharacterMenuId,setSidebarCharacterMenuId]=useState<string|null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
-  const requestedConversationRef = useRef<string | null>(null);
+  /**
+   * Which story the chat view has been asked to show, and the sequence number
+   * of that request.
+   *
+   * A ref could say which conversation was wanted but not that a NEW request
+   * had been made for the same one, so switching stories inside one creation
+   * never re-ran the loader. The nonce makes every open an event. The counter
+   * beside it is the out-of-order guard: a slow response for chat B can no
+   * longer land after the reader has already moved on to chat C.
+   */
+  const [chatTarget, setChatTarget] = useState<{ characterId: string; conversationId: string | null; nonce: number } | null>(null);
+  const chatRequestRef = useRef(0);
+  const chatNonceRef = useRef(0);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [creatingConversation, setCreatingConversation] = useState(false);
   const pinnedToBottomRef = useRef(true);
   const variantDesiredRef = useRef(new Map<string,{ message:Message; index:number; position:number }>());
   const variantWorkersRef = useRef(new Set<string>());
@@ -113,77 +132,172 @@ export default function Home() {
   },[selected]);
 
   /**
-   * Moving between the shell's views is navigation, so it goes through the
-   * router.
+   * Moving between the shell's surfaces is navigation, so it goes through the
+   * router — and that now includes opening a chat.
    *
-   * This is the fix for the Back complaint that survived the last sprint. The
-   * views were React state and nothing else: opening Your Creations changed
-   * what rendered but left the address bar on "/", so a creation opened from
-   * there had "/" underneath it and Back landed on Discovery. Nothing was
-   * guessing the origin — the origin had never been recorded.
+   * The previous sprint gave every named view a real history entry, which is
+   * why a creation opened from Your Creations returns there. A CHAT still had
+   * none: it was `activeView === "chat"` and nothing else, so the entry
+   * underneath a creation page opened from a chat named whatever the reader had
+   * last navigated to. Back was not guessing wrongly; there was nothing to
+   * guess from. The one path that did carry a chat in the URL then called
+   * `replaceState(…, "/")` and deleted it.
    *
-   * Pushing a real entry per view is what gives Back something true to return
-   * to. `activeView` stays as state because the chat view is entered from
-   * several places that are not navigations, and the popstate listener below
-   * is what keeps the two in step when the reader moves through history.
+   * So `openChat` pushes an address that names the character AND the exact
+   * conversation, `applyRoute` reads one back, and the popstate listener below
+   * keeps state and address in step in both directions.
    */
-  const viewHref=useCallback((view:AppView)=>view==="home"?"/":`/?view=${view}`,[]);
+  /**
+   * Point the chat view at a story, immediately.
+   *
+   * The previous story's messages are cleared in the SAME state update that
+   * changes the selection. That is the whole of the "old chat visible for two
+   * seconds" complaint: the transcript used to stay mounted until the new
+   * fetch resolved, so for a second or two the app showed one conversation's
+   * replies under another conversation's name. An empty, loading chat is a
+   * slower-looking screen and a truthful one; the alternative was neither.
+   */
+  const selectChat=useCallback((characterId:string,conversationId:string|null)=>{
+    chatNonceRef.current+=1;
+    setSelectedId(characterId);
+    setActiveView("chat");
+    setChatTarget({characterId,conversationId,nonce:chatNonceRef.current});
+    setConversation(null); setMessages([]); setMemories([]);
+    setStoryNavigation(closedStoryNavigation);
+    setEditingMessageId(null); setRecallMessage(null);
+    setChatLoading(true); setError("");
+  },[]);
+
+  const applyRoute=useCallback((route:ReturnType<typeof routeFromSearch>)=>{
+    if(!route)return;
+    if(route.view==="chat"){
+      selectChat(route.characterId,route.conversationId);
+      return;
+    }
+    setActiveView(route.view);
+  },[selectChat]);
+
   const goToView=useCallback((view:AppView)=>{
+    if(view==="chat")return;
     setActiveView(view);
     setSidebarOpen(false);
     const target=viewHref(view);
     // Same view, same entry: tapping the current tab must not stack history.
-    if(`${window.location.pathname}${window.location.search}`===target)return;
+    if(isCurrentHref(window.location,target))return;
     router.push(target);
-  },[router,viewHref]);
+  },[router]);
+
+  /**
+   * Opening a story.
+   *
+   * Every route into a chat comes through here — the Chats list, the story
+   * drawer, a freshly created conversation — so every one of them leaves the
+   * same true record behind. The messages of whatever was open are cleared in
+   * the same tick as the selection changes, because a list of somebody else's
+   * replies sitting under a new chat's header is not a slower render, it is a
+   * wrong one.
+   */
+  const openChat=useCallback((characterId:string,conversationId?:string|null,options?:{replace?:boolean})=>{
+    selectChat(characterId,conversationId ?? null);
+    setSidebarOpen(false);
+    const target=chatHref(characterId,conversationId);
+    if(isCurrentHref(window.location,target))return;
+    if(options?.replace)router.replace(target); else router.push(target);
+  },[router,selectChat]);
 
   /**
    * Back and forward inside the shell.
    *
    * A popstate is the only way the address bar changes without this component
-   * having asked for it, so it is the only place the view needs to be read
+   * having asked for it, so it is the only place the route needs to be read
    * back out of the URL. Discovery rewriting its own filters uses
    * `replaceState`, which fires nothing and therefore cannot fight this.
    */
   useEffect(()=>{
-    function syncFromUrl(){
-      const raw=new URLSearchParams(window.location.search).get("view");
-      // "likes" was this view's name before saving replaced liking.
-      const view=(raw==="likes"?"saved":raw??"home") as AppView;
-      setActiveView(shellViews.includes(view)?view:"home");
-    }
+    function syncFromUrl(){ applyRoute(routeFromSearch(window.location.search)); }
     window.addEventListener("popstate",syncFromUrl);
     return()=>window.removeEventListener("popstate",syncFromUrl);
-  },[]);
+  },[applyRoute]);
 
-  const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
+  /**
+   * Loads one story into the chat view.
+   *
+   * `token` is the sequence number of the request that asked for it. Every
+   * write below is guarded by it, so a response that arrives after the reader
+   * has moved on is discarded rather than painted over the story they are
+   * actually looking at. Passing no token means "this is not a switch" — a
+   * refresh of whatever is already open — and applies unconditionally.
+   */
+  const loadChat = useCallback(async (characterId: string, conversationId?: string, token?: number) => {
     const query = new URLSearchParams({ characterId });
     if (conversationId) query.set("conversationId", conversationId);
     const data = await api<{ conversations: Conversation[]; conversation: Conversation; messages: Message[] }>(`/api/conversations?${query}`);
+    const current = () => token === undefined || token === chatRequestRef.current;
+    if (!current()) return data;
     setConversations(data.conversations); setConversation(data.conversation); setMessages(data.messages);
     if (isAdmin) {
       const memoryData = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(characterId,data.conversation.id));
-      setMemories(memoryData.memories); setMemoryArcs(memoryData.arcs);
-    } else { setMemories([]); setMemoryArcs([]); }
+      if (!current()) return data;
+      setMemories(memoryData.memories);
+    } else { setMemories([]); }
     return data;
   }, [isAdmin]);
 
+  /**
+   * The creations the shell knows about.
+   *
+   * This is the list Chats renders its rows from, and it used to be
+   * all-or-nothing across two requests: `Promise.all` meant one failure left
+   * the array empty, there was no retry, and the only error surface was inside
+   * the chat panel — invisible on Chats. The result was the reported bug
+   * exactly: a Chats page with its footer and no stories, blank until the tab
+   * was reloaded.
+   *
+   * So the two requests are settled independently, whichever succeeded is
+   * used, a single transient failure is retried once, and a genuine failure
+   * says so where the reader is actually standing.
+   */
   const loadCharacters = useCallback(async () => {
-    try {
-      const [owned,chats] = await Promise.all([api<{ characters: Character[] }>("/api/characters"),api<{characters:Character[]}>("/api/characters?scope=chats")]);
-      // A chat snapshot deliberately has no reusable world links. Prefer the
-      // live owned card when both exist, otherwise editing a character reached
-      // from Chats appears to have zero worlds and saving it detaches them.
-      const ownedById = new Map(owned.characters.map((character) => [character.id, character]));
-      const merged=[...chats.characters.map((character)=>ownedById.get(character.id) ?? character),...owned.characters.filter((character)=>!chats.characters.some((chat)=>chat.id===character.id))];
-      setCharacters(merged);
-      setSelectedId((current) => current && merged.some((item) => item.id === current) ? current : merged[0]?.id ?? null);
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not load characters"); }
+    // Declared inside so the retry recurses on a plain function rather than on
+    // the memoised callback, which cannot refer to itself.
+    async function attemptLoad(attempt: number): Promise<void> {
+      const [owned,chats] = await Promise.allSettled([
+        api<{ characters: Character[] }>("/api/characters"),
+        api<{ characters: Character[] }>("/api/characters?scope=chats"),
+      ]);
+      let result!: ReturnType<typeof mergeCreationLists>;
+      setCharacters((current) => {
+        result = mergeCreationLists(unwrap(owned),unwrap(chats),current);
+        return result.characters;
+      });
+      if (result.failed) {
+        // One retry, once. A rotated session cookie or a cold connection pool
+        // fails the first request of a burst and succeeds the second.
+        if (attempt === 0) { await new Promise((resolve) => window.setTimeout(resolve,350)); return attemptLoad(attempt + 1); }
+        const reason = owned.status === "rejected" ? owned.reason : chats.status === "rejected" ? chats.reason : null;
+        setLibraryError(reason instanceof Error ? reason.message : "Could not load your creations");
+        return;
+      }
+      if (!result.partial) setLibraryError("");
+      const known = result.characters;
+      setSelectedId((current) => current && known.some((item) => item.id === current) ? current : known[0]?.id ?? null);
+    }
+    return attemptLoad(0);
   }, []);
+
   const loadChatIndex = useCallback(async () => {
-    const data = await api<{ conversations: Conversation[] }>("/api/conversations?scope=all");
-    setChatIndex(data.conversations);
+    async function attemptLoad(attempt: number): Promise<void> {
+      try {
+        const data = await api<{ conversations: Conversation[] }>("/api/conversations?scope=all");
+        setChatIndex(data.conversations);
+      } catch (reason) {
+        if (attempt === 0) { await new Promise((resolve) => window.setTimeout(resolve,350)); return attemptLoad(attempt + 1); }
+        setLibraryError(reason instanceof Error ? reason.message : "Could not load your stories");
+      }
+    }
+    return attemptLoad(0);
   }, []);
+
   const loadLibraries = useCallback(async () => {
     const [personaData,worldData] = await Promise.all([
       api<{ personas: Persona[] }>("/api/personas"),
@@ -213,59 +327,88 @@ export default function Home() {
       .catch(() => { setAuthenticated(false); setProfile(null); setIsAdmin(false); });
     void loadSession();
     // Sign-in and sign-out happen in the browser client, so mirror its state.
-    const { data: listener } = supabaseBrowser().auth.onAuthStateChange(() => { void loadSession(); });
+    // INITIAL_SESSION fires the moment the listener is attached and says only
+    // what the call above already asked, so honouring it meant every boot of
+    // the shell opened with two identical session requests.
+    const { data: listener } = supabaseBrowser().auth.onAuthStateChange((event: string) => {
+      if (event === "INITIAL_SESSION") return;
+      void loadSession();
+    });
     return () => listener.subscription.unsubscribe();
   }, []);
   useEffect(() => { if (authenticated) { void loadCharacters(); void loadChatIndex().catch(() => undefined); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings; models: string[]; catalog: ModelCatalog }>("/api/settings").then((data) => { setSettings({...defaultSettings,...data.settings}); setModels(data.models ?? []); setModelCatalog(data.catalog ?? {providers:[],models:[],engines:[]}); }).catch(() => undefined); } }, [authenticated, loadCharacters, loadChatIndex, loadLibraries]);
   useEffect(()=>{if(!authenticated)return;if(new URLSearchParams(window.location.search).get("verification")==="success"){setAccountNotice("Email verified — welcome to Afterglow.");const timeout=window.setTimeout(()=>setAccountNotice(""),5000);return()=>window.clearTimeout(timeout);}},[authenticated]);
+  /**
+   * The address the tab arrived on, applied once.
+   *
+   * Two different things can be in a URL and they are separated here: a ROUTE
+   * (what to show) and a COMMAND (what to do — open the studio, open a world
+   * editor). A route is applied and left alone; a command is spent and the
+   * address is rewritten to the surface it landed on, so a reload does not
+   * reopen a form the reader already closed.
+   *
+   * What is deliberately NOT here any more is the `replaceState(…, "/")` that
+   * used to run after opening a chat from a creation page. It rewrote the one
+   * entry that recorded which story was open, which is why Back from that
+   * chat's creation page went to Discovery. A chat has an address now, and the
+   * address is what is kept.
+   */
   useEffect(()=>{
     if(!authenticated||routeHandledRef.current)return;
-    const params=new URLSearchParams(window.location.search);
-    const view=params.get("view");
-    // "likes" was this view's name before saving replaced liking; old links still work.
-    const resolvedView=(view==="likes"?"saved":view) as AppView|null;
-    if(resolvedView&&shellViews.includes(resolvedView)){setActiveView(resolvedView);routeHandledRef.current=true;return;}
-    if(params.get("create")==="1"){setEditing(null);setStudioStartSection("basics");setStudioOpen(true);routeHandledRef.current=true;return;}
-    // A world's own page sends its owner here to edit it, because the editor
-    // lives in the shell alongside the studio rather than on its own route.
-    const worldId=params.get("editWorld");
-    if(worldId){
-      routeHandledRef.current=true;
+    routeHandledRef.current=true;
+    const search=window.location.search;
+    const command=commandFromSearch(search);
+    const route=routeFromSearch(search);
+
+    if(command?.kind==="createCreation"){setEditing(null);setStudioStartSection("basics");setStudioOpen(true);return;}
+    if(command?.kind==="editWorld"){
+      // A world's own page sends its owner here to edit it, because the editor
+      // lives in the shell alongside the studio rather than on its own route.
       setActiveView("worlds");
-      void api<{world:World}>(`/api/worlds/${worldId}`).then(({world})=>setEditingWorld(world)).catch(()=>undefined);
-      window.history.replaceState(window.history.state,"","/?view=worlds");
+      void api<{world:World}>(`/api/worlds/${command.worldId}`).then(({world})=>setEditingWorld(world)).catch(()=>undefined);
+      window.history.replaceState(window.history.state,"",viewHref("worlds"));
       return;
     }
-    const characterId=params.get("editCharacter")||params.get("character");
-    if(!characterId)return;
-    routeHandledRef.current=true;
-    void api<{character:Character}>(`/api/characters/${characterId}`).then(({character})=>{
-      setCharacters((items)=>items.some((item)=>item.id===character.id)?items:[character,...items]);
-      setSelectedId(character.id);
-      if(params.get("editCharacter")){
-        // Editing has a real page of its own now. Sending the reader there
-        // rather than opening the studio on top of Home is what keeps Back
-        // returning to wherever they pressed Edit.
-        router.replace(character.ownedByViewer?`/characters/${character.id}/edit`:`/characters/${character.id}`);
-        return;
-      }else{
-        requestedConversationRef.current=params.get("conversation");
-        setActiveView("chat");
-      }
-      // The router's own state is carried across, which is where the
-      // navigation depth stamp lives: rewriting it away made every Back
-      // control on the pages below this one fall through to its fallback.
-      window.history.replaceState(window.history.state,"","/");
-    }).catch((reason)=>setError(reason instanceof Error?reason.message:"Could not open character"));
-  },[authenticated,router]);
+    if(command?.kind==="editCreation"){
+      // Editing has a real page of its own. Sending the reader there rather
+      // than opening the studio on top of Home is what keeps Back returning to
+      // wherever they pressed Edit.
+      void api<{character:Character}>(`/api/characters/${command.characterId}`)
+        .then(({character})=>router.replace(character.ownedByViewer?`/characters/${character.id}/edit`:`/characters/${character.id}`))
+        .catch((reason)=>setError(reason instanceof Error?reason.message:"Could not open creation"));
+      return;
+    }
+
+    if(!route)return;
+    applyRoute(route);
+    if(route.view==="chat"){
+      // The creation page pushes `?character=…&conversation=…`. That is a real
+      // chat, so it is canonicalised in place — same entry, same depth stamp,
+      // now saying which story it is.
+      const canonical=chatHref(route.characterId,route.conversationId);
+      if(!isCurrentHref(window.location,canonical))window.history.replaceState(window.history.state,"",canonical);
+      // The shell's own list may not hold this creation yet when it was opened
+      // from somebody else's page.
+      void api<{character:Character}>(`/api/characters/${route.characterId}`)
+        .then(({character})=>setCharacters((items)=>items.some((item)=>item.id===character.id)?items:[character,...items]))
+        .catch(()=>undefined);
+    }
+  },[authenticated,router,applyRoute]);
+  /**
+   * One request per open, and only the newest one is allowed to land.
+   *
+   * Keyed on the target's nonce rather than on the character id, so reopening
+   * the same creation on a different story is a new request — which it plainly
+   * is, and which the old effect could not see.
+   */
   useEffect(() => {
-    if (!selectedId || !authenticated) { setConversation(null); setConversations([]); setMessages([]); setMemories([]); setMemoryArcs([]); return; }
-    if (activeView !== "chat") return;
-    setError("");
-    const requestedConversationId = requestedConversationRef.current;
-    requestedConversationRef.current = null;
-    loadChat(selectedId, requestedConversationId ?? undefined).catch((e) => setError(e instanceof Error ? e.message : "Could not open conversation"));
-  }, [selectedId, authenticated, activeView, loadChat]);
+    if (!authenticated) { setChatTarget(null); setConversation(null); setConversations([]); setMessages([]); setMemories([]); return; }
+    if (!chatTarget) return;
+    const token = chatRequestRef.current = chatTarget.nonce;
+    loadChat(chatTarget.characterId, chatTarget.conversationId ?? undefined, token)
+      .catch((e) => { if (token === chatRequestRef.current) setError(e instanceof Error ? e.message : "Could not open conversation"); })
+      .finally(() => { if (token === chatRequestRef.current) setChatLoading(false); });
+  }, [authenticated, chatTarget, loadChat]);
   const scrollToBottom = useCallback(() => {
     const node = messagesRef.current;
     if (!node) return;
@@ -374,25 +517,92 @@ export default function Home() {
     } finally { setStreaming(false); }
   }
 
+  /**
+   * Shows a conversation the server has just handed back in full.
+   *
+   * A created or branched story arrives complete — the row and its opening
+   * message — so re-reading it over the network would be a second round trip
+   * for something already in hand. Claiming a request token first is what stops
+   * an older, still-in-flight load from landing on top of it.
+   */
+  const adoptConversation = useCallback((characterId: string, conversation: Conversation, messages: Message[]) => {
+    chatNonceRef.current += 1;
+    chatRequestRef.current = chatNonceRef.current;
+    setChatTarget(null);
+    setSelectedId(characterId);
+    setActiveView("chat");
+    setConversation(conversation); setMessages(messages);
+    setConversations((items) => [conversation, ...items.filter((item) => item.id !== conversation.id)]);
+    setChatIndex((items) => [conversation, ...items.filter((item) => item.id !== conversation.id)]);
+    setStoryNavigation(closedStoryNavigation);
+    setMemories([]);
+    setChatLoading(false);
+    const target = chatHref(characterId, conversation.id);
+    if (!isCurrentHref(window.location, target)) router.push(target);
+  }, [router]);
+
+  /**
+   * Starting another story with a creation.
+   *
+   * The pending flag is set before the request rather than after it, and the
+   * drawer closes in the same tick. Previously the tap did nothing visible for
+   * as long as the round trip took — the drawer stayed open, the button stayed
+   * idle — and the new story appeared several seconds later, which read as a
+   * dead click. The chat opens the instant the conversation has an id; nothing
+   * waits on the library refresh behind it.
+   */
   async function newConversation(greetingIndex = 0, personaId?: string | null) {
-    if (!selected || streaming) return;
+    if (!selected || streaming || creatingConversation) return;
+    const character = selected;
+    setCreatingConversation(true); setError("");
+    setStoryNavigation(closedStoryNavigation);
+    setChatNotice("Starting a new story…");
     try {
-      const data = await api<{ conversation: Conversation; messages: Message[] }>("/api/conversations", { method: "POST", body: JSON.stringify({ characterId: selected.id, greetingIndex, personaId: personaId ?? activePersona?.id ?? null }) });
-      setConversation(data.conversation); setMessages(data.messages); setConversations((items) => [data.conversation, ...items]); setStoryNavigation(closedStoryNavigation);
-      setChatIndex((items) => [data.conversation, ...items]); setActiveView("chat");
-      if (isAdmin) { const memoryData = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,data.conversation.id)); setMemories(memoryData.memories); setMemoryArcs(memoryData.arcs); }
-      else { setMemories([]); setMemoryArcs([]); }
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not start a new chat"); }
+      const data = await api<{ conversation: Conversation; messages: Message[] }>("/api/conversations", { method: "POST", body: JSON.stringify({ characterId: character.id, greetingIndex, personaId: personaId ?? activePersona?.id ?? null }) });
+      adoptConversation(character.id, data.conversation, data.messages);
+      setChatNotice("New story ready");
+      if (isAdmin) void api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(character.id,data.conversation.id)).then((memoryData) => { setMemories(memoryData.memories); }).catch(() => undefined);
+    } catch (e) { setChatNotice(""); setError(e instanceof Error ? e.message : "Could not start a new chat"); }
+    finally { setCreatingConversation(false); }
   }
 
-  async function updateConversationContext(changes: Partial<Pick<Conversation,"personaId" | "providerId" | "modelId" | "rpEngineId" | "instructionPresets" | "customInstructions" | "responseLength" | "temperature">>) {
-    if (!conversation) return;
-    try {
-      const data = await api<{ conversation: Conversation }>(`/api/conversations/${conversation.id}`, { method: "PATCH", body: JSON.stringify(changes) });
-      setConversation(data.conversation); setConversations((items) => items.map((item) => item.id === data.conversation.id ? data.conversation : item));
-      setChatIndex((items) => items.map((item) => item.id === data.conversation.id ? data.conversation : item));
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not update this chat"); }
-  }
+  /** One conversation record, written to every list that holds a copy of it. */
+  const applyConversation = useCallback((next: Conversation) => {
+    setConversation((current) => current && current.id === next.id ? next : current);
+    setConversations((items) => items.map((item) => item.id === next.id ? next : item));
+    setChatIndex((items) => items.map((item) => item.id === next.id ? next : item));
+  }, []);
+
+  /**
+   * Changing something about this story.
+   *
+   * These are all low-risk preferences — response length, creativity, persona,
+   * writer, instructions — and every one of them was previously invisible until
+   * a full round trip finished: two network legs and six database round trips
+   * before the word "Concise" appeared where "Natural" had been. That is the
+   * two-second delay in the report, and it was never the reader's fault for
+   * noticing.
+   *
+   * So the change is applied to the screen first and persisted behind it. This
+   * function deliberately RESOLVES IMMEDIATELY, so the sheets that await it
+   * close on the tap rather than on the response.
+   *
+   * A failure is not swallowed: the previous value is put back exactly, and the
+   * reader is told. An optimistic update that cannot be undone would be worse
+   * than the delay it replaced.
+   */
+  const updateConversationContext = useCallback(async (changes: Partial<Pick<Conversation,"personaId" | "providerId" | "modelId" | "rpEngineId" | "instructionPresets" | "customInstructions" | "responseLength" | "temperature">>) => {
+    const previous = conversation;
+    if (!previous) return;
+    applyConversation({ ...previous, ...changes });
+    setError("");
+    void api<{ conversation: Conversation }>(`/api/conversations/${previous.id}`, { method: "PATCH", body: JSON.stringify(changes) })
+      .then((data) => applyConversation(data.conversation))
+      .catch((reason) => {
+        applyConversation(previous);
+        setError(reason instanceof Error ? reason.message : "Could not update this chat");
+      });
+  }, [conversation, applyConversation]);
 
   function beginEdit(message: Message, bubble?: Element | null) {
     if (streaming) return;
@@ -458,9 +668,8 @@ export default function Home() {
     const branchRequestId=crypto.randomUUID();
     try {
       const data=await api<{conversation:Conversation;messages:Message[]}>("/api/conversations",{method:"POST",body:JSON.stringify({branchFromConversationId:conversation.id,branchFromMessageId:message.id,branchRequestId})});
-      setConversation(data.conversation); setMessages(data.messages); setConversations((items)=>[data.conversation,...items]); setChatIndex((items)=>[data.conversation,...items]);
-      if (isAdmin) { const memoryData=await api<{memories:Memory[];arcs:MemoryArc[]}>(memoriesUrl(data.conversation.characterId,data.conversation.id)); setMemories(memoryData.memories); setMemoryArcs(memoryData.arcs); }
-      else { setMemories([]); setMemoryArcs([]); }
+      adoptConversation(data.conversation.characterId,data.conversation,data.messages);
+      if (isAdmin) void api<{memories:Memory[];arcs:MemoryArc[]}>(memoriesUrl(data.conversation.characterId,data.conversation.id)).then((memoryData)=>{setMemories(memoryData.memories);}).catch(()=>undefined);
       setChatNotice("Branch created"); scrollToBottom();
     } catch(e) { setError(e instanceof Error?e.message:"Could not create a parallel story"); }
     finally { branchPendingRef.current=null; setBranchPendingMessageId(null); }
@@ -483,6 +692,16 @@ export default function Home() {
   return (
     <main className="app-shell">
       {accountNotice&&<div className="account-notice" role="status"><span>✦</span>{accountNotice}<button onClick={()=>setAccountNotice("")}>×</button></div>}
+      {/* The shell's own lists failing used to be reported only inside the chat
+          panel, so a Chats page whose creations never arrived said nothing at
+          all and stayed blank until the tab was reloaded. This banner belongs
+          to the shell, so it is visible on whichever surface is open, and it
+          offers the retry that the reader was previously performing with F5. */}
+      {libraryError&&<div className="library-error" role="alert">
+        <span aria-hidden>⚠</span>
+        <div><strong>Some of your library could not be loaded.</strong><small>{libraryError}</small></div>
+        <button onClick={()=>{setLibraryError("");refreshLibraries();}}>Try again</button>
+      </div>}
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}>×</button></div>
         <nav className="primary-nav">
@@ -505,7 +724,7 @@ export default function Home() {
           rendered in normal flow above 760px because the old class was only
           ever declared inside two media queries. */}
 
-      {activeView === "home" ? <DiscoveryFeed onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "chats" ? <ChatsView characters={characters} conversations={chatIndex} personas={personas} onOpenMenu={() => setSidebarOpen(true)} onCreate={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); }} onOpen={(characterId,conversationId) => { requestedConversationRef.current = conversationId ?? null; setSelectedId(characterId); setActiveView("chat"); }} /> : activeView === "worlds" ? <WorldsHub
+      {activeView === "home" ? <DiscoveryFeed onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "chats" ? <ChatsView characters={characters} conversations={chatIndex} personas={personas} onOpenMenu={() => setSidebarOpen(true)} onCreate={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); }} onOpen={(characterId,conversationId) => openChat(characterId,conversationId)} /> : activeView === "worlds" ? <WorldsHub
         onOpenMenu={() => setSidebarOpen(true)}
         onCreate={() => setEditingWorld("new")}
         onEdit={(world) => setEditingWorld(world)}
@@ -525,6 +744,14 @@ export default function Home() {
             </div>
           </header>
           <div className="messages" ref={attachMessageList} onScroll={trackScrollPosition}>
+            {/* A story that is still arriving says so. The transcript of the
+                PREVIOUS story is never what fills this space — it is cleared
+                the moment another one is selected — so this skeleton is the
+                only thing between one chat and the next. */}
+            {chatLoading&&!messages.length?<div className="chat-skeleton" aria-live="polite" aria-busy="true">
+              <span className="sr-only">Loading this story</span>
+              {[0,1,2].map((row)=><div key={row} className={`skeleton-message ${row%2?"":"skeleton-assistant"}`}><i /><i /><i /></div>)}
+            </div>:<>
             <div className="date-divider"><span>THE STORY SO FAR</span></div>
             {messages.map((message, index) => (
               <article key={message.id} className={`message ${message.role}`}>
@@ -532,12 +759,13 @@ export default function Home() {
                 <div className="message-stack">
                   <div className="message-meta"><strong>{message.role === "assistant" ? creationSubject(selected) : activePersona?.name || "You"}</strong><time>{time(message.createdAt)}</time></div>
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`} style={editingMessageId === message.id && editWidth ? { width: editWidth } : undefined}>
-                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" ? (openingBlocks(message, index) ? <RichMessage blocks={openingBlocks(message, index)} bucket={characterAvatarBucket} /> : tokenizeCharacterMessage(message.content).map((segment, segmentIndex) => <span className={`message-segment ${segment.kind}`} key={segmentIndex}>{segment.text}</span>)) : message.content) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
+                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" && openingBlocks(message, index) ? <RichMessage blocks={openingBlocks(message, index)} bucket={characterAvatarBucket} /> : <StyledMessage content={message.content} providerEscapes={message.role === "assistant"} />) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
                   </div>
-                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?"◌ Creating…":"⑂ Branch here"}</button>{isAdmin && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {message.memoryIds.length + message.arcIds.length ? `${message.memoryIds.length + message.arcIds.length} recalled` : "Context"}</button>}{conversation && <MemoryFeedback messageId={message.id} conversationId={conversation.id} />}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
+                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?"◌ Creating…":"⑂ Branch here"}</button>{isAdmin && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {recallLabel(message)}</button>}{conversation && <MemoryFeedback messageId={message.id} conversationId={conversation.id} />}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
                 </div>
               </article>
             ))}
+            </>}
           </div>
           {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           {chatNotice && <div className="success-banner" role="status"><span>✓</span><strong>{chatNotice}</strong><button onClick={() => setChatNotice("")}>×</button></div>}
@@ -592,13 +820,13 @@ export default function Home() {
           refreshLibraries();
           return;
         }
-        setSelectedId(character.id); setActiveView("chat");
+        openChat(character.id);
         refreshLibraries();
       }} onDeleted={() => { setStudioOpen(false); setEditing(null); goToView("chats"); void Promise.all([loadCharacters(),loadChatIndex()]).catch(()=>undefined); }} />}
-      {isAdmin && memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); setMemoryArcs(data.arcs); }} />}
-      {storyNavigation.surface==="story" && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} onClose={() => setStoryNavigation(closedStoryNavigation)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={async (id) => { await loadChat(selected.id,id); setStoryNavigation(closedStoryNavigation); }} onChange={() => void loadChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>setStoryNavigation(openStoryChild("model"))} onOpenPersona={()=>setStoryNavigation(openStoryChild("persona"))} onOpenInstructions={()=>setStoryNavigation(openStoryChild("instructions"))} onOpenWorld={()=>setStoryNavigation(openStoryChild("world"))} />}
+      {isAdmin && memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); }} />}
+      {storyNavigation.surface==="story" && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} creating={creatingConversation} onClose={() => setStoryNavigation(closedStoryNavigation)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={(id) => openChat(selected.id,id)} onChange={() => void loadChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>setStoryNavigation(openStoryChild("model"))} onOpenPersona={()=>setStoryNavigation(openStoryChild("persona"))} onOpenInstructions={()=>setStoryNavigation(openStoryChild("instructions"))} onOpenWorld={()=>setStoryNavigation(openStoryChild("world"))} />}
       {settingsOpen && <SettingsSheet isAdmin={isAdmin} settings={settings} models={models} catalog={modelCatalog} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings({...defaultSettings,...value}); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings; catalog: ModelCatalog }>("/api/settings"); setSettings({...defaultSettings,...data.settings}); if(data.catalog)setModelCatalog(data.catalog); }} />}
-      {isAdmin && recallMessage && <RecallDrawer message={recallMessage} memories={memories} arcs={memoryArcs} onClose={() => setRecallMessage(null)} />}
+      {isAdmin && recallMessage && <RecallDrawer message={recallMessage} onClose={() => setRecallMessage(null)} />}
       {storyNavigation.surface==="instructions" && conversation && <InstructionsSheet conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
       {storyNavigation.surface==="persona" && conversation && <PersonaPicker personas={personas} selectedId={conversation.personaId || activePersona?.id || null} onClose={closeStoryNavigation} onManage={() => { setStoryNavigation(closedStoryNavigation); setActiveView("personas"); }} onCreated={(persona)=>setPersonas((items)=>[persona,...items])} onSave={async (personaId) => { await updateConversationContext({personaId}); closeStoryNavigation(); }} />}
       {storyNavigation.surface==="model" && conversation && <ModelPicker catalog={modelCatalog} conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
@@ -719,17 +947,75 @@ function MemoryDrawer({ character, conversation, memories, onClose, onChange }: 
   return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer"><header><div><span className="eyebrow">Continuity</span><h2>{character.name}&apos;s memories</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="memory-explainer"><span>⌁</span><p>Generated memories belong only to this chat. Active promises and open loops receive protected recall; resolved ones remain in the permanent archive.</p>{conversation && <button disabled={busy || conversation.messageCount < 2} onClick={async () => { setBusy(true); try { await api("/api/memories/consolidate",{method:"POST",body:JSON.stringify({conversationId:conversation.id})}); onChange(); } finally { setBusy(false); } }}>{busy?"Remembering…":"Refresh now"}</button>}</div><SceneStatePanel conversation={conversation}/>{conversation?.summary && <section className="summary-card"><span className="eyebrow">Rolling story-so-far · this chat</span><p>{conversation.summary}</p></section>}<div className="memory-list">{memories.map((memory) => <article key={memory.id} className={`memory-card memory-${memory.status}`}><div><span className={`memory-pin ${memory.pinned ? "pinned" : ""}`}>{memory.pinned ? "◆ Pinned" : `Importance ${memory.importance}/5`} · {memory.conversationId ? "This chat" : "All chats"} · {memory.status}</span><span className="memory-controls"><ChoiceField label="Memory type" value={memory.kind} options={memoryKinds} onChange={(value)=>void updateMemory(memory,{kind:value as Memory["kind"]})} compact/>{(memory.kind === "promise" || memory.kind === "open_loop") && <ChoiceField label="Memory status" value={memory.status} options={[{value:"active",label:"Active"},{value:"resolved",label:"Resolved"},{value:"superseded",label:"Superseded"}]} onChange={(value)=>void updateMemory(memory,{status:value as Memory["status"],resolution:value === "active" ? "" : memory.resolution})} compact/>}<button onClick={() => void updateMemory(memory,{pinned:!memory.pinned})}>{memory.pinned?"Unpin":"Pin"}</button><button onClick={() => { const value=window.prompt("Edit memory",memory.content)?.trim(); if(value&&value!==memory.content) void updateMemory(memory,{content:value}); }}>Edit</button><button onClick={async () => { if(!window.confirm("Delete this memory?")) return; await api(`/api/memories?id=${memory.id}`, { method: "DELETE" }); onChange(); }}>Delete</button></span></div><p>{memory.content}</p>{memory.resolution && <p className="memory-resolution">Resolved: {memory.resolution}</p>}{memory.keywords.length > 0 && <small>{memory.keywords.map((key) => `#${key}`).join("  ")}</small>}</article>)}</div><form className="memory-form" onSubmit={async (e) => { e.preventDefault(); setBusy(true); try { await api("/api/memories", { method: "POST", body: JSON.stringify({ characterId: character.id, conversationId: scope === "chat" ? conversation?.id ?? null : null, content, kind:"event", keywords: keywords.split(",").map((x) => x.trim()).filter(Boolean), importance: 5, pinned: true }) }); setContent(""); setKeywords(""); onChange(); } finally { setBusy(false); } }}><span className="eyebrow">Add pinned journal</span><ChoiceField label="Use in" value={scope} options={[{value:"chat",label:"This chat only"},{value:"character",label:"All chats with this character"}]} onChange={(value)=>setScope(value as "chat"|"character")}/><textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="A fact, promise, preference, or piece of lore…" rows={3} /><input value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="Recall keywords, comma separated" /><button className="primary" disabled={busy || !content.trim()}>Add to memory</button></form></aside></div>;
 }
 
-function RecallDrawer({ message, memories, arcs, onClose }: { message: Message; memories: Memory[]; arcs: MemoryArc[]; onClose: () => void }) {
-  const recalled = message.memoryIds.map((id) => memories.find((memory) => memory.id === id)).filter((memory): memory is Memory => Boolean(memory));
-  const recalledArcs = message.arcIds.map((id) => arcs.find((arc) => arc.id === id)).filter((arc): arc is MemoryArc => Boolean(arc));
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer recall-drawer"><header><div><span className="eyebrow">Reply context</span><h2>What this reply remembered</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="memory-explainer"><span>⌁</span><p>Every reply also receives the complete character profile, current rolling summary, and recent transcript. Below are the additional durable memories and historical chapters recalled from the permanent archive.</p></div><div className="memory-list">{recalled.map((memory) => <article className="memory-card" key={memory.id}><div><span className="memory-pin">{memory.kind.replace("_"," ")} · {memory.status} · importance {memory.importance}/5</span></div><p>{memory.content}</p>{memory.resolution && <p className="memory-resolution">Resolution: {memory.resolution}</p>}</article>)}{recalledArcs.map((arc) => <article className="memory-card" key={arc.id}><div><span className="memory-pin">Historical arc · messages {arc.startMessageCount}–{arc.endMessageCount}</span></div><p>{arc.summary}</p></article>)}{!recalled.length && !recalledArcs.length && <section className="summary-card"><span className="eyebrow">No separate archive recall</span><p>Character canon, rolling continuity, and the recent transcript were still included. Older replies created before archive tracing will also show this message.</p></section>}</div></aside></div>;
+type RecallItem =
+  | { kind: "memory"; id: string; available: true; content: string; memoryKind: string; status: string; importance: number; resolution: string; scope: "chat" | "creation" }
+  | { kind: "arc"; id: string; available: true; summary: string; startMessageCount: number; endMessageCount: number }
+  | { kind: "memory" | "arc"; id: string; available: false };
+type RecallDetail = { items: RecallItem[]; counts: { memories: number; arcs: number; unavailable: number; total: number } };
+
+/** "4 memories · 2 arcs", or "Context" when this reply recalled nothing. */
+function recallLabel(message: Message) {
+  const parts: string[] = [];
+  if (message.memoryIds.length) parts.push(`${message.memoryIds.length} ${message.memoryIds.length === 1 ? "memory" : "memories"}`);
+  if (message.arcIds.length) parts.push(`${message.arcIds.length} ${message.arcIds.length === 1 ? "arc" : "arcs"}`);
+  return parts.length ? parts.join(" · ") : "Context";
 }
 
-function ConversationDrawer({ character, conversation, settings, catalog, personas, conversations, activeId, onClose, onNew, onSelect, onChange, onUpdate, onOpenModel, onOpenPersona, onOpenInstructions, onOpenWorld }: { character: Character; conversation: Conversation | null; settings: AppSettings; catalog: ModelCatalog; personas: Persona[]; conversations: Conversation[]; activeId: string | null; onClose: () => void; onNew: (greetingIndex: number, personaId: string | null) => void; onSelect: (id: string) => void; onChange: () => void; onUpdate: (changes: Partial<Pick<Conversation,"responseLength"|"temperature">>) => Promise<void>; onOpenModel:()=>void; onOpenPersona:()=>void; onOpenInstructions:()=>void; onOpenWorld:()=>void }) {
+/**
+ * What one reply remembered.
+ *
+ * Reads the reply's own recall from the server rather than resolving its stored
+ * ids against a list the shell loaded when the chat was opened. That list goes
+ * stale the moment consolidation writes a new memory — which happens after
+ * every reply — and resolving against it is how "Recalled 6" came to open an
+ * empty panel. The count on the button and the rows in here are now the same
+ * array, and an item that no longer exists says so instead of vanishing.
+ */
+function RecallDrawer({ message, onClose }: { message: Message; onClose: () => void }) {
+  const [detail, setDetail] = useState<RecallDetail | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api<RecallDetail>(`/api/messages/${message.id}/recall`)
+      .then((data) => { if (live) setDetail(data); })
+      .catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, [message.id]);
+
+  const expected = message.memoryIds.length + message.arcIds.length;
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
+    <aside className="memory-drawer recall-drawer">
+      <header><div><span className="eyebrow">Reply context</span><h2>What this reply remembered</h2></div><button className="icon-button" onClick={onClose}>×</button></header>
+      <div className="memory-explainer"><span>⌁</span><p>Every reply also receives the complete creation profile, the current rolling summary, and the recent transcript. Listed below are the {expected === 1 ? "one additional continuity item" : `${expected} additional continuity items`} recalled from the permanent archive for this reply.</p></div>
+      <div className="memory-list">
+        {!detail && !failed && <section className="summary-card"><span className="eyebrow">Reading this reply&apos;s recall</span></section>}
+        {failed && <section className="summary-card"><span className="eyebrow">Recall unavailable</span><p>This reply&apos;s recall could not be read. Nothing has been lost — close and reopen this panel to try again.</p></section>}
+        {detail?.items.map((item) => {
+          if (!item.available) return <article className="memory-card memory-superseded" key={item.id}>
+            <div><span className="memory-pin">{item.kind === "arc" ? "Historical arc" : "Memory"} · no longer in the archive</span></div>
+            <p>This was recalled for the reply and has since been edited away or deleted. It is listed so the count above always matches what was used.</p>
+          </article>;
+          if (item.kind === "arc") return <article className="memory-card" key={item.id}>
+            <div><span className="memory-pin">Historical arc · messages {item.startMessageCount}–{item.endMessageCount}</span></div>
+            <p>{item.summary}</p>
+          </article>;
+          return <article className="memory-card" key={item.id}>
+            <div><span className="memory-pin">{item.memoryKind.replace("_"," ")} · {item.status} · importance {item.importance}/5 · {item.scope === "chat" ? "this chat" : "all chats"}</span></div>
+            <p>{item.content}</p>
+            {item.resolution && <p className="memory-resolution">Resolution: {item.resolution}</p>}
+          </article>;
+        })}
+        {detail && !detail.items.length && <section className="summary-card"><span className="eyebrow">No separate archive recall</span><p>Creation canon, rolling continuity and the recent transcript were still included. This reply drew nothing additional from the permanent archive.</p></section>}
+      </div>
+    </aside>
+  </div>;
+}
+
+function ConversationDrawer({ character, conversation, settings, catalog, personas, conversations, activeId, creating, onClose, onNew, onSelect, onChange, onUpdate, onOpenModel, onOpenPersona, onOpenInstructions, onOpenWorld }: { character: Character; conversation: Conversation | null; settings: AppSettings; catalog: ModelCatalog; personas: Persona[]; conversations: Conversation[]; activeId: string | null; creating: boolean; onClose: () => void; onNew: (greetingIndex: number, personaId: string | null) => void; onSelect: (id: string) => void; onChange: () => void; onUpdate: (changes: Partial<Pick<Conversation,"responseLength"|"temperature">>) => Promise<void>; onOpenModel:()=>void; onOpenPersona:()=>void; onOpenInstructions:()=>void; onOpenWorld:()=>void }) {
   const [personaId,setPersonaId] = useState(personas.find((item) => item.isDefault)?.id ?? personas[0]?.id ?? "");
   const engine=catalog.engines.find((item)=>item.id===(conversation?.rpEngineId||settings.roleplayPreset));
   const activePersona=personas.find((item)=>item.id===conversation?.personaId)??personas.find((item)=>item.isDefault);
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer conversation-drawer"><header><div><span className="eyebrow">Story control center</span><h2>{character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header>{conversation&&<section className="story-controls"><div className="story-control-grid"><button onClick={onOpenModel}><span>✦</span><strong>Model</strong><small>{engine?.label||conversation.rpEngineId}</small></button><button onClick={onOpenPersona}><span>◉</span><strong>Persona</strong><small>{activePersona?.name||"Choose who you are"}</small></button><button onClick={onOpenInstructions}><span>⌘</span><strong>Instructions</strong><small>{instructionSummary(conversation)}</small></button><button onClick={onOpenWorld} disabled={!character.ownedByViewer}><span>▤</span><strong>Worlds</strong><small>{character.ownedByViewer?`${character.worldIds.length} attached`:"Creator-owned canon"}</small></button></div><div className="story-preferences"><ChoiceField label="Response length" value={conversation.responseLength||"default"} onChange={(value)=>void onUpdate({responseLength:value==="default"?null:value as Conversation["responseLength"]})} options={[{value:"default",label:`Use default (${settings.responseLength})`},{value:"concise",label:"Concise",description:"Tighter replies with fewer beats."},{value:"natural",label:"Natural",description:"Preserves Afterglow's current pacing."},{value:"detailed",label:"Detailed",description:"Fuller scenes where the moment supports it."}]}/><ChoiceField label="Creativity" value={conversation.temperature==null?"default":String(conversation.temperature)} onChange={(value)=>void onUpdate({temperature:value==="default"?null:Number(value)})} options={[{value:"default",label:`Use default (${settings.temperature})`},{value:"0.7",label:"Grounded"},{value:"0.95",label:"Balanced"},{value:"1.15",label:"Expressive"}]}/></div><p className="setting-note">These choices affect only this story. Messages, branches, and continuity stay intact.</p></section>}<div className="drawer-action"><span className="field-label">Start another story as</span><div className="persona-choice-grid">{personas.map((persona)=><button key={persona.id} className={personaId===persona.id?"selected":""} onClick={()=>setPersonaId(persona.id)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available persona"}</small></span></button>)}</div><button className="primary" onClick={() => onNew(0,personaId || null)}>＋ Start separate story</button><p>Opening messages appear as options on the first reply. Existing stories are never reset.</p></div><div className="conversation-list">{conversations.map((item) => <article key={item.id} className={`conversation-card ${item.id === activeId ? "active" : ""}`}><button className="conversation-main" onClick={() => onSelect(item.id)}><strong>{item.title}</strong><span>{item.messageCount} messages · {personas.find((persona) => persona.id === item.personaId)?.name || "Default persona"} · {new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(item.updatedAt))}</span></button><div><button title="Rename" onClick={async () => { const title = window.prompt("Conversation title",item.title)?.trim(); if (!title || title === item.title) return; await api(`/api/conversations/${item.id}`,{method:"PATCH",body:JSON.stringify({title})}); onChange(); }}>✎</button><button title="Delete" onClick={async () => { if (!window.confirm(`Delete “${item.title}” and its chat-specific memories? All-chats journal entries will remain.`)) return; await api(`/api/conversations/${item.id}`,{method:"DELETE"}); onChange(); }}>⌫</button></div></article>)}</div></aside></div>;
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer conversation-drawer"><header><div><span className="eyebrow">Story control center</span><h2>{character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header>{conversation&&<section className="story-controls"><div className="story-control-grid"><button onClick={onOpenModel}><span>✦</span><strong>Model</strong><small>{engine?.label||conversation.rpEngineId}</small></button><button onClick={onOpenPersona}><span>◉</span><strong>Persona</strong><small>{activePersona?.name||"Choose who you are"}</small></button><button onClick={onOpenInstructions}><span>⌘</span><strong>Instructions</strong><small>{instructionSummary(conversation)}</small></button><button onClick={onOpenWorld} disabled={!character.ownedByViewer}><span>▤</span><strong>Worlds</strong><small>{character.ownedByViewer?`${character.worldIds.length} attached`:"Creator-owned canon"}</small></button></div><div className="story-preferences"><ChoiceField label="Response length" value={conversation.responseLength||"default"} onChange={(value)=>void onUpdate({responseLength:value==="default"?null:value as Conversation["responseLength"]})} options={[{value:"default",label:`Use default (${settings.responseLength})`},{value:"concise",label:"Concise",description:"Tighter replies with fewer beats."},{value:"natural",label:"Natural",description:"Preserves Afterglow's current pacing."},{value:"detailed",label:"Detailed",description:"Fuller scenes where the moment supports it."}]}/><ChoiceField label="Creativity" value={conversation.temperature==null?"default":String(conversation.temperature)} onChange={(value)=>void onUpdate({temperature:value==="default"?null:Number(value)})} options={[{value:"default",label:`Use default (${settings.temperature})`},{value:"0.7",label:"Grounded"},{value:"0.95",label:"Balanced"},{value:"1.15",label:"Expressive"}]}/></div><p className="setting-note">These choices affect only this story. Messages, branches, and continuity stay intact.</p></section>}<div className="drawer-action"><span className="field-label">Start another story as</span><div className="persona-choice-grid">{personas.map((persona)=><button key={persona.id} className={personaId===persona.id?"selected":""} onClick={()=>setPersonaId(persona.id)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available persona"}</small></span></button>)}</div><button className="primary" disabled={creating} onClick={() => onNew(0,personaId || null)}>{creating?"◌ Starting…":"＋ Start separate story"}</button><p>Opening messages appear as options on the first reply. Existing stories are never reset.</p></div><div className="conversation-list">{conversations.map((item) => <article key={item.id} className={`conversation-card ${item.id === activeId ? "active" : ""}`}><button className="conversation-main" onClick={() => onSelect(item.id)}><strong>{item.title}</strong><span>{item.messageCount} messages · {personas.find((persona) => persona.id === item.personaId)?.name || "Default persona"} · {new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(item.updatedAt))}</span></button><div><button title="Rename" onClick={async () => { const title = window.prompt("Conversation title",item.title)?.trim(); if (!title || title === item.title) return; await api(`/api/conversations/${item.id}`,{method:"PATCH",body:JSON.stringify({title})}); onChange(); }}>✎</button><button title="Delete" onClick={async () => { if (!window.confirm(`Delete “${item.title}” and its chat-specific memories? All-chats journal entries will remain.`)) return; await api(`/api/conversations/${item.id}`,{method:"DELETE"}); onChange(); }}>⌫</button></div></article>)}</div></aside></div>;
 }
 
 function WorldPicker({character,worlds,onClose,onCreated,onSaved}:{character:Character;worlds:WorldWithCount[];onClose:()=>void;onCreated:(world:WorldWithCount)=>void;onSaved:(character:Character)=>void}) {
@@ -744,7 +1030,7 @@ function WorldPicker({character,worlds,onClose,onCreated,onSaved}:{character:Cha
    * what keeps changing a world link from quietly blanking the creator's
    * original paste.
    */
-  async function save(){setBusy(true);setError("");try{const current=await api<{character:Character}>(`/api/characters/${character.id}`);const data=await api<{character:Character}>(`/api/characters/${character.id}`,{method:"PATCH",body:JSON.stringify({...draftPayload(draftFromCharacter(current.character)),worldIds:selected})});onSaved(data.character);}catch(e){setError(e instanceof Error?e.message:"Could not attach worlds");setBusy(false);}}
+  async function save(){setBusy(true);setError("");try{const current=await api<{character:Character}>(`/api/characters/${character.id}?scope=edit`);const data=await api<{character:Character}>(`/api/characters/${character.id}`,{method:"PATCH",body:JSON.stringify({...draftPayload(draftFromCharacter(current.character)),worldIds:selected})});onSaved(data.character);}catch(e){setError(e instanceof Error?e.message:"Could not attach worlds");setBusy(false);}}
   return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e)=>{if(e.currentTarget===e.target)onClose();}}><aside className="memory-drawer picker-drawer"><header><div><span className="eyebrow">Character canon</span><h2>Worlds for {character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="picker-body"><p>Worlds remain attached to the character, so every story with this character shares the same canon.</p><div className="world-picker-list">{worlds.map((world)=><label key={world.id} className={selected.includes(world.id)?"selected":""}><input type="checkbox" checked={selected.includes(world.id)} onChange={(e)=>setSelected(e.target.checked?[...selected,world.id]:selected.filter((id)=>id!==world.id))}/><span><strong>{world.name}</strong><small>{world.description||"Reusable setting and lore"}</small></span></label>)}</div>{!worlds.length&&!creating&&<div className="empty-library-note">Create a world here, then it will be attached to this character.</div>}{creating?<div className="inline-create"><label>World name<input value={name} onChange={(e)=>setName(e.target.value)}/></label><label>Short description<input value={description} onChange={(e)=>setDescription(e.target.value)}/></label><label>World canon<textarea rows={8} value={content} onChange={(e)=>setContent(e.target.value)}/></label><div><button className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary" disabled={busy||!name.trim()||!content.trim()} onClick={()=>void create()}>{busy?"Creating…":"Create & attach"}</button></div></div>:<button className="secondary create-from-picker" onClick={()=>setCreating(true)}>＋ Create world</button>}{error&&<div className="form-error">{error}</div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={()=>void save()}>{busy?"Saving…":"Save worlds"}</button></footer></aside></div>;
 }
 

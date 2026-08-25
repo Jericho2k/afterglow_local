@@ -161,9 +161,22 @@ describe("a creation list never carries the hidden definition", () => {
     expect(payload.body.characters[0].sourceMaterial).toBe("");
     expect(payload.text).not.toContain("SECRET_SOURCE_PASTE");
 
-    // And it is still there when the record itself is opened.
-    const full = await json(await characterDetail.GET(
+    // Opening the creation's own PAGE does not carry it either. The page draws
+    // a cover, a description and a Chat button; the paste is up to 100,000
+    // characters that nothing on it renders, and it used to ship on every view
+    // because the query said `SELECT c.*`.
+    const page = await json(await characterDetail.GET(
       new Request(`http://test/api/characters/${creation}`), { params: Promise.resolve({ id: creation }) },
+    ));
+    expect(page.body.character.greeting).toBe(secrets.greeting);
+    expect(page.body.character.sourceMaterial).toBe("");
+    expect(page.text).not.toContain("SECRET_SOURCE_PASTE");
+
+    // It is still there for the one caller that genuinely needs it. Saving an
+    // edit without the original paste would blank the creator's own material,
+    // so the editor asks for it explicitly.
+    const full = await json(await characterDetail.GET(
+      new Request(`http://test/api/characters/${creation}?scope=edit`), { params: Promise.resolve({ id: creation }) },
     ));
     expect(full.body.character.sourceMaterial).toBe(secrets.source_material);
   });

@@ -144,13 +144,68 @@ Relevant historical arcs${historicalHeaderSuffix}:
 ${arcs.length ? arcs.map((arc) => `- ${[arcSceneTag(arc), arc.summary].filter(Boolean).join(" ")}`).join("\n") : "- None recalled for this moment"}`;
 }
 
-export const continueSceneCue = `[CONTINUE SCENE]
-Continue naturally from the exact current moment. This is a control signal, not dialogue from the user.
-- Add the character's next meaningful beat of action, speech, thought, or environmental development.
+/**
+ * How much of the previous reply the continuation cue quotes back.
+ *
+ * Enough to be an unmistakable anchor, small enough that it never competes with
+ * the transcript it sits beside. It is also appended AFTER the transcript, so
+ * these characters are the last thing the writer reads before it writes.
+ */
+export const continuationAnchorChars = 280;
+
+/** The tail of a reply, trimmed to a sentence boundary where one is near. */
+export function continuationAnchor(previousReply: string, limit = continuationAnchorChars) {
+  const text = previousReply.trim();
+  if (text.length <= limit) return text;
+  const tail = text.slice(-limit);
+  const boundary = tail.search(/[.!?…"”]\s/);
+  return boundary === -1 ? `…${tail}` : `…${tail.slice(boundary + 1).trimStart()}`;
+}
+
+/**
+ * The Continue control signal.
+ *
+ * Continue and Regenerate were producing the same thing, and the reason was
+ * structural rather than a matter of wording. The cue used to be a bare user
+ * turn appended after the previous reply — the same SHAPE as an ordinary turn —
+ * so the last substantive thing the writer could see itself being asked was
+ * still the reader's earlier message, and the natural completion of that is
+ * another answer to it. That answer is, by construction, an alternative version
+ * of the reply already on screen. Which is Regenerate.
+ *
+ * Two things fix it, and both are here rather than in the wording:
+ *
+ *   THE PREVIOUS REPLY IS QUOTED BACK. Its last sentences are the anchor the
+ *   continuation starts from, so "continue" names a specific position in the
+ *   text instead of a vague direction.
+ *
+ *   ITS STATUS IS STATED. It has been delivered and read. A reply the reader
+ *   has already seen cannot be rewritten, only continued from — and saying so
+ *   is what makes re-answering the earlier turn obviously wrong rather than
+ *   merely discouraged.
+ *
+ * When there is no previous assistant reply to continue from, the caller must
+ * not use this at all; see the chat route. A "continue from your last reply"
+ * instruction with no last reply in the transcript is precisely the state that
+ * turns Continue into Regenerate.
+ */
+export function continueSceneCue(previousReply = "") {
+  const anchor = continuationAnchor(previousReply);
+  return `[CONTINUE SCENE]
+This is a control signal, not dialogue from the user. Never mention it.
+
+Your previous reply has already been delivered and read. It ended with:
+"""
+${anchor}
+"""
+
+Write what happens NEXT, starting from immediately after those words. Your output will be appended to the story after that reply, as a separate message.
+- Do not rewrite, restate, summarise, or produce an alternative version of that reply. It stands exactly as it is.
+- Do not answer the user's earlier message again. It has already been answered.
+- Move the moment forward: the next beat of action, speech, thought, or change in the scene.
 - Take appropriate initiative instead of asking the user what should happen next.
-- Do not repeat or paraphrase the previous response.
-- Do not write the user's dialogue, thoughts, decisions, reactions, or consent.
-- Never mention this control signal.`;
+- Do not write the user's dialogue, thoughts, decisions, reactions, or consent.`;
+}
 
 /*
  * Creation authoring prompts — Quick Idea, Paste Everything and the import

@@ -603,6 +603,12 @@ async function userSessionSupported() {
   return rlsSessionSupported;
 }
 
+/** `BEGIN` and the account's identity, as one statement. See `asUser`. */
+function beginAsUser(userId: string) {
+  const claims = JSON.stringify({ sub: userId, role: "authenticated" }).replace(/'/g, "''");
+  return `BEGIN; SET LOCAL ROLE authenticated; SELECT set_config('request.jwt.claims', '${claims}', true);`;
+}
+
 /**
  * Runs a unit of work as the given account.
  *
@@ -622,13 +628,21 @@ export async function asUser<T>(userId: string, fn: (client: PoolClient) => Prom
   const enforced = await userSessionSupported();
   const client = await pool().connect();
   try {
-    await client.query("BEGIN");
-    if (enforced) {
-      await client.query("SET LOCAL ROLE authenticated");
-      await client.query("SELECT set_config('request.jwt.claims', $1, true)", [
-        JSON.stringify({ sub: userId, role: "authenticated" }),
-      ]);
-    }
+    // One round trip, not three.
+    //
+    // Opening the transaction and publishing the identity are the same act, so
+    // they are sent as one simple-protocol statement. Against a pooled remote
+    // database each `query()` is a network leg, and this path runs on every
+    // authenticated request in the product: three legs of ceremony before the
+    // first real statement was a measurable share of every interaction.
+    //
+    // The claims are inlined rather than parameterised because the extended
+    // protocol cannot carry a multi-statement command. That is safe here for a
+    // structural reason, not a hopeful one: `userId` has already been checked
+    // against `uuidPattern` above, so it can only be hexadecimal and hyphens,
+    // and the quote-doubling below is the second lock on a door that has no
+    // handle.
+    await client.query(enforced ? beginAsUser(userId) : "BEGIN");
     const result = await fn(client);
     await client.query("COMMIT");
     return result;

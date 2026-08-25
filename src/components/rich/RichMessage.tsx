@@ -1,7 +1,7 @@
 "use client";
 
 import { avatarSource } from "@/lib/storage";
-import { tokenizeCharacterMessage } from "@/lib/message-format";
+import { StyledMessage } from "./StyledText";
 import { normalizeBlocks, type RichBlock } from "@/lib/rich-content";
 import styles from "./rich.module.css";
 
@@ -29,11 +29,7 @@ export function RichMessage({ blocks, bucket }: {
   const resolved = normalizeBlocks(blocks);
   return <>
     {resolved.map((block, index) => {
-      if (block.type === "text") {
-        return tokenizeCharacterMessage(block.text).map((segment, segmentIndex) => (
-          <span className={`message-segment ${segment.kind}`} key={`${index}-${segmentIndex}`}>{segment.text}</span>
-        ));
-      }
+      if (block.type === "text") return <StyledMessage key={index} content={block.text} />;
       const source = avatarSource(bucket, block.path, block.url);
       if (!source) return null;
       return <figure key={index} className={`${styles.figure} ${styles.inset} ${styles.messageFigure}`}>

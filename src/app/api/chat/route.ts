@@ -161,12 +161,16 @@ export async function POST(request: Request) {
   const sceneRetrievalHint = sceneState && sceneStateRetrievalHintEnabled() ? sceneRetrievalCue(sceneFieldsOf(sceneState)) : "";
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
 
+  const continuationRetrievalAnchor = action === "continue" && history.at(-1)?.role === "assistant" ? history.at(-1)!.content : "";
   let memories; let arcs; let coreCanon = [] as Awaited<ReturnType<typeof retrieveContinuityV2>>["coreCanon"];
   if (memoryRetrievalV2Enabled(account.id)) {
     try {
       const continuity = await retrieveContinuityV2({
         userId:account.id,characterId:row.character_id,conversationId,
-        query:focusedRetrievalQuery(history,lastUserInput || character.scenario || character.name,sceneRetrievalHint),
+        // A continuation is asked about where the scene IS, not about the turn
+        // that is already answered, so its retrieval anchor is the reply being
+        // continued rather than the reader's older message.
+        query:focusedRetrievalQuery(history,(action === "continue" ? continuationRetrievalAnchor : "") || lastUserInput || character.scenario || character.name,sceneRetrievalHint),
         messageId:userMessageId,limit:settings.memoryLimit,tokenBudget:settings.memoryTokenBudget,
       });
       ({memories,arcs,coreCanon}=continuity);
@@ -194,7 +198,25 @@ export async function POST(request: Request) {
     customInstructions: String(row.custom_instructions || ""),
   });
   const modelHistory = history.map((message) => ({ role: message.role, content: message.content }));
-  if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
+  /*
+   * Continue is a continuation, not another attempt.
+   *
+   * Two conditions have to hold for that to be true, and neither used to be
+   * checked. The transcript must actually END with the reply being continued —
+   * a "continue from your last reply" instruction with no last reply in the
+   * transcript is exactly the state in which the writer answers the reader's
+   * earlier turn again, which is Regenerate wearing Continue's label. And the
+   * cue must name where to start, which is why it quotes that reply's final
+   * sentences back; see `continueSceneCue`.
+   *
+   * When there is nothing to continue from — a reply that failed to persist, a
+   * story whose newest message is the reader's — the cue is omitted entirely
+   * and this becomes an ordinary generation. That is the honest behaviour: a
+   * next reply is what the reader wanted, and pretending to continue from a
+   * reply that is not there is what produced the bug.
+   */
+  const continuedReply = action === "continue" && history.at(-1)?.role === "assistant" ? history.at(-1)!.content : "";
+  if (action === "continue" && continuedReply.trim()) modelHistory.push({ role: "user", content: continueSceneCue(continuedReply) });
 
   const completionMessages = [{ role: "system" as const, content: system },...modelHistory];
   // Response Length owns the output envelope as well as the directive. The

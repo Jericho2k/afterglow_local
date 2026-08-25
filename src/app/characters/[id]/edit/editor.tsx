@@ -38,7 +38,7 @@ export default function CreationEditor({ creationId }: { creationId: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    api<{ character: Character; owner: boolean }>(`/api/characters/${creationId}`)
+    api<{ character: Character; owner: boolean }>(`/api/characters/${creationId}?scope=edit`)
       .then((detail) => {
         if (cancelled) return;
         // Editing somebody else's creation is not a thing that exists. The

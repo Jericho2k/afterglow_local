@@ -2,12 +2,19 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 /**
- * Refreshes the Supabase session on every navigation and API call.
+ * Refreshes the Supabase session on every navigation.
  *
  * Without this the access token expires mid-session and server components stop
  * recognising the account. Route protection itself is enforced in each route
  * handler against a revalidated user, never here alone — middleware runs before
  * the handler but is not the security boundary.
+ *
+ * API routes are deliberately EXCLUDED below. Every one of them resolves the
+ * caller through `currentAccount()`, which verifies the token and refreshes an
+ * expiring session itself, so running this first meant every request in the
+ * product verified the same token twice — two round trips where the second
+ * could never disagree with the first. Route handlers may write cookies, so
+ * the refresh still lands; nothing about the security boundary moves.
  */
 export async function middleware(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -34,7 +41,8 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Everything except static assets and the health check.
-    "/((?!_next/static|_next/image|favicon.ico|api/health|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // Navigations only. API routes verify and refresh for themselves, and
+    // static assets carry no session.
+    "/((?!_next/static|_next/image|favicon.ico|api/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
