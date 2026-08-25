@@ -547,7 +547,6 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
    */
   .heroCopy {
     align-self: end;
-    box-sizing: content-box;
     width: 100%; max-width: 620px;
     /* The right-hand padding of the 1280px page, held on the column itself. */
     margin: 0 max(34px, calc((100% - 1280px) / 2 + 34px)) 0 auto;

@@ -23,6 +23,7 @@ import { claimDepth, justCreatedParam, rootDepth } from "@/lib/back-navigation";
 import { chatHref, commandFromSearch, isCurrentHref, routeFromSearch, viewHref, type AppView } from "@/lib/shell-route";
 import { savedCreationDestination } from "@/lib/creation-actions";
 import { mergeCreationLists } from "@/lib/shell-library";
+import { acceptsResponse, adoptChatView, chatFailed, chatLoaded, clearChatView, emptyChatView, openChatView, type ChatView } from "@/lib/chat-view";
 
 type WorldWithCount = StudioWorld;
 
@@ -51,8 +52,27 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatIndex, setChatIndex] = useState<Conversation[]>([]);
-  const [conversation, setConversation] = useState<Conversation | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  /**
+   * The chat view's own state, as one value.
+   *
+   * Which story is being shown, which request asked for it, and what has
+   * arrived — kept together because they have to change together. See
+   * src/lib/chat-view.ts for the two bugs that come from letting them drift:
+   * the previous story's messages surviving a switch, and a slow answer landing
+   * on a chat the reader has already left.
+   *
+   * `conversation` and `messages` are read exactly as they were, and the two
+   * setters below keep every existing call site working unchanged.
+   */
+  const [chatView, setChatView] = useState<ChatView>(emptyChatView);
+  const conversation = chatView.conversation;
+  const messages = chatView.messages;
+  const setConversation = useCallback((value: Conversation | null | ((current: Conversation | null) => Conversation | null)) => {
+    setChatView((view) => ({ ...view, conversation: typeof value === "function" ? value(view.conversation) : value }));
+  }, []);
+  const setMessages = useCallback((value: Message[] | ((current: Message[]) => Message[])) => {
+    setChatView((view) => ({ ...view, messages: typeof value === "function" ? value(view.messages) : value }));
+  }, []);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [worlds, setWorlds] = useState<WorldWithCount[]>([]);
@@ -86,20 +106,7 @@ export default function Home() {
   const messagesRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
-  /**
-   * Which story the chat view has been asked to show, and the sequence number
-   * of that request.
-   *
-   * A ref could say which conversation was wanted but not that a NEW request
-   * had been made for the same one, so switching stories inside one creation
-   * never re-ran the loader. The nonce makes every open an event. The counter
-   * beside it is the out-of-order guard: a slow response for chat B can no
-   * longer land after the reader has already moved on to chat C.
-   */
-  const [chatTarget, setChatTarget] = useState<{ characterId: string; conversationId: string | null; nonce: number } | null>(null);
-  const chatRequestRef = useRef(0);
-  const chatNonceRef = useRef(0);
-  const [chatLoading, setChatLoading] = useState(false);
+
   const [creatingConversation, setCreatingConversation] = useState(false);
   const pinnedToBottomRef = useRef(true);
   const variantDesiredRef = useRef(new Map<string,{ message:Message; index:number; position:number }>());
@@ -158,14 +165,13 @@ export default function Home() {
    * slower-looking screen and a truthful one; the alternative was neither.
    */
   const selectChat=useCallback((characterId:string,conversationId:string|null)=>{
-    chatNonceRef.current+=1;
     setSelectedId(characterId);
     setActiveView("chat");
-    setChatTarget({characterId,conversationId,nonce:chatNonceRef.current});
-    setConversation(null); setMessages([]); setMemories([]);
+    setChatView((view)=>openChatView(view,characterId,conversationId));
     setStoryNavigation(closedStoryNavigation);
     setEditingMessageId(null); setRecallMessage(null);
-    setChatLoading(true); setError("");
+    setMemories([]);
+    setError("");
   },[]);
 
   const applyRoute=useCallback((route:ReturnType<typeof routeFromSearch>)=>{
@@ -228,35 +234,41 @@ export default function Home() {
    * actually looking at. Passing no token means "this is not a switch" — a
    * refresh of whatever is already open — and applies unconditionally.
    */
-  const loadChat = useCallback(async (characterId: string, conversationId?: string, token?: number) => {
+  /**
+   * Reads one story. Applying it is the caller's decision, because only the
+   * caller knows whether the request that asked for it is still the newest one.
+   */
+  const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
     const query = new URLSearchParams({ characterId });
     if (conversationId) query.set("conversationId", conversationId);
-    const data = await api<{ conversations: Conversation[]; conversation: Conversation; messages: Message[] }>(`/api/conversations?${query}`);
-    const current = () => token === undefined || token === chatRequestRef.current;
-    if (!current()) return data;
-    setConversations(data.conversations); setConversation(data.conversation); setMessages(data.messages);
-    if (isAdmin) {
-      const memoryData = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(characterId,data.conversation.id));
-      if (!current()) return data;
-      setMemories(memoryData.memories);
-    } else { setMemories([]); }
-    return data;
+    return api<{ conversations: Conversation[]; conversation: Conversation; messages: Message[] }>(`/api/conversations?${query}`);
+  }, []);
+
+  /** The durable memories behind a story, for the administrator's drawer. */
+  const loadMemories = useCallback((characterId: string, conversationId?: string | null) => {
+    if (!isAdmin) { setMemories([]); return; }
+    void api<{ memories: Memory[] }>(memoriesUrl(characterId,conversationId))
+      .then((data) => setMemories(data.memories))
+      .catch(() => undefined);
   }, [isAdmin]);
 
   /**
-   * The creations the shell knows about.
+   * Re-reads the story already on screen.
    *
-   * This is the list Chats renders its rows from, and it used to be
-   * all-or-nothing across two requests: `Promise.all` meant one failure left
-   * the array empty, there was no retry, and the only error surface was inside
-   * the chat panel — invisible on Chats. The result was the reported bug
-   * exactly: a Chats page with its footer and no stories, blank until the tab
-   * was reloaded.
-   *
-   * So the two requests are settled independently, whichever succeeded is
-   * used, a single transient failure is retried once, and a genuine failure
-   * says so where the reader is actually standing.
+   * A refresh, not a switch: nothing is cleared, because the reader is looking
+   * at this conversation and it is still the one they asked for. Guarded on the
+   * creation so a refresh cannot land after a switch has moved on.
    */
+  const refreshChat = useCallback(async (characterId: string, conversationId?: string) => {
+    const data = await loadChat(characterId, conversationId);
+    setChatView((view) => view.request?.characterId === characterId
+      ? { ...view, conversation: data.conversation, messages: data.messages, loading: false }
+      : view);
+    setConversations(data.conversations);
+    loadMemories(characterId, data.conversation.id);
+    return data;
+  }, [loadChat, loadMemories]);
+
   const loadCharacters = useCallback(async () => {
     // Declared inside so the retry recurses on a plain function rather than on
     // the memoised callback, which cannot refer to itself.
@@ -397,18 +409,33 @@ export default function Home() {
   /**
    * One request per open, and only the newest one is allowed to land.
    *
-   * Keyed on the target's nonce rather than on the character id, so reopening
+   * Keyed on the request's nonce rather than on the character id, so reopening
    * the same creation on a different story is a new request — which it plainly
-   * is, and which the old effect could not see.
+   * is, and which an id comparison could not see.
    */
   useEffect(() => {
-    if (!authenticated) { setChatTarget(null); setConversation(null); setConversations([]); setMessages([]); setMemories([]); return; }
-    if (!chatTarget) return;
-    const token = chatRequestRef.current = chatTarget.nonce;
-    loadChat(chatTarget.characterId, chatTarget.conversationId ?? undefined, token)
-      .catch((e) => { if (token === chatRequestRef.current) setError(e instanceof Error ? e.message : "Could not open conversation"); })
-      .finally(() => { if (token === chatRequestRef.current) setChatLoading(false); });
-  }, [authenticated, chatTarget, loadChat]);
+    if (!authenticated) { setChatView(clearChatView()); return; }
+    const request = chatView.request;
+    if (!request || !chatView.loading) return;
+    const { characterId, conversationId, nonce } = request;
+    loadChat(characterId, conversationId ?? undefined)
+      .then((data) => {
+        setChatView((view) => {
+          if (!acceptsResponse(view, nonce)) return view;
+          setConversations(data.conversations);
+          return chatLoaded(view, nonce, data.conversation, data.messages);
+        });
+        loadMemories(characterId, data.conversation.id);
+      })
+      .catch((reason) => {
+        setChatView((view) => {
+          if (!acceptsResponse(view, nonce)) return view;
+          setError(reason instanceof Error ? reason.message : "Could not open conversation");
+          return chatFailed(view, nonce);
+        });
+      });
+  }, [authenticated, chatView.request, chatView.loading, loadChat, loadMemories]);
+
   const scrollToBottom = useCallback(() => {
     const node = messagesRef.current;
     if (!node) return;
@@ -511,7 +538,7 @@ export default function Home() {
         void loadChatIndex().catch(() => undefined);
       }
     } catch (e) {
-      if (regenerationTargetId && conversation) await loadChat(conversation.characterId,conversation.id).catch(() => undefined);
+      if (regenerationTargetId && conversation) await refreshChat(conversation.characterId,conversation.id).catch(() => undefined);
       else setMessages((items) => items.filter((m) => m.id !== placeholderId));
       setError(e instanceof Error ? e.message : "The reply was interrupted");
     } finally { setStreaming(false); }
@@ -525,19 +552,15 @@ export default function Home() {
    * for something already in hand. Claiming a request token first is what stops
    * an older, still-in-flight load from landing on top of it.
    */
-  const adoptConversation = useCallback((characterId: string, conversation: Conversation, messages: Message[]) => {
-    chatNonceRef.current += 1;
-    chatRequestRef.current = chatNonceRef.current;
-    setChatTarget(null);
+  const adoptConversation = useCallback((characterId: string, adopted: Conversation, adoptedMessages: Message[]) => {
     setSelectedId(characterId);
     setActiveView("chat");
-    setConversation(conversation); setMessages(messages);
-    setConversations((items) => [conversation, ...items.filter((item) => item.id !== conversation.id)]);
-    setChatIndex((items) => [conversation, ...items.filter((item) => item.id !== conversation.id)]);
+    setChatView((view) => adoptChatView(view, characterId, adopted, adoptedMessages));
+    setConversations((items) => [adopted, ...items.filter((item) => item.id !== adopted.id)]);
+    setChatIndex((items) => [adopted, ...items.filter((item) => item.id !== adopted.id)]);
     setStoryNavigation(closedStoryNavigation);
     setMemories([]);
-    setChatLoading(false);
-    const target = chatHref(characterId, conversation.id);
+    const target = chatHref(characterId, adopted.id);
     if (!isCurrentHref(window.location, target)) router.push(target);
   }, [router]);
 
@@ -561,14 +584,14 @@ export default function Home() {
       const data = await api<{ conversation: Conversation; messages: Message[] }>("/api/conversations", { method: "POST", body: JSON.stringify({ characterId: character.id, greetingIndex, personaId: personaId ?? activePersona?.id ?? null }) });
       adoptConversation(character.id, data.conversation, data.messages);
       setChatNotice("New story ready");
-      if (isAdmin) void api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(character.id,data.conversation.id)).then((memoryData) => { setMemories(memoryData.memories); }).catch(() => undefined);
+      loadMemories(character.id,data.conversation.id);
     } catch (e) { setChatNotice(""); setError(e instanceof Error ? e.message : "Could not start a new chat"); }
     finally { setCreatingConversation(false); }
   }
 
   /** One conversation record, written to every list that holds a copy of it. */
   const applyConversation = useCallback((next: Conversation) => {
-    setConversation((current) => current && current.id === next.id ? next : current);
+    setChatView((view) => view.conversation?.id === next.id ? { ...view, conversation: next } : view);
     setConversations((items) => items.map((item) => item.id === next.id ? next : item));
     setChatIndex((items) => items.map((item) => item.id === next.id ? next : item));
   }, []);
@@ -652,12 +675,12 @@ export default function Home() {
             const latest=variantDesiredRef.current.get(message.id);
             if (latest && latest.index !== desired.index) continue;
             variantDesiredRef.current.delete(message.id);
-            if (conversation) await loadChat(conversation.characterId,conversation.id).catch(()=>undefined);
+            if (conversation) await refreshChat(conversation.characterId,conversation.id).catch(()=>undefined);
             setError(e instanceof Error?e.message:"Could not select that version");
             break;
           }
         }
-        if (reloadAfterSave&&conversation) await loadChat(conversation.characterId,conversation.id);
+        if (reloadAfterSave&&conversation) await refreshChat(conversation.characterId,conversation.id);
       } finally { variantWorkersRef.current.delete(message.id); }
     })();
   }
@@ -669,7 +692,7 @@ export default function Home() {
     try {
       const data=await api<{conversation:Conversation;messages:Message[]}>("/api/conversations",{method:"POST",body:JSON.stringify({branchFromConversationId:conversation.id,branchFromMessageId:message.id,branchRequestId})});
       adoptConversation(data.conversation.characterId,data.conversation,data.messages);
-      if (isAdmin) void api<{memories:Memory[];arcs:MemoryArc[]}>(memoriesUrl(data.conversation.characterId,data.conversation.id)).then((memoryData)=>{setMemories(memoryData.memories);}).catch(()=>undefined);
+      loadMemories(data.conversation.characterId,data.conversation.id);
       setChatNotice("Branch created"); scrollToBottom();
     } catch(e) { setError(e instanceof Error?e.message:"Could not create a parallel story"); }
     finally { branchPendingRef.current=null; setBranchPendingMessageId(null); }
@@ -679,7 +702,7 @@ export default function Home() {
     if (!conversation || streaming || !window.confirm("Delete this message and everything after it?")) return;
     try {
       await api(`/api/messages/${message.id}`, { method: "DELETE", body: JSON.stringify({ messageId: message.id, conversationId: message.conversationId, messagePosition }) });
-      await loadChat(conversation.characterId, conversation.id);
+      await refreshChat(conversation.characterId, conversation.id);
     }
     catch (e) { setError(e instanceof Error ? e.message : "Could not delete message"); }
   }
@@ -748,7 +771,7 @@ export default function Home() {
                 PREVIOUS story is never what fills this space — it is cleared
                 the moment another one is selected — so this skeleton is the
                 only thing between one chat and the next. */}
-            {chatLoading&&!messages.length?<div className="chat-skeleton" aria-live="polite" aria-busy="true">
+            {chatView.loading&&!messages.length?<div className="chat-skeleton" aria-live="polite" aria-busy="true">
               <span className="sr-only">Loading this story</span>
               {[0,1,2].map((row)=><div key={row} className={`skeleton-message ${row%2?"":"skeleton-assistant"}`}><i /><i /><i /></div>)}
             </div>:<>
@@ -824,7 +847,7 @@ export default function Home() {
         refreshLibraries();
       }} onDeleted={() => { setStudioOpen(false); setEditing(null); goToView("chats"); void Promise.all([loadCharacters(),loadChatIndex()]).catch(()=>undefined); }} />}
       {isAdmin && memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); }} />}
-      {storyNavigation.surface==="story" && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} creating={creatingConversation} onClose={() => setStoryNavigation(closedStoryNavigation)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={(id) => openChat(selected.id,id)} onChange={() => void loadChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>setStoryNavigation(openStoryChild("model"))} onOpenPersona={()=>setStoryNavigation(openStoryChild("persona"))} onOpenInstructions={()=>setStoryNavigation(openStoryChild("instructions"))} onOpenWorld={()=>setStoryNavigation(openStoryChild("world"))} />}
+      {storyNavigation.surface==="story" && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} creating={creatingConversation} onClose={() => setStoryNavigation(closedStoryNavigation)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={(id) => openChat(selected.id,id)} onChange={() => void refreshChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>setStoryNavigation(openStoryChild("model"))} onOpenPersona={()=>setStoryNavigation(openStoryChild("persona"))} onOpenInstructions={()=>setStoryNavigation(openStoryChild("instructions"))} onOpenWorld={()=>setStoryNavigation(openStoryChild("world"))} />}
       {settingsOpen && <SettingsSheet isAdmin={isAdmin} settings={settings} models={models} catalog={modelCatalog} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings({...defaultSettings,...value}); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings; catalog: ModelCatalog }>("/api/settings"); setSettings({...defaultSettings,...data.settings}); if(data.catalog)setModelCatalog(data.catalog); }} />}
       {isAdmin && recallMessage && <RecallDrawer message={recallMessage} onClose={() => setRecallMessage(null)} />}
       {storyNavigation.surface==="instructions" && conversation && <InstructionsSheet conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
