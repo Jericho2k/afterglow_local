@@ -1,6 +1,7 @@
 export { ChatsView } from "./ChatsView";
 export { InstructionsSheet } from "./InstructionsSheet";
 export { LibraryView } from "./LibraryView";
+export { MemoryFeedback } from "./MemoryFeedback";
 export { PageHeader } from "./PageHeader";
 export { PersonasView } from "./PersonasView";
 export { ProfileView } from "./ProfileView";

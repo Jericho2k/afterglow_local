@@ -136,6 +136,17 @@ async function schema() {
       latency_ms integer NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS memory_feedback (
+      id uuid PRIMARY KEY,
+      user_id uuid NOT NULL,
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      message_id uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      retrieval_run_id uuid,
+      category text NOT NULL,
+      note text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (user_id, message_id)
+    );
     CREATE INDEX IF NOT EXISTS memory_retrieval_runs_conversation_idx ON memory_retrieval_runs(conversation_id,created_at DESC);
     CREATE TABLE IF NOT EXISTS memory_job_leases (
       conversation_id uuid PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,

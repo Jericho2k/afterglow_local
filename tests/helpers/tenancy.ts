@@ -42,6 +42,7 @@ export async function migratedPool() {
     await client.query(sql("supabase/migrations/0015_rich_content.sql"));
     await client.query(sql("supabase/migrations/0016_discovery_preferences.sql"));
     await client.query(sql("supabase/migrations/0017_linked_world_previews.sql"));
+    await client.query(sql("supabase/migrations/0018_memory_feedback.sql"));
   } finally {
     client.release();
   }

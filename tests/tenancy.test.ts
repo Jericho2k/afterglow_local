@@ -303,6 +303,35 @@ describeTenancy("multi-tenant isolation", () => {
     expect(owner.rows).toHaveLength(1);
   });
 
+  /**
+   * Continuity feedback.
+   *
+   * A label says "this reply broke my story", which implies what was in that
+   * story. So it is strictly the reader's own: not the creator's to enumerate,
+   * not attachable to somebody else's message, and never readable across
+   * accounts.
+   */
+  it("keeps continuity feedback private to the reader who wrote it", async () => {
+    await asAccount(pool, alice, (run) => run(
+      `INSERT INTO memory_feedback (id,user_id,conversation_id,message_id,category,note)
+       VALUES (gen_random_uuid(),$1,$2,$3,'forgot_something','she forgot the letters')`,
+      [alice, aliceConversation, aliceMessage],
+    ));
+    expect(await visibleCount(pool, alice, "memory_feedback", "message_id=$1", [aliceMessage])).toBe(1);
+    // Bob cannot see it, and neither could a creator whose creation it was.
+    expect(await visibleCount(pool, bob, "memory_feedback", "message_id=$1", [aliceMessage])).toBe(0);
+  });
+
+  it("refuses to attach feedback to another account's message", async () => {
+    await asAccount(pool, bob, (run) => run(
+      `INSERT INTO memory_feedback (id,user_id,conversation_id,message_id,category)
+       VALUES (gen_random_uuid(),$1,$2,$3,'other')`,
+      [bob, aliceConversation, aliceMessage],
+    )).catch(() => undefined);
+    // Whether it failed the policy or the ownership predicate, nothing landed.
+    expect(await visibleCount(pool, bob, "memory_feedback", "true")).toBe(0);
+  });
+
   it("keeps a saved-worlds library private to the account that saved", async () => {
     await asAccount(pool, bob, (run) => run("INSERT INTO world_saves (user_id,world_id) VALUES ($1,$2)", [bob, alicePublicWorld]));
     expect(await visibleCount(pool, bob, "world_saves", "world_id=$1", [alicePublicWorld])).toBe(1);
