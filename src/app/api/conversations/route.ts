@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { characterSnapshot, ownedPersona, readableCharacter } from "@/lib/access";
 import { asUser, characterFromRow, conversationFromRow, coreCanonFromRow, getUserSettings, memoryArcFromRow, memoryFromRow, messageForViewer, messageFromRow } from "@/lib/db";
 import { copySceneStatesForBranch } from "@/lib/scene-state-store";
+import { copyConversationWorldsForBranch, ensureConversationWorlds, initializeConversationWorlds } from "@/lib/conversation-worlds";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 
 /**
@@ -36,6 +37,17 @@ async function createConversation(client: PoolClient, userId: string, characterI
     "INSERT INTO conversations (id,character_id,user_id,title,persona_id,character_snapshot,provider_id,model_id,rp_engine_id) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9) RETURNING *",
     [id, characterId, userId, `Chat with ${character.name}`, resolvedPersonaId, owned ? null : JSON.stringify(characterSnapshot(character)),settings.providerId,settings.model,settings.roleplayPreset],
   );
+
+  /*
+   * The story's own world set, snapshot from the Creation's defaults.
+   *
+   * From this line onward the two are independent: the creator may add,
+   * remove or unpublish a world tomorrow and this story keeps what it started
+   * with, and the reader may attach a world to this story without touching
+   * the Creation at all. Only worlds this account may actually read are
+   * copied; see src/lib/conversation-worlds.ts.
+   */
+  await initializeConversationWorlds(client, userId, id, characterId);
 
   const greetings = [character.greeting, ...character.alternateGreetings].map((item) => String(item || "").trim()).filter(Boolean);
   const safeIndex = Number.isInteger(greetingIndex) && greetingIndex >= 0 && greetingIndex < greetings.length ? greetingIndex : 0;
@@ -136,6 +148,9 @@ async function branchConversation(client:PoolClient,userId:string,sourceConversa
   // inherits only what was true at the branch point. A location, day, or cast
   // established in the abandoned future never reaches it.
   await copySceneStatesForBranch(client,{userId,sourceConversationId,conversationId:id,position,messageMap});
+  // A branch continues THIS story, so it inherits the canon this story was
+  // being written with rather than re-reading the Creation's current defaults.
+  await copyConversationWorldsForBranch(client,{userId,sourceConversationId,conversationId:id});
   const messages=await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC,id ASC",[id,userId]);
   return {conversation:conversationFromRow(created.rows[0]),messages:messages.rows.map(messageFromRow)};
 }
@@ -172,6 +187,12 @@ export async function GET(request: Request) {
     const conversations = listResult.rows.map(conversationFromRow);
     const conversation = requestedId ? conversations.find((item) => item.id === requestedId) : conversations[0];
     if (!conversation) return { error: "Conversation not found", status: 404 as const };
+    // A story written before conversation worlds existed is given its set the
+    // first time it is opened. The migration does this for every conversation
+    // that existed when it ran; this covers a database that has not had it
+    // applied yet, and costs one indexed read for every story that has.
+    const row = listResult.rows.find((item) => String(item.id) === conversation.id);
+    if (row) await ensureConversationWorlds(client, account.id, row);
     const messages = await client.query(
       "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC, id ASC",
       [conversation.id, account.id],

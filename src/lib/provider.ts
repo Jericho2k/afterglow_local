@@ -1,5 +1,6 @@
 import type { ModelCatalog, ModelDefinition, ProviderDefinition, RoleplayEngineDefinition, RoleplayEngineId } from "./types";
 import { engineDefinitions } from "./engines";
+import type { ModelVerbosity } from "./response-length";
 
 export type InferenceTask = "rp_generation" | "memory_consolidation" | "memory_curation" | "scene_state" | "character_import";
 export type InferenceSelection = { providerId: string; modelId: string };
@@ -40,6 +41,18 @@ export type ModelCapabilities = {
    * `pinnedProviderFor` below.
    */
   preferredProviders?: string[];
+  /**
+   * How much this model writes when nothing stops it.
+   *
+   * "expansive" is the reason Concise did not feel concise on MiMo, and it is
+   * declared here rather than compared by name wherever a prompt is built: a
+   * model's habits are a property of the model, exactly like its context
+   * window. `src/lib/response-length.ts` is the only reader, and all it does
+   * with the answer is state the paragraph ceiling as a hard limit instead of
+   * implying it from a word target. Undefined means "normal", which is what
+   * every model that has never been measured gets.
+   */
+  verbosity?: ModelVerbosity;
 };
 
 type InternalModelDefinition = ModelDefinition & { providerModelId: string; capabilities: ModelCapabilities };
@@ -167,6 +180,10 @@ const knownModels: InternalModelDefinition[] = [
       jsonMode: true,
       promptCaching: true,
       preferredProviders: ["xiaomi"],
+      // Measured against the response-length modes: MiMo answers Concise with
+      // a full scene unless the ceiling is stated as a limit. See
+      // scripts/response-length-benchmark.mjs.
+      verbosity: "expansive",
     },
   },
   {
@@ -183,6 +200,7 @@ const knownModels: InternalModelDefinition[] = [
       jsonMode: true,
       promptCaching: true,
       preferredProviders: ["xiaomi"],
+      verbosity: "expansive",
     },
   },
   {
@@ -328,6 +346,11 @@ const unknownCapabilities: ModelCapabilities = { thinking: false, jsonMode: true
  */
 export function modelCapabilities(providerId: string, modelId: string): ModelCapabilities {
   return knownModels.find((model) => model.providerId === providerId && model.id === modelId)?.capabilities ?? unknownCapabilities;
+}
+
+/** How much this model writes when nothing stops it. Defaults to "normal". */
+export function modelVerbosity(providerId: string, modelId: string): ModelVerbosity {
+  return modelCapabilities(providerId, modelId).verbosity ?? "normal";
 }
 
 /**

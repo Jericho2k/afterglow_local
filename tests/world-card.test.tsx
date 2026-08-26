@@ -100,7 +100,7 @@ describe("one card, both surfaces", () => {
     // Worlds hub, which renders the same card on all three of its tabs.
     const hub = readFileSync(new URL("../src/components/worlds/WorldsHub.tsx", import.meta.url), "utf8");
     expect(hub).toContain("<WorldCard");
-    const shell = readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
+    const shell = readFileSync(new URL("../src/components/shell/AppShell.tsx", import.meta.url), "utf8");
     expect(shell).not.toContain("document-card\"><span className=\"document-icon\">▤</span>");
   });
 });
@@ -208,7 +208,7 @@ describe("responsive and accessible", () => {
 });
 
 describe("the page is called Worlds", () => {
-  const shell = readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
+  const shell = readFileSync(new URL("../src/components/shell/AppShell.tsx", import.meta.url), "utf8");
   const hub = readFileSync(new URL("../src/components/worlds/WorldsHub.tsx", import.meta.url), "utf8");
   const worldPage = readFileSync(new URL("../src/app/worlds/[id]/profile.tsx", import.meta.url), "utf8");
 

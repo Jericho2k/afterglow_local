@@ -8,12 +8,13 @@ import { buildWriterPrompt, continueSceneCue, continuityPlacementFor, writerMess
 import { sceneStateEnabled, sceneStateRetrievalHintEnabled } from "@/lib/memory-flags";
 import { sceneFieldsOf, sceneRetrievalCue } from "@/lib/scene-state";
 import { currentSceneState, dropSceneStateForMessage, maybeUpdateSceneState } from "@/lib/scene-state-store";
+import { conversationWorldRecords, ensureConversationWorlds } from "@/lib/conversation-worlds";
 import { anchoredFetchLimit, recallText, selectAnchoredMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
-import { modelCapabilities, providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
+import { modelCapabilities, modelVerbosity, providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
 import { responseLengths, type AppSettings, type ResponseLength } from "@/lib/types";
 import { responseLengthPlan } from "@/lib/response-length";
 import { contextExceededMessage, fitConversation } from "@/lib/context-budget";
@@ -43,19 +44,26 @@ export async function POST(request: Request) {
   const prepared = await asUser(account.id, async (client) => {
     const row = await ownedConversation(client, account.id, conversationId);
     if (!row) return { error: "Conversation not found" as const };
-    const { character, owned } = await conversationCharacter(client, account.id, row);
+    const { character } = await conversationCharacter(client, account.id, row);
     if (!character) return { error: "Character not found" as const };
 
     const settings = await getUserSettings(client, account.id);
-    // Worlds only apply to the caller's own characters. A published character
-    // carries its lore in the frozen snapshot instead, so a creator cannot
-    // reach into a stranger's prompt by editing an attached world.
-    const worldResult = owned
-      ? await client.query(
-        "SELECT w.* FROM worlds w JOIN character_worlds cw ON cw.world_id=w.id WHERE cw.character_id=$1 AND w.user_id=$2 ORDER BY w.updated_at DESC",
-        [row.character_id, account.id],
-      )
-      : { rows: [] as Array<Record<string, unknown>> };
+    /*
+     * The worlds THIS STORY is written with.
+     *
+     * Not the Creation's — that is the whole point of the change. A story
+     * receives a copy of the Creation's readable defaults when it begins and
+     * owns its set from then on, so attaching a world here cannot reach into
+     * the Creation, into the creator's published canon, or into anybody else's
+     * story. `ensureConversationWorlds` gives a story written before the
+     * relation existed its set on first use; after that it is one indexed read.
+     *
+     * Readability is re-checked inside `conversationWorldRecords`, so a world
+     * whose creator makes it private stops feeding this prompt immediately
+     * even though the link survives. See src/lib/conversation-worlds.ts.
+     */
+    await ensureConversationWorlds(client, account.id, row);
+    const worldRows = await conversationWorldRecords(client, account.id, conversationId);
     const personaResult = row.persona_id
       ? await client.query("SELECT * FROM personas WHERE id=$1 AND user_id=$2", [row.persona_id, account.id])
       : await client.query("SELECT * FROM personas WHERE user_id=$1 AND is_default=true LIMIT 1", [account.id]);
@@ -64,7 +72,7 @@ export async function POST(request: Request) {
       row,
       character,
       settings,
-      worlds: worldResult.rows.map((row) => worldFromRow(row)),
+      worlds: worldRows.map((world) => worldFromRow(world)),
       persona: personaResult.rows[0] ? personaFromRow(personaResult.rows[0]) : null,
     };
   });
@@ -114,6 +122,14 @@ export async function POST(request: Request) {
   // rolling summary is updated in the background after successful replies.
   const currentSummary = String(row.summary || "");
   const sceneEnabled = sceneStateEnabled(account.id);
+  /*
+   * The writer's own habits are part of the request.
+   *
+   * Declared beside the model rather than compared by name here; see
+   * `ModelCapabilities.verbosity`. It changes one line of the concise directive
+   * and nothing else about what is sent.
+   */
+  const writerVerbosity = modelVerbosity(selection.providerId, selection.modelId);
 
   const staged = await asUser(account.id, async (client) => {
     let regenerateTarget: ReturnType<typeof messageFromRow> | null = null;
@@ -200,6 +216,7 @@ export async function POST(request: Request) {
     sceneState: sceneState ? sceneFieldsOf(sceneState) : null,
     instructionPresets: Array.isArray(row.instruction_presets) ? row.instruction_presets : [],
     customInstructions: String(row.custom_instructions || ""),
+    modelVerbosity: writerVerbosity,
   });
   const modelHistory = history.map((message) => ({ role: message.role, content: message.content }));
   /*
@@ -232,7 +249,7 @@ export async function POST(request: Request) {
    */
   const capabilities = modelCapabilities(selection.providerId, selection.modelId);
   const placement = continuityPlacementFor(capabilities.promptCaching);
-  const lengthPlan = responseLengthPlan(responseLength, settings.maxTokens);
+  const lengthPlan = responseLengthPlan(responseLength, settings.maxTokens, writerVerbosity);
   // Budgeting reads the whole prompt regardless of how it will be delivered:
   // the tokens are the same either way, only their position changes.
   const fitted = fitConversation(modelHistory, {

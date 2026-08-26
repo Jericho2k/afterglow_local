@@ -5,22 +5,24 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images, Link2,
-  MessageCircle, Pencil, Share2, Sparkles, Tag, Trash2, UserRound, Users,
+  MessageCircle, Pencil, Plus, Share2, Sparkles, Tag, Trash2, UserRound, Users,
 } from "lucide-react";
 import type { AttachedWorld, Character, CharacterComment } from "@/lib/types";
 import {
-  castSectionLabel, creationCtaDescription, creationCtaLabel, creationOverview, creationSubject,
+  castSectionLabel, creationOverview, creationSubject,
   creationTitle, creationType, inlineTitle, publicCastMembers,
 } from "@/lib/creation";
 import { accentVariables } from "@/lib/accent";
 import { castMemberKey } from "@/lib/cast";
 import { imageCount } from "@/lib/rich-content";
 import { RichContent } from "@/components/rich";
-import { creationActions, creationEditHref } from "@/lib/creation-actions";
+import { chatCta, chatCtaDescription, creationActions, creationEditHref, newStoryLabel } from "@/lib/creation-actions";
+import { chatHref } from "@/lib/shell-route";
 import { compactCount } from "@/lib/format";
 import { toggleCreationSave } from "@/lib/saves";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
+import { markEditorOpenedFromCreation } from "@/lib/editor-navigation";
 import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
 import { iconButtonClass } from "@/components/ui";
 import { WorldCard } from "@/components/world";
@@ -32,7 +34,14 @@ import styles from "./profile.module.css";
  * hiding it would misrepresent what the creation is — so the card renders with
  * its identity and without its content or its link.
  */
-type Detail = { character: Character; worlds: AttachedWorld[]; owner: boolean };
+type Detail = {
+  character: Character;
+  worlds: AttachedWorld[];
+  owner: boolean;
+  /** The newest story this reader has with this creation, or null for none. */
+  viewerConversationId?: string | null;
+  viewerConversationCount?: number;
+};
 
 /**
  * Public creation page.
@@ -142,20 +151,52 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     window.setTimeout(() => setIlluminated((current) => (current === id ? "" : current)), 1200);
   }, []);
 
-  const start = useCallback(async () => {
+  /**
+   * Creating a story, and only when there is genuinely no story to open.
+   *
+   * `startingRef` rather than the state flag alone: React batches a state
+   * update, so two taps inside one frame both saw `starting === false` and
+   * both posted. A ref changes on the first line of the first tap, which is
+   * what actually makes a double tap produce one conversation instead of two.
+   */
+  const startingRef = useRef(false);
+  const createStory = useCallback(async (announce: string) => {
+    if (startingRef.current) return;
+    startingRef.current = true;
     setStarting(true);
+    setError("");
     try {
       const response = await fetch("/api/conversations", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ characterId }),
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || "Could not start chat");
-      router.push(`/?character=${characterId}&conversation=${body.conversation.id}`);
+      if (!response.ok) throw new Error(body.error || announce);
+      // The shell's own address for a chat, so the entry left behind names the
+      // exact story rather than "some chat with this creation".
+      router.push(chatHref(characterId, body.conversation.id));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not start chat");
+      startingRef.current = false;
+      setError(reason instanceof Error ? reason.message : announce);
       setStarting(false);
     }
   }, [characterId, router]);
+
+  /**
+   * The main button.
+   *
+   * Resuming is a navigation and nothing more: the story exists, so pressing
+   * this writes nothing and creates nothing. Only a creation this reader has
+   * never opened takes the create path. See `chatCta`.
+   */
+  const openChat = useCallback((conversationId: string | null) => {
+    if (startingRef.current) return;
+    if (conversationId) {
+      setStarting(true);
+      router.push(chatHref(characterId, conversationId));
+      return;
+    }
+    void createStory("Could not start chat");
+  }, [characterId, createStory, router]);
 
   /**
    * Saving, through the same `/api/saves` relation the feed writes. The state
@@ -241,6 +282,10 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   // name: "The Final War" and "Your New Roommate" are both valid titles.
   const title = creationTitle(character);
   const kind = creationType(character);
+  // Resume or start, decided from real data rather than from the button's own
+  // wording. See `chatCta` in src/lib/creation-actions.ts.
+  const cta = chatCta(character, detail.viewerConversationId ?? null);
+  const storyCount = detail.viewerConversationCount ?? 0;
   // Keep the verified badge glued to the final word of the title.
   const titleWords = title.trim().split(/\s+/);
   const titleLead = titleWords.slice(0, -1).join(" ");
@@ -262,9 +307,19 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   // other surface that grows one cannot disagree about what ownership allows.
   const menuIcons = { edit: <Pencil size={16} aria-hidden />, copy_link: <Link2 size={16} aria-hidden />, delete: <Trash2 size={16} aria-hidden /> };
   const menuHandlers = {
-    // Straight to the edit route, which is now a real page rather than a
-    // redirect through the home shell.
-    edit: () => router.push(creationEditHref(character.id)),
+    /*
+     * Straight to the edit route, which is a real page rather than a redirect
+     * through the home shell.
+     *
+     * The marker says that THIS page is the entry underneath the editor, which
+     * is what lets a save walk back to it instead of pushing a duplicate on
+     * top — the fix for the "Back returns me to the editor" report. See
+     * src/lib/editor-navigation.ts.
+     */
+    edit: () => {
+      markEditorOpenedFromCreation(window.sessionStorage, character.id);
+      router.push(creationEditHref(character.id));
+    },
     copy_link: copyLink,
     delete: () => void removeCreation(),
   };
@@ -318,16 +373,31 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         <div className={styles.ctaRow}>
           {/* Stable copy inside the control, the creation's own name outside
               it. The full title is the heading directly above, and the
-              accessible name spells it out for anybody who cannot see that. */}
+              accessible name spells it out for anybody who cannot see that.
+
+              The button RESUMES when there is something to resume. It used to
+              create a story on every press, which is how a reader ended up
+              with a dozen one-message conversations and none of the one they
+              were actually in. Beginning again is the separate control beside
+              it, and it says so. */}
           <button
             className={styles.primaryCta}
-            onClick={() => void start()}
+            onClick={() => openChat(cta.conversationId)}
             disabled={starting}
-            aria-label={creationCtaDescription(character)}
-            title={creationCtaDescription(character)}
+            aria-label={chatCtaDescription(character, cta)}
+            title={chatCtaDescription(character, cta)}
           >
-            <Sparkles size={18} /><span>{starting ? "Opening story…" : creationCtaLabel(character)}</span>
+            <Sparkles size={18} /><span>{starting ? "Opening story…" : cta.label}</span>
           </button>
+          {cta.kind === "resume" && <button
+            className={`${styles.ghostButton} ${styles.ghostWide}`}
+            onClick={() => void createStory("Could not start a new story")}
+            disabled={starting}
+            aria-label={`Start a new story with ${title}, keeping the ${storyCount === 1 ? "one you already have" : `${storyCount} you already have`}`}
+            title={newStoryLabel}
+          >
+            <Plus size={18} /><span className={styles.ghostLabel}>{newStoryLabel}</span>
+          </button>}
           <button className={styles.ghostButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
             <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
           </button>

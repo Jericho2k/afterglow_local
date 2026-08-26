@@ -17,7 +17,7 @@ import { justCreatedParam, isJustCreated } from "@/lib/back-navigation";
  * the handler's source because that is precisely where the bug lived.
  */
 
-const shell = readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
+const shell = readFileSync(new URL("../src/components/shell/AppShell.tsx", import.meta.url), "utf8");
 
 /** The `onSaved` handler the studio is given, from `{` to its closing `}}`. */
 function savedHandler() {

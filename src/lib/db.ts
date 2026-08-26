@@ -255,6 +255,13 @@ async function schema() {
       world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
       PRIMARY KEY (character_id, world_id)
     );
+    CREATE TABLE IF NOT EXISTS conversation_worlds (
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (conversation_id, world_id)
+    );
     CREATE TABLE IF NOT EXISTS character_likes (
       user_id uuid NOT NULL,
       character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -509,6 +516,13 @@ async function schema() {
     );
   `);
   await pool().query("CREATE INDEX IF NOT EXISTS world_comments_world_idx ON world_comments (world_id, created_at DESC)");
+  // A story's own world set. The full constraints, policies and the backfill
+  // live in 0019_conversation_worlds.sql; this keeps a plain PostgreSQL
+  // database — the one the tests and the legacy deployment use — able to run
+  // the same code paths.
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS worlds_initialized boolean NOT NULL DEFAULT false");
+  await pool().query("CREATE INDEX IF NOT EXISTS conversation_worlds_conversation_idx ON conversation_worlds (user_id, conversation_id)");
+  await pool().query("CREATE INDEX IF NOT EXISTS conversation_worlds_world_idx ON conversation_worlds (world_id)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_user_idx ON character_likes (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_character_idx ON character_likes (character_id)");
   // One index per discovery ordering, matching the feed's ORDER BY so a page

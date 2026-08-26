@@ -136,6 +136,25 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       [account.id, id],
     );
     /*
+     * The story this reader is already in, if any.
+     *
+     * The creation page's main button used to create a conversation every time
+     * it was pressed. It resumes now, and this is the one fact it needs to do
+     * that: the newest story this account has with this creation. Ordered by
+     * the same `updated_at` the Chats list and `GET /api/conversations` order
+     * by, so "most recent" means one thing across the product.
+     *
+     * Viewer-scoped and indexed (`conversations_character_idx`, and the row
+     * level security predicate is `user_id = auth.uid()`), so it can never
+     * describe anybody else's stories and costs one indexed lookup.
+     */
+    const ownStories = await client.query(
+      `SELECT id,updated_at,(SELECT count(*)::int FROM conversations WHERE character_id=$1 AND user_id=$2) total
+       FROM conversations WHERE character_id=$1 AND user_id=$2
+       ORDER BY updated_at DESC,created_at DESC LIMIT 1`,
+      [id, account.id],
+    );
+    /*
      * The links the reader may not open.
      *
      * The query above can only ever see worlds this account is permitted to
@@ -183,6 +202,11 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         ...lockedPreviews.map((preview) => ({ ...preview, locked: true as const })),
       ],
       viewerMessageCount: Number(messages.rows[0]?.count || 0),
+      // Null when this reader has never started one. The page uses the
+      // presence of a story to decide between Start and Continue; see
+      // `chatCta` in src/lib/creation-actions.ts.
+      viewerConversationId: ownStories.rows[0] ? String(ownStories.rows[0].id) : null,
+      viewerConversationCount: Number(ownStories.rows[0]?.total || 0),
       owner,
     };
   });

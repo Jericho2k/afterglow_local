@@ -244,6 +244,66 @@ describeTenancy("multi-tenant isolation", () => {
 
 
   /**
+   * Conversation worlds.
+   *
+   * A story's world set is as private as the story, and it is the only place a
+   * chat may write. The two guarantees it has to keep are that nobody else can
+   * see or change it, and that it can never be pointed at lore its owner is not
+   * allowed to read — which is why the check exists on the way IN as well as on
+   * the way out.
+   */
+  it("W — keeps a story's world set private to the story's owner", async () => {
+    await asAccount(pool, alice, (run) => run(
+      "INSERT INTO conversation_worlds (conversation_id,world_id,user_id) VALUES ($1,$2,$3)",
+      [aliceConversation, aliceWorld, alice],
+    ));
+    expect(await visibleCount(pool, alice, "conversation_worlds", "conversation_id=$1", [aliceConversation])).toBe(1);
+    expect(await visibleCount(pool, bob, "conversation_worlds")).toBe(0);
+  });
+
+  it("W — refuses to let another account read, add or remove a story's worlds", async () => {
+    await asAccount(pool, bob, async (run) => {
+      expect((await run("SELECT world_id FROM conversation_worlds WHERE conversation_id=$1", [aliceConversation])).rowCount).toBe(0);
+      expect((await run("DELETE FROM conversation_worlds WHERE conversation_id=$1", [aliceConversation])).rowCount).toBe(0);
+    });
+    expect(await visibleCount(pool, alice, "conversation_worlds", "conversation_id=$1", [aliceConversation])).toBe(1);
+  });
+
+  it("W — refuses to attach a world to another account's story", async () => {
+    // Claiming the row as your own fails the composite foreign key: the pair
+    // (conversation, owner) does not exist. Naming the true owner fails the
+    // policy. Neither order gets through.
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO conversation_worlds (conversation_id,world_id,user_id) VALUES ($1,$2,$3)",
+      [aliceConversation, alicePublicWorld, bob],
+    ))).rejects.toThrow(/foreign key constraint/i);
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO conversation_worlds (conversation_id,world_id,user_id) VALUES ($1,$2,$3)",
+      [aliceConversation, alicePublicWorld, alice],
+    ))).rejects.toThrow(/row-level security/i);
+  });
+
+  it("W — refuses to attach a world the account cannot read", async () => {
+    const bobConversation = "44444444-4444-4444-4444-444444444444";
+    await asAccount(pool, bob, (run) => run(
+      "INSERT INTO conversations (id,character_id,user_id,title) VALUES ($1,$2,$3,'Bob chat') ON CONFLICT DO NOTHING",
+      [bobConversation, alicePublicCharacter, bob],
+    ));
+    // Alice's private world is not Bob's to put into a prompt, even though he
+    // is chatting with the creation it is attached to.
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO conversation_worlds (conversation_id,world_id,user_id) VALUES ($1,$2,$3)",
+      [bobConversation, aliceWorld, bob],
+    ))).rejects.toThrow(/row-level security/i);
+    // Her published one is.
+    await asAccount(pool, bob, (run) => run(
+      "INSERT INTO conversation_worlds (conversation_id,world_id,user_id) VALUES ($1,$2,$3)",
+      [bobConversation, alicePublicWorld, bob],
+    ));
+    expect(await visibleCount(pool, bob, "conversation_worlds", "conversation_id=$1", [bobConversation])).toBe(1);
+  });
+
+  /**
    * Worlds V2.
    *
    * A world is now a public object with its own saves and its own discussion,

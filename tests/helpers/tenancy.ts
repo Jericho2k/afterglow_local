@@ -20,7 +20,49 @@ function sql(relativePath: string) {
   return readFileSync(`${root}${relativePath}`, "utf8");
 }
 
-export async function migratedPool() {
+/**
+ * The migration files, in the order production applies them.
+ *
+ * Named rather than globbed so a new file has to be added deliberately, and so
+ * a test can stop part-way — which is what makes a BACKFILL testable at all:
+ * you cannot check that a migration converts old data correctly unless you can
+ * first create data that predates it.
+ */
+export const migrationFiles = [
+  "0000_baseline.sql",
+  "0001_multi_tenant_foundation.sql",
+  "0003_conversation_inference.sql",
+  "0004_product_social.sql",
+  "0005_openrouter_usage.sql",
+  "0006_memory_retrieval_v2.sql",
+  "0007_productization_sprint_1.sql",
+  "0008_canonical_generated_user_messages.sql",
+  "0009_public_character_profile.sql",
+  "0013_scene_state.sql",
+  "0014_worlds_v2.sql",
+  "0015_rich_content.sql",
+  "0016_discovery_preferences.sql",
+  "0017_linked_world_previews.sql",
+  "0018_memory_feedback.sql",
+  "0019_conversation_worlds.sql",
+] as const;
+
+export async function applyMigrations(pool: Pool, files: readonly string[]) {
+  const client = await pool.connect();
+  try {
+    for (const file of files) await client.query(sql(`supabase/migrations/${file}`));
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * A database with the real migrations applied.
+ *
+ * `through` stops after the named file, so a test can seed the schema as it
+ * stood before a migration and then apply that migration to it.
+ */
+export async function migratedPool(options: { through?: string } = {}) {
   const pool = new Pool({ connectionString: tenancyDatabaseUrl, max: 4, ssl: false });
   const client = await pool.connect();
   try {
@@ -28,24 +70,12 @@ export async function migratedPool() {
     await client.query("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
     await client.query("DROP SCHEMA IF EXISTS auth CASCADE;");
     await client.query(sql("supabase/testing/auth-shim.sql"));
-    await client.query(sql("supabase/migrations/0000_baseline.sql"));
-    await client.query(sql("supabase/migrations/0001_multi_tenant_foundation.sql"));
-    await client.query(sql("supabase/migrations/0003_conversation_inference.sql"));
-    await client.query(sql("supabase/migrations/0004_product_social.sql"));
-    await client.query(sql("supabase/migrations/0005_openrouter_usage.sql"));
-    await client.query(sql("supabase/migrations/0006_memory_retrieval_v2.sql"));
-    await client.query(sql("supabase/migrations/0007_productization_sprint_1.sql"));
-    await client.query(sql("supabase/migrations/0008_canonical_generated_user_messages.sql"));
-    await client.query(sql("supabase/migrations/0009_public_character_profile.sql"));
-    await client.query(sql("supabase/migrations/0013_scene_state.sql"));
-    await client.query(sql("supabase/migrations/0014_worlds_v2.sql"));
-    await client.query(sql("supabase/migrations/0015_rich_content.sql"));
-    await client.query(sql("supabase/migrations/0016_discovery_preferences.sql"));
-    await client.query(sql("supabase/migrations/0017_linked_world_previews.sql"));
-    await client.query(sql("supabase/migrations/0018_memory_feedback.sql"));
   } finally {
     client.release();
   }
+  const stop = options.through ? migrationFiles.indexOf(options.through as typeof migrationFiles[number]) : migrationFiles.length - 1;
+  if (stop < 0) throw new Error(`Unknown migration: ${options.through}`);
+  await applyMigrations(pool, migrationFiles.slice(0, stop + 1));
   return pool;
 }
 

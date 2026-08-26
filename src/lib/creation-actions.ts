@@ -1,3 +1,5 @@
+import { creationCtaDescription, creationCtaLabel, creationTitle, creationType } from "./creation";
+
 /**
  * Which actions a creation offers, and to whom.
  *
@@ -64,3 +66,58 @@ export function savedCreationDestination(
   if (!created) return { kind: "chat" };
   return { kind: "creation", href: `/characters/${creationId}?${justCreatedParam}=1`, replace: true };
 }
+
+/**
+ * What the creation page's main button does.
+ *
+ * It used to do one thing regardless: POST a new conversation. A reader with
+ * eleven stories about the same character therefore collected a twelfth every
+ * time they pressed a button labelled "Start chat", and their actual story —
+ * the one with the memories, the scene state and the relationship in it — got
+ * harder to find with every tap.
+ *
+ * Two actions were hiding inside one control, so there are two now:
+ *
+ *   RESUME opens the story the reader was last in. Nothing is created and
+ *   nothing is written: the conversation already exists, so the button is a
+ *   link to its address and the shell opens it.
+ *
+ *   START creates the first one, which is the only case in which pressing the
+ *   main button should bring a conversation into existence.
+ *
+ * "New story" stays available and stays SEPARATE, because deliberately
+ * beginning again is a real thing to want and is not what "Chat" means.
+ *
+ * The wording for a creation with no story yet still comes from
+ * `creationCtaLabel`, so a scenario keeps saying "Enter story" rather than
+ * "Start chat"; a creation that HAS one says so in the same voice.
+ */
+export type ChatCta = {
+  kind: "start" | "resume";
+  label: string;
+  /** The story to open. Null means one has to be created first. */
+  conversationId: string | null;
+};
+
+type CtaCreation = Parameters<typeof creationCtaLabel>[0];
+
+export function chatCta(creation: CtaCreation, conversationId: string | null): ChatCta {
+  if (!conversationId) return { kind: "start", label: creationCtaLabel(creation), conversationId: null };
+  return {
+    kind: "resume",
+    label: creationType(creation) === "character" ? "Continue chat" : "Continue story",
+    conversationId,
+  };
+}
+
+/** The accessible name for that button, which may spell the creation out. */
+export function chatCtaDescription(creation: CtaCreation, cta: ChatCta) {
+  if (cta.kind === "start") return creationCtaDescription(creation);
+  const title = creationTitle(creation);
+  return creationType(creation) === "character"
+    ? `Continue your most recent chat with ${title}`
+    : `Continue your most recent story in ${title}`;
+}
+
+/** The separate, deliberate action. Never what the main button does. */
+export const newStoryLabel = "New story";

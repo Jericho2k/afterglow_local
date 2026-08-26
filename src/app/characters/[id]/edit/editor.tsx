@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { backFallbacks, claimDepth, currentDepth, resolveBack, rootDepth } from "@/lib/back-navigation";
+import { forgetEditorOrigin, savedEditDestination, takeEditorOrigin } from "@/lib/editor-navigation";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
 import type { Character } from "@/lib/types";
 import styles from "../profile.module.css";
@@ -54,11 +55,29 @@ export default function CreationEditor({ creationId }: { creationId: string }) {
 
   /** Back through history, exactly as every other Back control in the app. */
   const leave = useCallback(() => {
+    // An abandoned edit must not leave a marker for the next save to read.
+    forgetEditorOrigin(window.sessionStorage);
     const destination = resolveBack(currentDepth(window.history.state, window.sessionStorage), `/characters/${creationId}`);
     if (destination.type === "history") { router.back(); return; }
     claimDepth(window.sessionStorage, rootDepth);
     router.replace(destination.href);
   }, [creationId, router]);
+
+  /**
+   * Saving.
+   *
+   * This used to `push` the creation page, which stacked a SECOND creation
+   * entry on top of the editor and made Back return into the editor — the
+   * reported "edit bounce". Where the destination is already the entry
+   * underneath, the save walks back to it; otherwise it replaces the editor's
+   * entry. See src/lib/editor-navigation.ts for how the two are told apart.
+   */
+  const finish = useCallback((savedId: string) => {
+    const destination = savedEditDestination(savedId, takeEditorOrigin(window.sessionStorage));
+    if (destination.type === "back") { router.back(); return; }
+    claimDepth(window.sessionStorage, currentDepth(window.history.state, window.sessionStorage));
+    router.replace(destination.href);
+  }, [router]);
 
   if (error) return <main className={styles.state}>
     <Sparkles size={26} /><h1>Creation unavailable</h1><p>{error}</p>
@@ -72,12 +91,12 @@ export default function CreationEditor({ creationId }: { creationId: string }) {
     onLibrariesChanged={loadWorlds}
     onClose={leave}
     // Saving lands on the creation's own page, which is where a creator wants
-    // to see what they just changed. Deliberately an ordinary push with no
-    // just-created marker: an edit is not a publish, and Back from here should
-    // return to whatever the creator was managing from.
-    onSaved={(saved) => router.push(`/characters/${saved.id}`)}
+    // to see what they just changed. Never a push: see `finish` above. There
+    // is deliberately no just-created marker either — an edit is not a publish,
+    // and Back from here returns to whatever the creator was managing from.
+    onSaved={(saved) => finish(saved.id)}
     // There is no creation to return to once it is deleted, so the management
     // list replaces this entry rather than stacking on top of it.
-    onDeleted={() => { claimDepth(window.sessionStorage, rootDepth); router.replace(backFallbacks.creations); }}
+    onDeleted={() => { forgetEditorOrigin(window.sessionStorage); claimDepth(window.sessionStorage, rootDepth); router.replace(backFallbacks.creations); }}
   />;
 }

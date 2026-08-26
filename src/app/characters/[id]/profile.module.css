@@ -195,6 +195,18 @@
   transition: background .18s, border-color .18s;
 }
 .ghostButton:hover { background: var(--creation-accent-glow, rgba(232, 121, 169, .12)); border-color: var(--creation-accent-border, rgba(232, 121, 169, .3)); }
+.ghostButton:disabled { opacity: .5; cursor: progress; }
+/*
+ * New story, beside Continue.
+ *
+ * A square at phone width so three controls still fit on a 375px row with
+ * 44px+ of thumb each, and a labelled control as soon as there is room —
+ * because "start another one" is the action most worth spelling out on a page
+ * whose main button now resumes rather than creates.
+ */
+.ghostWide { width: auto; min-width: 52px; padding: 0 15px; grid-auto-flow: column; gap: 8px; }
+.ghostLabel { display: none; font-family: var(--font-sans); font-size: 12.5px; white-space: nowrap; }
+@media (min-width: 560px) { .ghostLabel { display: inline; } }
 
 /*
  * Messages, saves and chats.
