@@ -298,3 +298,121 @@ describe("historical grounding on the archive", () => {
     expect(stamp).toBeNull();
   });
 });
+
+/**
+ * Physical state through the same lineage the rest of Scene State uses.
+ *
+ * The pure rules — what persists, what a posture change invalidates, what
+ * leaving the room removes — are asserted in tests/scene-physical.test.ts.
+ * What this suite adds is that an ARRANGEMENT is subject to exactly the same
+ * history rules as a location: a branch inherits it only as far as the branch
+ * point, a regenerated reply cannot leave its version of it behind, and an
+ * edit invalidates everything derived after it. Getting that wrong is how a
+ * character ends up standing in one timeline and lying down in the other.
+ */
+describe("physical state follows the story's lineage", () => {
+  it("survives a quiet turn and updates on a real change", async () => {
+    const { conversationId } = await seedChat();
+    await addMessage(conversationId, "assistant", "Maya sits on the couch, a glass in her right hand.");
+    sceneReply({
+      location: { place: "Maya's apartment", sub: "living room", confidence: "stated" },
+      present: ["Maya", "You"],
+      physical: [{ name: "Maya", posture: "seated", support: "the couch", right_hand: "holding a glass", left_hand: "on the cushion" }],
+    });
+    await maybeUpdateSceneState(owner, conversationId);
+
+    let state = await currentScene(conversationId);
+    expect(state!.physical.actors[0].rightHand).toBe("holding a glass");
+
+    // A turn that says nothing about her hands keeps both where they were.
+    await addMessage(conversationId, "user", "I ask her how the week went.");
+    sceneReply({ active_situation: ["He has asked about her week."] });
+    await maybeUpdateSceneState(owner, conversationId);
+    state = await currentScene(conversationId);
+    expect(state!.physical.actors[0].leftHand).toBe("on the cushion");
+
+    // Standing up drops the placements that posture cannot hold.
+    await addMessage(conversationId, "assistant", "She stands.");
+    sceneReply({ physical: [{ name: "Maya", posture: "standing" }] });
+    await maybeUpdateSceneState(owner, conversationId);
+    state = await currentScene(conversationId);
+    expect(state!.physical.actors[0].posture).toBe("standing");
+    expect(state!.physical.actors[0].support).toBe("");
+    expect(state!.physical.actors[0].leftHand).toBe("");
+  });
+
+  it("branches with the arrangement as it stood at the branch point", async () => {
+    const { characterId, conversationId } = await seedChat();
+    await addMessage(conversationId, "assistant", "Maya kneels by the fire.");
+    sceneReply({
+      location: { place: "the cabin", sub: "", confidence: "stated" },
+      physical: [{ name: "Maya", posture: "kneeling", support: "the hearth rug", right_hand: "on the poker" }],
+      contacts: [],
+    });
+    await maybeUpdateSceneState(owner, conversationId);
+    const branchPoint = Number((await query("SELECT COUNT(*)::int count FROM messages WHERE conversation_id=$1", [conversationId])).rows[0].count);
+
+    // The story then moves on, and the arrangement moves with it.
+    await addMessage(conversationId, "assistant", "She stands and crosses to the window.");
+    sceneReply({ physical: [{ name: "Maya", posture: "standing", relative_to: "at the window" }] });
+    await maybeUpdateSceneState(owner, conversationId);
+    expect((await currentScene(conversationId))!.physical.actors[0].posture).toBe("standing");
+
+    const branchId = crypto.randomUUID();
+    await query("INSERT INTO conversations (id,user_id,character_id,title) VALUES ($1,$2,$3,'Branch')", [branchId, owner, characterId]);
+    await asUser(owner, (client) => copySceneStatesForBranch(client, {
+      userId: owner, sourceConversationId: conversationId, conversationId: branchId,
+      position: branchPoint, messageMap: new Map(),
+    }));
+
+    // The branch is still kneeling: the standing up happened in a future it
+    // never took.
+    const branched = await currentScene(branchId);
+    expect(branched!.physical.actors[0].posture).toBe("kneeling");
+    expect(branched!.physical.actors[0].rightHand).toBe("on the poker");
+  });
+
+  it("does not let a discarded generation leave its arrangement behind", async () => {
+    const { conversationId } = await seedChat();
+    await addMessage(conversationId, "user", "I pull her closer.");
+    sceneReply({ physical: [{ name: "Maya", posture: "standing", relative_to: "in front of him" }] });
+    await maybeUpdateSceneState(owner, conversationId);
+
+    const replyId = await addMessage(conversationId, "assistant", "She lets herself be pulled down onto his lap.");
+    sceneReply({
+      physical: [{ name: "Maya", posture: "straddling", support: "his lap", left_arm: "around his neck" }],
+      contacts: ["Maya on the user's lap"],
+    });
+    await maybeUpdateSceneState(owner, conversationId);
+    expect((await currentScene(conversationId))!.physical.actors[0].posture).toBe("straddling");
+
+    // Regenerate: the reply is replaced, so the geometry read out of it goes
+    // with it rather than describing a scene nobody has read.
+    await asUser(owner, (client) => dropSceneStateForMessage(client, conversationId, replyId, owner));
+    await query("UPDATE messages SET content=$2 WHERE id=$1", [replyId, "She steps back instead, out of reach."]);
+    const after = await currentScene(conversationId);
+    expect(after!.physical.actors[0].posture).toBe("standing");
+    expect(after!.physical.contacts).toEqual([]);
+  });
+
+  it("stores nothing physical for a scene that never described a body", async () => {
+    const { conversationId } = await seedChat();
+    await addMessage(conversationId, "user", "We walk down to the harbour.");
+    sceneReply({ location: { place: "the harbour road", sub: "", confidence: "stated" }, present: ["Maya", "You"] });
+    await maybeUpdateSceneState(owner, conversationId);
+
+    const state = await currentScene(conversationId);
+    expect(state!.physical).toEqual({ actors: [], contacts: [], constraints: [] });
+    // And a row from before this column existed reads exactly the same way.
+    await query("UPDATE conversation_scene_states SET physical_actors='[]'::jsonb WHERE conversation_id=$1", [conversationId]);
+    expect((await currentScene(conversationId))!.physical.actors).toEqual([]);
+  });
+
+  it("records the change in the diagnostics field list", async () => {
+    const { conversationId } = await seedChat();
+    await addMessage(conversationId, "assistant", "Maya lies back across the bed.");
+    sceneReply({ physical: [{ name: "Maya", posture: "lying", support: "the bed" }] });
+    await maybeUpdateSceneState(owner, conversationId);
+    expect((await currentScene(conversationId))!.changedFields).toContain("physical");
+  });
+});

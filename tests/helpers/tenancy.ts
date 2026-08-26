@@ -45,6 +45,7 @@ export const migrationFiles = [
   "0017_linked_world_previews.sql",
   "0018_memory_feedback.sql",
   "0019_conversation_worlds.sql",
+  "0020_scene_physical_state.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {

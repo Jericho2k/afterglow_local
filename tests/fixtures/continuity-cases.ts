@@ -76,7 +76,10 @@ export function sceneOf(fields: Partial<SceneStateFields>): SceneStateFields {
   return {
     storyDay: null, dateKind: "unknown", dateText: "", timeOfDay: "", timeText: "",
     location: { place: "", sub: "", confidence: "unknown" },
-    presentCharacters: [], activeSituation: [], ...fields,
+    presentCharacters: [], activeSituation: [],
+    // Physical geometry defaults to nothing established, which is what every
+    // scene written before it existed genuinely holds.
+    physical: { actors: [], contacts: [], constraints: [] }, ...fields,
   };
 }
 
