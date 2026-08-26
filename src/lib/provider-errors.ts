@@ -21,6 +21,8 @@ export type ProviderErrorCategory =
   | "upstream_unavailable"
   /** The request was accepted but produced no text. */
   | "empty_response"
+  /** The provider's safety layer refused. Retrying produces the same refusal. */
+  | "content_filtered"
   /** The deployment's credentials are wrong. Nobody's turn will fix this. */
   | "auth"
   /** Credit, quota or payment. Also not fixed by retrying. */
@@ -36,6 +38,7 @@ const publicMessages: Record<ProviderErrorCategory, string> = {
   rate_limited: "The model is temporarily busy. Please try again in a moment.",
   upstream_unavailable: "The model is temporarily unavailable. Please try again in a moment.",
   empty_response: "The model did not return a reply. Please try again.",
+  content_filtered: "This model declined to continue this scene. Try rephrasing, or choose a different model in chat tools.",
   auth: "Something went wrong while generating the response. Please try again.",
   billing: "Something went wrong while generating the response. Please try again.",
   bad_request: "Something went wrong while generating the response. Please try again.",
@@ -48,6 +51,9 @@ const retryable: Record<ProviderErrorCategory, boolean> = {
   rate_limited: true,
   upstream_unavailable: true,
   empty_response: true,
+  // A refusal is a decision, not a blip. Asking the same model the same
+  // question again produces the same answer and costs the reader another wait.
+  content_filtered: false,
   timeout: false,
   auth: false,
   billing: false,
@@ -91,6 +97,8 @@ export class ProviderError extends Error {
   get httpStatus() {
     if (this.category === "rate_limited") return 429;
     if (this.category === "timeout") return 504;
+    // The request was understood and answered; the answer was a refusal.
+    if (this.category === "content_filtered") return 422;
     return 502;
   }
 

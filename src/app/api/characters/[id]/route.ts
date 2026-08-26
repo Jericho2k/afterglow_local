@@ -70,10 +70,22 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   if (!account) return unauthorized();
   const { id } = await context.params;
 
+  /*
+   * The verbatim import source, requested rather than assumed.
+   *
+   * `source_material` is up to 100,000 characters of Paste Everything input per
+   * creation. The editor genuinely needs it — saving without it would blank the
+   * creator's original paste — and nothing else does. Selecting it
+   * unconditionally meant every visit to a creation's own page, by its owner,
+   * downloaded a document the page does not render, on the slowest surface in
+   * the product. It is now opt-in, and row level security still decides whether
+   * the row is readable at all.
+   */
+  const wantsEditPayload = new URL(_request.url).searchParams.get("scope") === "edit";
   const supportsPreviews = await worldPreviewsSupported(account.id);
   const detail = await asUser(account.id, async (client) => {
     const result = await client.query(
-      `SELECT c.*,p.id creator_id,p.username creator_username,p.display_name creator_display_name,
+      `SELECT ${wantsEditPayload ? "c.*" : "c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,c.nsfw_enabled,c.visibility,c.like_count,c.chat_count,c.message_count,c.published_at,c.created_at,c.updated_at"},p.id creator_id,p.username creator_username,p.display_name creator_display_name,
          p.avatar_path creator_avatar_path,(mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c
        LEFT JOIN profiles p ON p.id=c.user_id AND (p.id=$2 OR p.username IS NOT NULL)

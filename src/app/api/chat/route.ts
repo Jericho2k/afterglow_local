@@ -4,7 +4,7 @@ import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow }
 import { streamCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { focusedRetrievalQuery, maybeBackfillMemoryEmbeddings, maybeCurateCanon, memoryRetrievalV2Enabled, retrieveContinuityV2 } from "@/lib/memory-v2";
-import { continueSceneCue, roleplayPrompt } from "@/lib/prompts";
+import { buildWriterPrompt, continueSceneCue, continuityPlacementFor, writerMessages } from "@/lib/prompts";
 import { sceneStateEnabled, sceneStateRetrievalHintEnabled } from "@/lib/memory-flags";
 import { sceneFieldsOf, sceneRetrievalCue } from "@/lib/scene-state";
 import { currentSceneState, dropSceneStateForMessage, maybeUpdateSceneState } from "@/lib/scene-state-store";
@@ -13,11 +13,15 @@ import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
-import { providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
+import { modelCapabilities, providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
 import { responseLengths, type AppSettings, type ResponseLength } from "@/lib/types";
 import { responseLengthPlan } from "@/lib/response-length";
+import { contextExceededMessage, fitConversation } from "@/lib/context-budget";
 import { inferenceSessionId } from "@/lib/inference-session";
-import { ProviderError, logProviderDiagnostic, publicErrorMessage, publicErrorStatus } from "@/lib/provider-errors";
+import { ProviderError, classifyProviderFailure, logProviderDiagnostic, publicErrorMessage, publicErrorStatus } from "@/lib/provider-errors";
+
+/** An error a provider delivered inside the stream rather than as a status. */
+type StreamFailure = { message: string; code?: number } | null;
 
 export const maxDuration = 120;
 
@@ -161,12 +165,16 @@ export async function POST(request: Request) {
   const sceneRetrievalHint = sceneState && sceneStateRetrievalHintEnabled() ? sceneRetrievalCue(sceneFieldsOf(sceneState)) : "";
   if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
 
+  const continuationRetrievalAnchor = action === "continue" && history.at(-1)?.role === "assistant" ? history.at(-1)!.content : "";
   let memories; let arcs; let coreCanon = [] as Awaited<ReturnType<typeof retrieveContinuityV2>>["coreCanon"];
   if (memoryRetrievalV2Enabled(account.id)) {
     try {
       const continuity = await retrieveContinuityV2({
         userId:account.id,characterId:row.character_id,conversationId,
-        query:focusedRetrievalQuery(history,lastUserInput || character.scenario || character.name,sceneRetrievalHint),
+        // A continuation is asked about where the scene IS, not about the turn
+        // that is already answered, so its retrieval anchor is the reply being
+        // continued rather than the reader's older message.
+        query:focusedRetrievalQuery(history,(action === "continue" ? continuationRetrievalAnchor : "") || lastUserInput || character.scenario || character.name,sceneRetrievalHint),
         messageId:userMessageId,limit:settings.memoryLimit,tokenBudget:settings.memoryTokenBudget,
       });
       ({memories,arcs,coreCanon}=continuity);
@@ -185,7 +193,7 @@ export async function POST(request: Request) {
   // on. That is what makes an enabled/disabled comparison mean something.
   const groundedMemories = sceneEnabled ? memories : memories.map((memory) => ({ ...memory, scene: null }));
   const groundedArcs = sceneEnabled ? arcs : arcs.map((arc) => ({ ...arc, storyDayStart: null, storyDayEnd: null, locations: [] }));
-  const system = roleplayPrompt(character, currentSummary, groundedMemories, groundedArcs, { ...settings, roleplayPreset: engineId, responseLength }, {
+  const writerPrompt = buildWriterPrompt(character, currentSummary, groundedMemories, groundedArcs, { ...settings, roleplayPreset: engineId, responseLength }, {
     worlds,
     persona,
     coreCanon,
@@ -194,20 +202,79 @@ export async function POST(request: Request) {
     customInstructions: String(row.custom_instructions || ""),
   });
   const modelHistory = history.map((message) => ({ role: message.role, content: message.content }));
-  if (action === "continue") modelHistory.push({ role: "user", content: continueSceneCue });
+  /*
+   * Continue is a continuation, not another attempt.
+   *
+   * Two conditions have to hold for that to be true, and neither used to be
+   * checked. The transcript must actually END with the reply being continued —
+   * a "continue from your last reply" instruction with no last reply in the
+   * transcript is exactly the state in which the writer answers the reader's
+   * earlier turn again, which is Regenerate wearing Continue's label. And the
+   * cue must name where to start, which is why it quotes that reply's final
+   * sentences back; see `continueSceneCue`.
+   *
+   * When there is nothing to continue from — a reply that failed to persist, a
+   * story whose newest message is the reader's — the cue is omitted entirely
+   * and this becomes an ordinary generation. That is the honest behaviour: a
+   * next reply is what the reader wanted, and pretending to continue from a
+   * reply that is not there is what produced the bug.
+   */
+  const continuedReply = action === "continue" && history.at(-1)?.role === "assistant" ? history.at(-1)!.content : "";
+  if (action === "continue" && continuedReply.trim()) modelHistory.push({ role: "user", content: continueSceneCue(continuedReply) });
 
-  const completionMessages = [{ role: "system" as const, content: system },...modelHistory];
+  /*
+   * Fit the request to the model before sending it.
+   *
+   * See src/lib/context-budget.ts for why the order is envelope, then budgeted
+   * layers, then refuse. The short version is that Midnight Cherry reads 32,768
+   * tokens and a World can be 28,000 of them, so "assemble and hope" produced a
+   * 400 that reached the reader as "Something went wrong".
+   */
+  const capabilities = modelCapabilities(selection.providerId, selection.modelId);
+  const placement = continuityPlacementFor(capabilities.promptCaching);
+  const lengthPlan = responseLengthPlan(responseLength, settings.maxTokens);
+  // Budgeting reads the whole prompt regardless of how it will be delivered:
+  // the tokens are the same either way, only their position changes.
+  const fitted = fitConversation(modelHistory, {
+    capabilities,
+    systemPrompt: `${writerPrompt.head}\n\n${writerPrompt.continuity}`,
+    requestedMaxTokens: lengthPlan.maxTokens,
+  });
+  if (fitted.plan.overflows) {
+    // The static material alone does not fit. Truncating a creator's canon to
+    // force it through would produce a confident, wrong reply; naming the
+    // remedy is the honest answer, and `reason` lets the client open the picker.
+    logProviderDiagnostic("rp generation refused: context exceeded", new ProviderError("bad_request", {
+      conversationId, provider: selection.providerId, model: selection.modelId,
+      detail: `prompt ${fitted.plan.promptTokens} tokens exceeds ${capabilities.contextTokens} context by ${fitted.plan.overflowTokens}`,
+    }));
+    return Response.json({ error: contextExceededMessage, reason: "context_exceeded" }, { status: 409 });
+  }
+  if (fitted.dropped) {
+    // A quality change nobody asked for is worth recording even when it is the
+    // right call. The window recovers on the next turn if the model changes.
+    console.warn("[context] transcript trimmed to fit the model", JSON.stringify({
+      conversationId, model: selection.modelId, dropped: fitted.dropped,
+      promptTokens: fitted.plan.promptTokens, contextTokens: capabilities.contextTokens,
+    }));
+  }
+  const completionMessages = writerMessages(writerPrompt, fitted.messages, placement);
   // Response Length owns the output envelope as well as the directive. The
   // account's `maxTokens` is the Natural baseline the other two scale from, so
   // Concise has a genuinely lower ceiling than Detailed without any mode ever
   // being cut off: see src/lib/response-length.ts for why each ceiling sits
-  // far above the words its own directive asks for.
-  const lengthPlan = responseLengthPlan(responseLength, settings.maxTokens);
+  // far above the words its own directive asks for. `lengthPlan` is computed
+  // above, before budgeting, because budgeting may lower this ceiling to fit.
   const completionOptions = {
     signal: request.signal,
-    maxTokens: lengthPlan.maxTokens,
+    maxTokens: fitted.plan.maxTokens,
     temperature,
-    thinking: engineDefinition.thinking && modelDefinition.supportsThinking,
+    // Reasoning is asked for only when the ENGINE wants it and the ENDPOINT
+    // accepts it. Sending `reasoning` to a model that rejects unknown
+    // parameters is a 400 with the reader's turn attached to it.
+    thinking: engineDefinition.thinking && capabilities.thinking,
+    /** The catalogue model id, so routing policy can be chosen per model. */
+    modelId: selection.modelId,
     // Conversation-scoped provider stickiness. Sequential turns in one story
     // ask for the same upstream host, which is what lets its prompt cache stay
     // warm; a different story is a different session and shares nothing.
@@ -246,6 +313,35 @@ export async function POST(request: Request) {
       let actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
       let upstreamProvider: string | undefined;
       let ttftMs: number | undefined;
+      /*
+       * What the stream said about itself, so an empty reply can be diagnosed
+       * rather than guessed at.
+       *
+       * Three of these are recoverable failures the previous consumer could not
+       * tell apart from "the model said nothing":
+       *
+       *   AN ERROR DELIVERED INSIDE THE STREAM. OpenRouter reports a mid-stream
+       *   failure as a `data: {"error": …}` chunk. The parser only ever looked
+       *   at `choices[0].delta.content`, so the error was silently discarded and
+       *   surfaced as an empty response — losing both the reason and the retry.
+       *
+       *   REASONING WITH NO PROSE. A model asked to think can spend its whole
+       *   envelope on `delta.reasoning` and finish with no visible content. The
+       *   retry below turns reasoning off, which is the fix rather than a
+       *   second identical attempt.
+       *
+       *   A FINISH REASON THAT EXPLAINS IT. `content_filter` and `length` are
+       *   different failures with different remedies, and both used to be
+       *   reported as "the model did not return a reply".
+       */
+      /**
+       * Held in one object rather than three `let`s so the assignments made
+       * inside the stream reader below are visible to the code that reads them
+       * afterwards.
+       */
+      const signals: { error: StreamFailure; reasoningSeen: boolean; finishReason?: string } = { error: null, reasoningSeen: false };
+      /** Hosts that produced nothing, so a retry is asked to use another one. */
+      const exhaustedProviders: string[] = [];
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       const recordAttemptUsage = async () => {
         if (!usage) return;
@@ -269,7 +365,19 @@ export async function POST(request: Request) {
                 if (typeof data?.id === "string") providerRequestId = data.id;
                 if (typeof data?.model === "string") actualProviderModel = data.model;
                 if (typeof data?.provider === "string") upstreamProvider = data.provider;
-                const delta = data?.choices?.[0]?.delta?.content;
+                // An upstream failure can arrive as a chunk rather than as a
+                // status. Recording it is what turns "empty" into a reason.
+                const error = data?.error;
+                if (error && typeof error === "object") {
+                  signals.error = {
+                    message: typeof error.message === "string" ? error.message.slice(0,500) : "upstream reported an error mid-stream",
+                    code: typeof error.code === "number" ? error.code : undefined,
+                  };
+                }
+                const choice = data?.choices?.[0];
+                if (typeof choice?.finish_reason === "string") signals.finishReason = choice.finish_reason;
+                if (typeof choice?.delta?.reasoning === "string" && choice.delta.reasoning) signals.reasoningSeen = true;
+                const delta = choice?.delta?.content;
                 if (typeof delta === "string" && delta) { if(ttftMs===undefined)ttftMs=Math.max(0,Date.now()-startedAt); assistant += delta; send({ type: "delta", content: delta }); }
                 if (data?.usage) usage = {
                   ...data.usage,
@@ -284,8 +392,31 @@ export async function POST(request: Request) {
           }
         } finally { reader.releaseLock(); }
       };
+      /** Everything known about why a stream produced no prose. */
+      const emptyDiagnostic = () => ({
+        conversationId, provider: selection.providerId, model: selection.modelId,
+        actualModel: actualProviderModel, upstreamProvider,
+        detail: [
+          signals.error ? `upstream error: ${signals.error.message}` : "",
+          signals.finishReason ? `finish_reason=${signals.finishReason}` : "",
+          signals.reasoningSeen ? "reasoning tokens only" : "",
+        ].filter(Boolean).join("; ") || "no content and no reason given",
+      });
       try {
         await consume(upstream,requestStartedAt);
+        // An error the stream reported about itself is that error, not silence.
+        // It is classified and thrown so the reader gets the right sentence and
+        // the retry policy gets the right answer about whether to try again.
+        if (!assistant.trim() && signals.error) {
+          throw new ProviderError(classifyProviderFailure(signals.error.code ?? 502, signals.error.message), {
+            ...emptyDiagnostic(), attempt: 1, status: signals.error.code,
+          });
+        }
+        if (!assistant.trim() && signals.finishReason === "content_filter") {
+          // A filtered generation is not a blip, and retrying it produces the
+          // same refusal. The reader is told something true and specific.
+          throw new ProviderError("content_filtered", { ...emptyDiagnostic(), attempt: 1 });
+        }
         if (!assistant.trim()) {
           // Some routed providers occasionally finish a successful HTTP stream
           // without text. Account for that attempt, then transparently retry
@@ -297,13 +428,23 @@ export async function POST(request: Request) {
           // self-contradicting reply, which is a worse failure than the one it
           // would be papering over.
           await recordAttemptUsage();
+          if (upstreamProvider) exhaustedProviders.push(upstreamProvider);
+          const spentOnReasoning = signals.reasoningSeen || signals.finishReason === "length";
           buffer = ""; usage = null; providerRequestId = undefined; upstreamProvider=undefined; ttftMs=undefined;
+          signals.error = null; signals.reasoningSeen = false; signals.finishReason = undefined;
           actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
           const retryStartedAt = Date.now();
-          const retry = await streamCompletion(selection,completionMessages,completionOptions);
+          // The retry is DIFFERENT from the attempt that failed, which is the
+          // point. It avoids the host that produced nothing, and if the silence
+          // looked like an envelope spent on reasoning it asks for none.
+          const retry = await streamCompletion(selection,completionMessages,{
+            ...completionOptions,
+            excludeProviders: exhaustedProviders,
+            ...(spentOnReasoning ? { thinking: false } : {}),
+          });
           await consume(retry,retryStartedAt);
         }
-        if (!assistant.trim()) throw new ProviderError("empty_response", { conversationId, provider: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, upstreamProvider, attempt: 2, detail: "two attempts produced no text" });
+        if (!assistant.trim()) throw new ProviderError(signals.finishReason === "content_filter" ? "content_filtered" : "empty_response", { ...emptyDiagnostic(), attempt: 2 });
         const variants: string[] = regenerateTarget ? [...regenerateTarget.variants, assistant] : [assistant];
         const selectedVariant = variants.length - 1;
         const memoryIds = memories.map((memory) => memory.id);

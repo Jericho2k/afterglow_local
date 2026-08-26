@@ -28,6 +28,24 @@ export type CompletionOptions = {
    * ignore it.
    */
   sessionId?: string;
+  /**
+   * The AFTERGLOW catalogue id, not the upstream slug.
+   *
+   * The adapter needs it to choose a routing policy — which upstream endpoints
+   * to prefer for this model, and which to exclude after one has failed — and
+   * that is a decision about a catalogue entry rather than about a provider's
+   * naming. Adapters with no notion of routing ignore it.
+   */
+  modelId?: string;
+  /**
+   * Upstream endpoints already known to have failed this request.
+   *
+   * Same model, different host. Nothing in an adapter may ever use this to
+   * reach a DIFFERENT model: substituting one writer for another is a product
+   * decision with its own semantics, and making it silently in a retry would
+   * change a reader's chosen writer without anybody saying so.
+   */
+  excludeProviders?: string[];
 };
 
 /** The adapter contract future OpenRouter or self-hosted runtimes implement. */

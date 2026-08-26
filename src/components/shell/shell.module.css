@@ -488,3 +488,22 @@
   border-color: rgba(232, 121, 169, .3);
   background: rgba(232, 121, 169, .07);
 }
+
+/*
+ * The usage report's period selector.
+ *
+ * Chips rather than a dropdown: an operator comparing two windows switches
+ * between them repeatedly, and a menu that has to be opened each time turns one
+ * comparison into four interactions.
+ */
+.rangePicker { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.rangeChip {
+  border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px;
+  background: rgba(255, 255, 255, .03); color: var(--muted);
+  font-family: var(--font-sans); font-size: 10.5px; cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.rangeChip:hover { color: var(--ink); background: rgba(255, 255, 255, .07); }
+.rangeChipActive { border-color: rgba(232, 121, 169, .38); background: rgba(232, 121, 169, .1); color: var(--ink); }
+.rangeCustom { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; }
+.rangeCustom label { display: flex; flex: 1 1 150px; flex-direction: column; gap: 5px; }

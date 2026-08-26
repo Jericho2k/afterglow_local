@@ -2,6 +2,7 @@
 
 import { avatarSource } from "@/lib/storage";
 import { maxBlockText, renderableBlocks, type RichBlock } from "@/lib/rich-content";
+import { StyledProse } from "./StyledText";
 import styles from "./rich.module.css";
 
 /**
@@ -40,9 +41,12 @@ export function RichContent({ blocks, text, bucket, className = "", imageSize = 
     {resolved.map((block, index) => {
       if (block.type === "text") {
         // Whitespace is preserved by CSS rather than by parsing the text into
-        // markup, so a paragraph break stays a paragraph break and nothing in
-        // the creator's prose is ever interpreted.
-        return <p key={index} className={styles.paragraph}>{block.text}</p>;
+        // markup, so a paragraph break stays a paragraph break. Emphasis is the
+        // one thing that IS read, because a description pasted in from
+        // somewhere else routinely carries `**` and showing those characters is
+        // not "not interpreting" the prose — it is rendering it wrongly. It
+        // still becomes an element, never markup: see StyledText.
+        return <p key={index} className={styles.paragraph}><StyledProse text={block.text} /></p>;
       }
       const source = avatarSource(bucket, block.path, block.url);
       if (!source) return null;

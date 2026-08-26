@@ -5,12 +5,42 @@ export type Account = { id: string; email: string | null };
 /**
  * Resolves the caller from the Supabase auth cookies.
  *
- * `getUser()` revalidates the token against the auth server rather than
- * trusting whatever the cookie claims, so a forged or expired session cannot
- * name an account here.
+ * The identity is always VERIFIED, never merely decoded — a forged or expired
+ * cookie cannot name an account here. What changed is the cost of verifying
+ * it.
+ *
+ * `getUser()` asks the auth server on every single call, which put a full
+ * network round trip in front of every authenticated request in the product.
+ * `getClaims()` verifies the token's signature instead, locally, against the
+ * project's cached JWKS. It is not a weaker check: on a project still signing
+ * with a symmetric secret — where a signature cannot be verified without the
+ * secret — it sends exactly the request `getUser()` would, and it refreshes an
+ * about-to-expire session first either way. So this is the same guarantee for
+ * less latency on modern projects, and identical behaviour on old ones.
+ *
+ * `getUser()` remains the fallback for any environment where claim
+ * verification is unavailable (an older auth-js, or a runtime without
+ * WebCrypto). Failing closed is the rule: anything that does not produce a
+ * verified subject resolves to null.
  */
 export async function currentAccount(): Promise<Account | null> {
   const supabase = await supabaseServer();
+  const auth = supabase.auth as typeof supabase.auth & {
+    getClaims?: () => Promise<{ data: { claims?: { sub?: unknown; email?: unknown } } | null; error: unknown }>;
+  };
+  if (typeof auth.getClaims === "function") {
+    try {
+      const { data, error } = await auth.getClaims();
+      const subject = data?.claims?.sub;
+      if (!error && typeof subject === "string" && subject) {
+        const email = data?.claims?.email;
+        return { id: subject, email: typeof email === "string" ? email : null };
+      }
+      // A present-but-unverifiable token is a refusal, not a reason to ask a
+      // second time with a weaker question.
+      if (!error) return null;
+    } catch { /* Fall through to the auth server. */ }
+  }
   const { data, error } = await supabase.auth.getUser();
   if (error || !data.user) return null;
   return { id: data.user.id, email: data.user.email ?? null };

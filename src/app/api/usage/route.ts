@@ -1,6 +1,7 @@
 import { asUser } from "@/lib/db";
 import { adminRequired, currentAccount, unauthorized } from "@/lib/session";
 import { pricingAsOf } from "@/lib/usage";
+import { resolveUsageRange, usageRangeFilter } from "@/lib/usage-range";
 
 const aggregate = `COUNT(*)::int requests,
   COALESCE(SUM(prompt_tokens),0)::int prompt_tokens,
@@ -45,50 +46,70 @@ function usage(row: Record<string, unknown>) {
  * The calling account's ledger only. Every aggregate is filtered by owner, so
  * one account's spend is never visible to, or mixed into, another's.
  */
-export async function GET() {
+export async function GET(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
   const denied=adminRequired(account); if(denied)return denied;
 
+  /*
+   * One window, applied to everything.
+   *
+   * The report used to be all-time plus a separate "today", which answers
+   * neither "what did last week cost" nor "what did that prompt change do".
+   * Every aggregate below now shares one range, so the totals, the breakdowns
+   * and the per-message figure describe the same period — a report whose parts
+   * cover different windows is worse than one that covers the wrong window.
+   *
+   * The filtering is in SQL. Sending the ledger to the browser to be filtered
+   * there would be both slower and a privacy regression, and it is exactly what
+   * an account with a year of history cannot afford.
+   */
+  const range = resolveUsageRange(new URL(request.url).searchParams);
+  const { predicate, values } = usageRangeFilter(account.id, range);
+
   const payload = await asUser(account.id, async (client) => {
-    const [result, models, providers, engines, funding, types, upstream, today, replies, userMessages] = await Promise.all([
-      client.query(`SELECT ${aggregate} FROM usage_events WHERE user_id=$1`, [account.id]),
-      client.query(`SELECT model, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY model ORDER BY requests DESC`, [account.id]),
-      client.query(`SELECT provider_id, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY provider_id ORDER BY requests DESC`, [account.id]),
-      client.query(`SELECT rp_engine_id, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY rp_engine_id ORDER BY requests DESC`, [account.id]),
-      client.query(`SELECT funding_source, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY funding_source ORDER BY requests DESC`, [account.id]),
-      client.query(`SELECT usage_type, ${aggregate} FROM usage_events WHERE user_id=$1 GROUP BY usage_type ORDER BY requests DESC`, [account.id]),
+    const scoped = (select: string, groupBy?: string) => client.query(
+      `SELECT ${select} FROM usage_events WHERE ${predicate}${groupBy ? ` GROUP BY ${groupBy} ORDER BY requests DESC` : ""}`,
+      values,
+    );
+    const [result, models, providers, engines, funding, types, upstream, replies, userMessages] = await Promise.all([
+      scoped(aggregate),
+      scoped(`model, ${aggregate}`, "model"),
+      scoped(`provider_id, ${aggregate}`, "provider_id"),
+      scoped(`rp_engine_id, ${aggregate}`, "rp_engine_id"),
+      scoped(`funding_source, ${aggregate}`, "funding_source"),
+      scoped(`usage_type, ${aggregate}`, "usage_type"),
       // Which upstream host actually served each generation. This is the other
       // half of the caching picture: stickiness is only working if one
       // conversation's turns keep landing on the same provider.
+      scoped(`upstream_provider, ${aggregate}`, "upstream_provider"),
+      // Volume the quota work will meter against: replies produced in range.
       client.query(
-        `SELECT upstream_provider, ${aggregate}
-         FROM usage_events WHERE user_id=$1 GROUP BY upstream_provider ORDER BY requests DESC LIMIT 12`,
-        [account.id],
-      ),
-      client.query(`SELECT ${aggregate} FROM usage_events WHERE user_id=$1 AND created_at >= date_trunc('day', now())`, [account.id]),
-      // Volume the quota work will meter against: replies produced today.
-      client.query(
-        `SELECT COUNT(*)::int count FROM messages
-         WHERE user_id=$1 AND role='assistant' AND created_at >= date_trunc('day', now())`,
-        [account.id],
+        `SELECT COUNT(*)::int count FROM messages WHERE ${predicate.replace("user_id=$1", "user_id=$1 AND role='assistant'")}`,
+        values,
       ),
       // A branch copies transcript rows. authored_event_id preserves the
       // original accepted user turn, so branching cannot inflate this metric.
-      client.query("SELECT COUNT(DISTINCT COALESCE(authored_event_id,id))::int count FROM messages WHERE user_id=$1 AND role='user' AND generation_started_at IS NOT NULL", [account.id]),
+      client.query(
+        `SELECT COUNT(DISTINCT COALESCE(authored_event_id,id))::int count FROM messages
+         WHERE ${predicate.replace("user_id=$1", "user_id=$1 AND role='user' AND generation_started_at IS NOT NULL")}`,
+        values,
+      ),
     ]);
+    const totalCost = Number(result.rows[0].estimated_cost_usd);
+    const messageCount = Number(userMessages.rows[0].count);
     return {
+      range: { id: range.id, label: range.label, from: range.from?.toISOString() ?? null, to: range.to?.toISOString() ?? null },
       usage: usage(result.rows[0]),
-      today: usage(today.rows[0]),
-      repliesToday: Number(replies.rows[0].count),
-      userMessages: Number(userMessages.rows[0].count),
-      costPer100UserMessages: Number(userMessages.rows[0].count) ? Number(result.rows[0].estimated_cost_usd) * 100 / Number(userMessages.rows[0].count) : 0,
+      replies: Number(replies.rows[0].count),
+      userMessages: messageCount,
+      costPer100UserMessages: messageCount ? totalCost * 100 / messageCount : 0,
       byModel: models.rows.map((item) => ({ key: String(item.model), ...usage(item) })),
       byProvider: providers.rows.map((item) => ({ key: String(item.provider_id), ...usage(item) })),
       byEngine: engines.rows.map((item) => ({ key: String(item.rp_engine_id), ...usage(item) })),
       byFunding: funding.rows.map((item) => ({ key: String(item.funding_source), ...usage(item) })),
       byType: types.rows.map((item) => ({ key: String(item.usage_type), ...usage(item) })),
-      byUpstreamProvider: upstream.rows.map((item) => ({ key: String(item.upstream_provider || "—"), ...usage(item) })),
+      byUpstreamProvider: upstream.rows.slice(0, 12).map((item) => ({ key: String(item.upstream_provider || "—"), ...usage(item) })),
       pricingAsOf,
     };
   });

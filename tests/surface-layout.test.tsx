@@ -143,8 +143,17 @@ describe("long unbroken content cannot set the width of a page", () => {
     const cta = rule(creationCss, ".primaryCta");
     expect(cta).toContain("min-width: 0");
     expect(cta).toContain("max-width: 100%");
-    // Desktop let the button grow without limit; it may now shrink.
-    expect(creationCss).toContain(".primaryCta { flex: 0 1 auto; padding: 0 30px; }");
+    /*
+     * The 827-pixel button on a 1280-pixel viewport was fixed once by refusing
+     * to let the control grow (`flex: 0 1 auto`), which is what left it looking
+     * like a chip parked at the right of the hero. It is bounded now by the
+     * thing that should have bounded it all along — the 620px copy column — so
+     * the control may fill its column without being able to escape it.
+     */
+    const desktop = creationCss.slice(creationCss.indexOf("@media (min-width: 900px)"), creationCss.indexOf("@media (min-width: 1440px)"));
+    expect(rule(desktop, ".heroCopy")).toContain("max-width: 620px");
+    expect(rule(desktop, ".primaryCta")).toContain("flex: 1 1 auto");
+    expect(rule(desktop, ".primaryCta")).toContain("min-width: 0");
   });
 
   it("keeps the chat header's title on one line", () => {
@@ -170,5 +179,65 @@ describe("world cards render from a summary, never from lore", () => {
     );
     expect(html).toContain("Babel");
     expect(html).toContain("Reusable setting and lore");
+  });
+});
+
+/**
+ * The desktop creation hero, which had one bug that looked like two.
+ *
+ * The copy was six independent children, each `width: 100%` capped at its own
+ * maximum and pushed right with `margin-left: auto`, so each computed its own
+ * left edge. The title started 620px from the right; the tagline, capped at
+ * 42ch, started roughly 120px further in — the "subtitle shifted too far
+ * right". The CTA row was `width: auto` around a shrink-wrapped button and
+ * started further in again — the "small floating-looking button". One cause,
+ * two symptoms, and one fix: make the column the column.
+ */
+describe("the creation hero aligns on one column", () => {
+  /** The declarations of a rule inside the desktop block. */
+  function desktopRule(selector: string) {
+    const block = creationCss.slice(creationCss.indexOf("@media (min-width: 900px)"), creationCss.indexOf("@media (min-width: 1440px)"));
+    return rule(block, selector);
+  }
+
+  it("gives the column its own width instead of giving every child one", () => {
+    const copy = desktopRule(".heroCopy");
+    expect(copy).toContain("max-width: 620px");
+    // The offset lives on the column now, so the children do not each carry it.
+    expect(copy).toContain("margin: 0 max(34px, calc((100% - 1280px) / 2 + 34px)) 0 auto");
+    expect(copy).toContain("align-items: stretch");
+  });
+
+  it("stops each child computing its own left edge", () => {
+    const children = desktopRule(".heroCopy > *");
+    expect(children).toContain("margin-left: 0");
+    expect(children).toContain("max-width: 100%");
+    // The exact declaration that caused the misalignment.
+    expect(children).not.toContain("margin-left: auto");
+    expect(children).not.toContain("max-width: 620px");
+  });
+
+  it("keeps the tagline's measure without letting it move the tagline", () => {
+    // 42ch is a reading constraint. It must not also be an alignment one, which
+    // is what it became when every child was right-aligned independently.
+    expect(desktopRule(".tagline")).toContain("max-width: 42ch");
+    expect(desktopRule(".tagline")).not.toContain("margin-left");
+  });
+
+  it("stretches the Chat button across the column, up to the Save control", () => {
+    expect(desktopRule(".ctaRow")).toContain("width: 100%");
+    expect(desktopRule(".primaryCta")).toContain("flex: 1 1 auto");
+    // Wide, not tall: the shared control height is untouched.
+    expect(rule(creationCss, ".primaryCta")).toContain("min-height: 52px");
+    expect(desktopRule(".primaryCta")).not.toContain("min-height");
+    // And Save keeps its square, which is what the CTA stops short of.
+    expect(rule(creationCss, ".ghostButton")).toContain("width: 52px; height: 52px");
+  });
+
+  it("leaves the mobile composition alone", () => {
+    // Below 900px the column is the full width and the CTA already filled it.
+    expect(rule(creationCss, ".ctaRow")).toContain("width: 100%");
+    expect(rule(creationCss, ".primaryCta")).toContain("flex: 1");
+    expect(rule(creationCss, ".heroCopy")).toContain("padding: 46vh 20px 26px");
   });
 });

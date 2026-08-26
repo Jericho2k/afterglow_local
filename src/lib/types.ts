@@ -552,10 +552,13 @@ export type UsageSummary = {
 
 export type UsageBreakdown = UsageSummary & { key: string };
 
+export type UsageRangeSummary = { id: string; label: string; from: string | null; to: string | null };
+
 export type UsageResponse = {
+  /** The window every figure below describes. */
+  range?: UsageRangeSummary;
   usage: UsageSummary;
-  today?: UsageSummary;
-  repliesToday?: number;
+  replies?: number;
   userMessages?: number;
   costPer100UserMessages?: number;
   byModel: UsageBreakdown[];

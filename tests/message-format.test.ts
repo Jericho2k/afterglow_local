@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactMessagePreview, tokenizeCharacterMessage } from "@/lib/message-format";
+import { compactMessagePreview, styleMessage, tokenizeCharacterMessage } from "@/lib/message-format";
 
 describe("character message formatting", () => {
   it("separates straight-quoted speech and removes display markers", () => {
@@ -24,19 +24,30 @@ describe("character message formatting", () => {
     ]);
   });
 
-  it("hides double-asterisk formatting without removing single action markers", () => {
-    const segments = tokenizeCharacterMessage('**She smiles.** "**Come closer.**" *Now.*');
-    expect(segments).toEqual([
-      { text: "She smiles. ", kind: "narration" },
-      { text: "Come closer.", kind: "speech" },
-      { text: " *Now.*", kind: "narration" },
+  it("renders emphasis as emphasis instead of deleting its markers", () => {
+    // The old renderer stripped every `**` it passed, which removed the stress
+    // a writer meant along with the characters that carried it, and left every
+    // `*action*` marker on screen because it never handled single markers at
+    // all. Both are decided here now, and neither is decided by deletion.
+    const styled = styleMessage('**She smiles.** "**Come closer.**" *Now.*');
+    expect(styled.map((segment) => `${segment.kind}:${segment.bold ? "b" : ""}${segment.italic ? "i" : ""}:${segment.text}`)).toEqual([
+      "narration:b:She smiles.",
+      "narration::  ".trimEnd() + " ",
+      "speech:b:Come closer.",
+      "narration:: ",
+      "narration:i:Now.",
     ]);
   });
 
-  it("hides escaped bold markers emitted by some providers", () => {
-    const segments = tokenizeCharacterMessage('\\*\\*She stays still.\\*\\* "\\*\\*I remember.\\*\\*"');
-    expect(segments.map((segment) => segment.text).join("")).toBe("She stays still. I remember.");
-    expect(segments.map((segment) => segment.text).join("")).not.toContain("**");
+  it("keeps a literal asterisk that was never emphasis", () => {
+    expect(styleMessage("2 ** 8 is 256").map((segment) => segment.text).join("")).toBe("2 ** 8 is 256");
+    expect(styleMessage("half *open").map((segment) => segment.text).join("")).toBe("half *open");
+  });
+
+  it("reads emphasis a provider escaped on its way out", () => {
+    const styled = styleMessage('\\*\\*She stays still.\\*\\* "\\*\\*I remember.\\*\\*"');
+    expect(styled.map((segment) => segment.text).join("")).toBe("She stays still. I remember.");
+    expect(styled.every((segment) => segment.bold || !segment.text.trim())).toBe(true);
   });
 
   it("turns long conversation titles into a compact header preview", () => {

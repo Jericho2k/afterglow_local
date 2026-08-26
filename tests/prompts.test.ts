@@ -46,7 +46,11 @@ describe("roleplay prompt", () => {
 
   it("supports a direct but autonomous adult roleplay preset", () => {
     const prompt = roleplayPrompt(character, "", [], [], { ownerName:"Alex", ownerProfile:"", roleplayPreset:"raw" });
-    expect(prompt).toContain("RAW ADULT");
+    expect(prompt).toContain("AFTERGLOW ROLEPLAY ENGINE — DIRECT");
+    // The restraint that keeps a manner from becoming a subject. Without it,
+    // choosing Direct made every conversation sexual, which is the failure the
+    // engine rework exists to prevent.
+    expect(prompt).toContain("Directness is a manner, not a subject");
     expect(prompt).toContain("do not sanitize");
     expect(prompt).toContain("they are not wish-fulfillment puppets");
     expect(prompt).toContain("initiate, hesitate, negotiate, refuse, stop, or leave");
@@ -89,9 +93,12 @@ describe("roleplay prompt", () => {
   });
 
   it("continues the scene without inventing a user turn", () => {
-    expect(continueSceneCue).toContain("control signal, not dialogue from the user");
-    expect(continueSceneCue).toContain("Do not write the user's dialogue");
-    expect(continueSceneCue).toContain("Do not repeat or paraphrase");
+    const cue = continueSceneCue("*She looks up.* \"You came back.\"");
+    expect(cue).toContain("control signal, not dialogue from the user");
+    expect(cue).toContain("Do not write the user's dialogue");
+    // The anchor is what makes this a continuation rather than another attempt.
+    expect(cue).toContain("You came back.");
+    expect(cue).toContain("Do not rewrite, restate, summarise, or produce an alternative version");
   });
 
   it("keeps natural unchanged and gives concise and detailed concrete written targets", () => {

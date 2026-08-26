@@ -23,8 +23,12 @@ describe("inference catalog", () => {
     expect(resolveModel("deepseek", "deepseek-v4-flash")?.providerId).toBe("deepseek");
     expect(resolveModel("unknown", "deepseek-v4-flash")).toBeNull();
     expect(resolveEngine("cinematic")?.thinking).toBe(false);
-    expect(resolveEngine("kink_aware")).toMatchObject({ adult: true, tags: expect.arrayContaining(["kink"]) });
-    expect(resolveEngine("multi_clarity")?.description).toContain("distinct voices");
+    expect(resolveEngine("kink_aware")).toMatchObject({ adult: true, tags: expect.arrayContaining(["power dynamics"]) });
+    // The ids are deliberately unchanged while the labels are not: a
+    // conversation stores the engine it was started with, so renaming an id
+    // would silently move every existing story to a different brief.
+    expect(resolveEngine("multi_clarity")?.label).toBe("Group & Cast");
+    expect(resolveEngine("multi_clarity")?.description).toContain("several characters");
   });
 
   it("uses a deployment-owned engine default", () => {

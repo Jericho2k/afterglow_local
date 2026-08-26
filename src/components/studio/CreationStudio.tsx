@@ -114,7 +114,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
   useEffect(() => {
     if (!character) { hydrated.current = true; return; }
     let cancelled = false;
-    api<{ character: Character }>(`/api/characters/${character.id}`)
+    api<{ character: Character }>(`/api/characters/${character.id}?scope=edit`)
       .then(({ character: full }) => {
         if (cancelled) return;
         const loaded = draftFromCharacter(full);
@@ -215,7 +215,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
       // for it, because until `record` exists a save would create a SECOND
       // creation rather than updating the one being resumed.
       setLoadingRecord(true);
-      api<{ character: Character }>(`/api/characters/${summary.creationId}`)
+      api<{ character: Character }>(`/api/characters/${summary.creationId}?scope=edit`)
         .then(({ character: full }) => {
           const loaded = draftFromCharacter(full);
           savedGallery.current = loaded.gallery;

@@ -22,6 +22,12 @@ function promptWithout(testCase: typeof continuityBenchmark[number]) {
   );
 }
 
+/** The half of the prompt that changes per turn, which is Scene State's half. */
+function continuityOf(prompt: string) {
+  const at = prompt.indexOf("CURRENT CONTINUITY — DYNAMIC FOR THIS REPLY");
+  return at === -1 ? prompt : prompt.slice(at);
+}
+
 function promptWith(testCase: typeof continuityBenchmark[number]) {
   return roleplayPrompt(
     testCase.character ?? benchmarkCharacter, "",
@@ -31,11 +37,16 @@ function promptWith(testCase: typeof continuityBenchmark[number]) {
 
 describe("continuity benchmark", () => {
   it.each(continuityBenchmark.map((testCase) => [testCase.name, testCase] as const))("%s", (_name, testCase) => {
-    const off = promptWithout(testCase);
     const on = promptWith(testCase);
+    // Scene State writes into the per-turn continuity block and nowhere else,
+    // so that is where its absence has to be checked. Searching the whole
+    // prompt reads the fixed engine and rules text too, where an ordinary word
+    // like "morning" can appear for reasons that have nothing to do with a
+    // scene — a false positive about a leak that is not happening.
+    const offContinuity = continuityOf(promptWithout(testCase));
     for (const grounding of testCase.grounded) {
       expect(on, `"${grounding}" must reach the writer`).toContain(grounding);
-      expect(off, `"${grounding}" must be absent without Scene State`).not.toContain(grounding);
+      expect(offContinuity, `"${grounding}" must be absent without Scene State`).not.toContain(grounding);
     }
     // NOW and THEN are labelled in opposite tenses, and the block outranks the
     // archive by position as well as by wording.

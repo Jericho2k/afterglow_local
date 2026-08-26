@@ -8,10 +8,25 @@ export type UsageKind = "chat" | "regenerate" | "continue" | "memory_consolidati
 // Official USD prices per one million tokens, checked against DeepSeek's
 // Models & Pricing page on 2026-08-18. Historical events store their estimate
 // at write time so a later price change does not rewrite prior usage.
-export const pricingAsOf = "2026-08-18";
+export const pricingAsOf = "2026-08-25";
 export const modelPricing: Record<string, { cacheHit: number; cacheMiss: number; output: number }> = {
   "deepseek-v4-flash": { cacheHit: 0.0028, cacheMiss: 0.14, output: 0.28 },
   "deepseek-v4-pro": { cacheHit: 0.003625, cacheMiss: 0.435, output: 0.87 },
+  /*
+   * OpenRouter models, checked against their catalogue pages on 2026-08-25.
+   *
+   * These are a FALLBACK, not the source of truth. OpenRouter reports the real
+   * charge for each generation in `usage.cost`, and `recordUsageEvent` prefers
+   * it; this table only fills the gap when a response arrives without one, so
+   * that a MiMo turn is never silently recorded as costing nothing.
+   *
+   * The cached-input rate is what makes MiMo interesting: about one forty-sixth
+   * of the fresh-input rate. Whether that discount actually arrives in
+   * Afterglow's traffic is a measurement, not a property of this table.
+   */
+  "mimo-v2.5": { cacheHit: 0.00255, cacheMiss: 0.119, output: 0.238 },
+  "mimo-v2.5-pro": { cacheHit: 0.0028, cacheMiss: 0.3045, output: 0.609 },
+  "midnight-cherry": { cacheHit: 0.55, cacheMiss: 0.55, output: 0.80 },
 };
 
 export function normalizedUsage(usage: LLMUsage) {
