@@ -83,9 +83,13 @@ describe("keyboard and assistive use", () => {
 describe("the page is one request, and it carries nothing hidden", () => {
   it("asks for everything at once", () => {
     expect(page).toContain("fetch(`/api/creators/${encodeURIComponent(username)}?sort=${sort}&filter=${filter}`)");
-    // One endpoint. Six requests to fill a page in is how a rich page becomes
-    // a slow one.
-    expect(page.match(/fetch\(/g)?.length).toBe(2); // the profile, and the follow write
+    // One endpoint, and one request in the whole file. Six requests to fill a
+    // page in is how a rich page becomes a slow one — and the follow write is
+    // no longer here at all, because it goes through the one primitive in
+    // src/lib/follows.ts that every Follow control in the product shares.
+    expect(page.match(/fetch\(/g)?.length).toBe(1);
+    expect(page).toContain("toggleCreatorFollow");
+    expect(page).not.toContain("/api/follows");
   });
 
   it("sorts and filters on the server rather than re-ordering one page of results", () => {

@@ -1,14 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Compass, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { Compass, Search, SlidersHorizontal, Sparkles, UserRoundPlus, X } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { AppMenuButton } from "@/components/ui";
+import { NotificationBell } from "@/components/shell/NotificationBell";
 import { creationTypeLabels } from "@/lib/creation";
 import {
   activeFilterCount, applyPreferences, discoveryPageSize, discoverySearchParams, discoverySortHints,
-  discoverySortLabels, discoverySorts, emptyDiscoveryPreferences, isFilteredQuery, parseDiscoveryQuery,
-  parseSearchTerm, preferencesFromQuery, queryStatesIntent, samePreferences,
+  discoverySortLabels, discoverySorts, emptyDiscoveryPreferences, isFilteredQuery, isFollowingSort,
+  parseDiscoveryQuery, parseSearchTerm, preferencesFromQuery, queryStatesIntent, samePreferences,
   type DiscoveryPreferences, type DiscoveryQuery, type DiscoverySort,
 } from "@/lib/discovery";
 import { toggleCreationSave } from "@/lib/saves";
@@ -28,7 +29,7 @@ import styles from "./feed.module.css";
  * than at the top.
  */
 
-type Page = { creations: CreationSummary[]; hasMore: boolean; nextOffset: number };
+type Page = { creations: CreationSummary[]; hasMore: boolean; nextOffset: number; followingCreators?: number | null };
 type Restorable = { key: string; creations: CreationSummary[]; hasMore: boolean; nextOffset: number; scrollTop: number };
 
 const restoreKey = "afterglow:discovery";
@@ -62,6 +63,8 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
   const [notice, setNotice] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [stuck, setStuck] = useState(false);
+  /** How many creators this account follows. Null until a Following feed says. */
+  const [followingCreators, setFollowingCreators] = useState<number | null>(null);
 
   const scrollerRef = useRef<HTMLElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -165,6 +168,7 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
       const data = await api<Page>(`/api/discovery?${params.toString()}`);
       setCreations((current) => mode === "append" ? [...current, ...data.creations] : data.creations);
       setPage({ hasMore: data.hasMore, nextOffset: data.nextOffset });
+      if (typeof data.followingCreators === "number") setFollowingCreators(data.followingCreators);
     } catch (reason) {
       if (mode === "replace") setCreations([]);
       setError(reason instanceof Error ? reason.message : "Discovery is unavailable right now");
@@ -248,6 +252,7 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
 
   const filterCount = activeFilterCount(query);
   const filtered = isFilteredQuery(query);
+  const following = isFollowingSort(query.sort);
   const activeChips = useMemo(() => [
     ...query.types.map((type) => ({ label: creationTypeLabels[type], clear: () => update({ types: query.types.filter((item) => item !== type) }) })),
     ...query.tags.map((tag) => ({ label: tag, clear: () => update({ tags: query.tags.filter((item) => item !== tag) }) })),
@@ -268,7 +273,9 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
     <header className={styles.head}>
       <span className={styles.eyebrow}>Public creations from Afterglow creators</span>
       <h1 className={styles.title}>Discover<Sparkles size={20} className={styles.titleSpark} aria-hidden /></h1>
-      <p className={styles.lede}>Characters, casts and scenario roleplay, published by their creators. Save anything you want to come back to.</p>
+      <p className={styles.lede}>{following
+        ? "Everything the creators you follow have published, newest first."
+        : "Characters, casts and scenario roleplay, published by their creators. Save anything you want to come back to."}</p>
     </header>
 
     <div className={`${styles.controls} ${stuck ? styles.controlsStuck : ""}`}>
@@ -296,6 +303,9 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
           <span className={styles.filterButtonLabel}>Filters</span>
           {filterCount > 0 && <span className={styles.filterCount}>{filterCount}</span>}
         </button>
+        {/* Discovery draws its own header rather than using PageHeader, so the
+            bell is placed here explicitly. Same control, same shared count. */}
+        <NotificationBell className={styles.menuButton} />
       </div>
 
       {/* A group of toggles rather than an ARIA tablist: there is no tabpanel
@@ -329,14 +339,30 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
             action={{ label: "Try again", onClick: () => void load({ ...query, offset: 0 }, "replace") }}
           /></div>
         : creations.length === 0
-          ? <div className={styles.grid}><FeedState
-              icon={<Search size={26} />}
-              title={filtered ? "Nothing matches that yet" : "No published creations yet"}
-              description={filtered
-                ? "Try fewer filters, a different ordering, or a broader search term."
-                : "When creators publish a character, cast or scenario it appears here. Your own creations live in your library."}
-              action={filtered ? { label: "Clear filters", onClick: clearEverything } : undefined}
-            /></div>
+          ? <div className={styles.grid}>{following
+              /*
+               * Two different empty Following feeds, and they are different
+               * problems. "You follow nobody" has an action — go and find
+               * somebody — and "the people you follow have not published" has
+               * none, so offering one would be pretending there is something
+               * wrong that the reader could fix.
+               */
+              ? <FeedState
+                  icon={<UserRoundPlus size={26} />}
+                  title={followingCreators ? "Nothing new from them yet" : "You are not following anyone yet"}
+                  description={followingCreators
+                    ? "The creators you follow have not published anything public yet. When they do, it appears here first — and you will get a notification."
+                    : "Follow a creator and everything they publish shows up here, newest first. Open any creation and tap the creator to see their work."}
+                  action={followingCreators ? undefined : { label: "Browse creations", onClick: () => update({ sort: "popular" }) }}
+                />
+              : <FeedState
+                  icon={<Search size={26} />}
+                  title={filtered ? "Nothing matches that yet" : "No published creations yet"}
+                  description={filtered
+                    ? "Try fewer filters, a different ordering, or a broader search term."
+                    : "When creators publish a character, cast or scenario it appears here. Your own creations live in your library."}
+                  action={filtered ? { label: "Clear filters", onClick: clearEverything } : undefined}
+                />}</div>
           : <>
               <CreationGrid creations={creations} onToggleSave={toggleSave} />
               <div ref={sentinelRef} className={styles.sentinel} aria-hidden />
@@ -354,7 +380,7 @@ export function DiscoveryFeed({ onOpenMenu }: { onOpenMenu?: () => void }) {
     />}
 
     {notice && <div className={styles.toast} role="status">
-      {notice}<button type="button" onClick={() => setNotice("")} aria-label="Dismiss">×</button>
+      {notice}<button type="button" onClick={() => setNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button>
     </div>}
   </section>;
 }

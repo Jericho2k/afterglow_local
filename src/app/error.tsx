@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import { Sparkles } from "lucide-react";
 
 /**
  * The last line of defence for a rendering failure.
@@ -22,7 +23,7 @@ export default function AppError({ error, reset }: { error: Error & { digest?: s
     minHeight: "100dvh", display: "grid", placeContent: "center", justifyItems: "center",
     gap: 14, padding: 30, textAlign: "center", background: "#0b080d", color: "#f6eff4",
   }}>
-    <span aria-hidden style={{ fontSize: 26, color: "#e879a9" }}>✦</span>
+    <Sparkles size={26} aria-hidden style={{ color: "#e879a9" }} />
     <h1 style={{ margin: 0, fontFamily: "var(--font-serif), Georgia, serif", fontSize: 26, fontWeight: 600 }}>
       Something went wrong
     </h1>

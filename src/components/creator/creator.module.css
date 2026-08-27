@@ -145,9 +145,56 @@
 .statBody strong {
   font-family: var(--font-serif), Georgia, serif;
   font-size: 22px; line-height: 1.1; color: var(--ink, #f6eff4);
+  /* The value is the point, so it never wraps and never shrinks to fit a
+     label. `1.2M` stays one token at every width. */
+  white-space: nowrap;
 }
-.statBody > span { font-family: var(--font-sans); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; color: #a0939b; }
+.statBody > span {
+  font-family: var(--font-sans); font-size: 9.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: #a0939b;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .statBody small { font-size: 9px; color: #6fd39a; }
+
+/*
+ * The three numbers, on a phone.
+ *
+ * This is the whole of the "Followers / Messages / Creations overlap on
+ * mobile" report, and it is fixed HERE rather than on either page because the
+ * cause was that it had only ever been fixed on one of them. `.stat` is a
+ * horizontal row — a 40px icon tile, an 11px gap, then a 22px serif value over
+ * a nine-character uppercase label — and both surfaces lay three of them out
+ * in three equal columns. On a 375px screen that is roughly 85px per column,
+ * of which the icon and its gap take 51: the value and the label had about
+ * 34px between them and spilled into the next column.
+ *
+ * Below 620px the icon is dropped entirely rather than shrunk. It is
+ * decoration — the label already says what the number is — and removing it
+ * gives the value and the label the full column, which is what makes a
+ * compact three-column row legible instead of merely smaller. Centred, so
+ * three columns of different-length values read as a row.
+ *
+ * Every value is already abbreviated by `compactCount`, and the exact figure
+ * stays available through the `title` and the assistive label, so nothing is
+ * lost by shortening what is drawn.
+ */
+@media (max-width: 619px) {
+  .stat {
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 3px;
+    text-align: center;
+  }
+  .statIcon { display: none; }
+  .statBody { align-items: center; width: 100%; gap: 2px; }
+  .statBody strong { font-size: 21px; }
+  .statBody > span {
+    /* Small enough that "Creations" fits a third of a 375px screen with room
+       to spare, and large enough to stay readable. */
+    font-size: 9px; letter-spacing: .04em; max-width: 100%;
+  }
+}
 
 .srOnly {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -156,4 +203,107 @@
 
 @media (prefers-reduced-motion: reduce) {
   .avatarRing[data-border="ranked"], .avatarRing[data-border="luminary"] { animation: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * The creator card
+ *
+ * The compact identity that appears beside somebody's work. Same panel
+ * language as the surfaces it sits on, so it reads as part of the page rather
+ * than as a widget dropped onto it.
+ * ------------------------------------------------------------------------ */
+.card { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.cardHead { display: flex; align-items: center; gap: 13px; min-width: 0; }
+
+.cardIdentity {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 13px;
+  color: inherit; text-decoration: none;
+  border-radius: 14px;
+}
+.cardIdentity:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 4px; }
+
+.cardCopy { display: flex; flex-direction: column; gap: 3px; min-width: 0; align-items: flex-start; }
+.cardCopy strong {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 17px; line-height: 1.2; color: var(--ink, #f6eff4);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.cardCopy small {
+  font-family: var(--font-sans); font-size: 11px; color: #9b8fa0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+a.cardIdentity:hover .cardCopy strong { color: #ffd9ea; }
+
+.cardAction {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 38px; padding: 0 15px;
+  border: 1px solid rgba(232, 121, 169, .34);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(232, 121, 169, .2), rgba(138, 92, 246, .16));
+  color: #ffd9ea; text-decoration: none;
+  font-family: var(--font-sans); font-size: 11.5px; font-weight: 600;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease;
+}
+.cardAction:hover:not(:disabled) { background: linear-gradient(135deg, rgba(232, 121, 169, .3), rgba(138, 92, 246, .24)); }
+.cardAction:disabled { opacity: .55; cursor: progress; }
+.cardAction:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+/* Following is a state, not an invitation, so it steps back to an outline. */
+.cardActionOn {
+  background: rgba(255, 255, 255, .05);
+  border-color: var(--edge, rgba(255, 255, 255, .12));
+  color: #cbbcc6;
+}
+
+.cardStats {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px; margin: 0;
+  padding: 12px 4px;
+  border-block: 1px solid var(--edge, rgba(255, 255, 255, .08));
+}
+.cardStats > div { display: flex; flex-direction: column-reverse; gap: 3px; min-width: 0; text-align: center; }
+.cardStats dt {
+  font-family: var(--font-sans); font-size: 9px; letter-spacing: .05em;
+  text-transform: uppercase; color: #9b8fa0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cardStats dd {
+  margin: 0;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 19px; line-height: 1.1; color: var(--ink, #f6eff4);
+  white-space: nowrap;
+}
+
+.cardLink {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 42px; padding: 0 14px;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .09));
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .03);
+  color: #e6d8e2; text-decoration: none;
+  font-family: var(--font-sans); font-size: 12px;
+}
+.cardLink > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cardLink em {
+  flex: 0 0 auto;
+  font-style: normal; font-size: 10px; letter-spacing: .04em;
+  color: #f0a6c6;
+}
+.cardLink svg:first-child { flex: 0 0 auto; color: #f0a6c6; }
+.cardLink svg:last-child { flex: 0 0 auto; opacity: .6; }
+.cardLink:hover { background: rgba(232, 121, 169, .12); border-color: rgba(232, 121, 169, .3); color: #ffd9ea; }
+.cardLink:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+
+.cardQuiet { margin: 0; font-size: 11.5px; line-height: 1.5; color: #9b8fa0; }
+
+@media (max-width: 420px) {
+  /* The action drops beneath the identity rather than squeezing the name to
+     four characters. */
+  .cardHead { flex-wrap: wrap; }
+  .cardAction { width: 100%; }
+  .cardCopy strong { font-size: 16px; }
+  .cardStats dd { font-size: 17px; }
 }

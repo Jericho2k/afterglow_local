@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AchievementBadge, CreatorAvatar, CreatorStat, RankMedal, rankSummary } from "@/components/creator";
+import { AchievementBadge, CreatorAvatar, CreatorCard, CreatorStat, RankMedal, rankSummary, type CreatorCardData } from "@/components/creator";
 import { achievementStates } from "@/lib/achievements";
 import { profileBorder } from "@/lib/cosmetics";
 
@@ -115,30 +115,116 @@ describe("a stat says the exact number as well as the short one", () => {
   });
 });
 
-describe("the creation page keeps the creator section small", () => {
-  const page = readFileSync(new URL("../src/app/characters/[id]/profile.tsx", import.meta.url), "utf8");
-  const section = page.slice(page.indexOf('{character.creator && <section id="creator"'), page.indexOf('{worlds.length > 0 &&'));
+/**
+ * The creator card.
+ *
+ * This is the component that fixes the report the sprint opened with: a public
+ * creation whose creator was visible only to that creator. The tests below are
+ * about what a VISITOR sees, because that was the broken case.
+ */
+const card: CreatorCardData = {
+  id: "cccccccc-0000-4000-8000-000000000001",
+  username: "noctis",
+  displayName: "Noctis",
+  avatarPath: "",
+  border,
+  followers: 12_400,
+  messages: 2_310_000,
+  creations: 48,
+  rank: 42,
+  rankTotal: 43_120,
+  viewerFollows: false,
+  owner: false,
+};
 
-  it("shows the medal only from the top 100", () => {
-    expect(section).toContain("showFrom={100}");
+describe("the creator card names the creator to everybody", () => {
+  it("shows the identity, the handle and the three real totals", () => {
+    const markup = renderToStaticMarkup(<CreatorCard creator={card} />);
+    expect(markup).toContain("Noctis");
+    expect(markup).toContain("@noctis");
+    expect(markup).toContain("Followers");
+    expect(markup).toContain("Messages");
+    expect(markup).toContain("Creations");
+    expect(markup).toContain("12.4K");
+    expect(markup).toContain("2.3M");
+    expect(markup).toContain("48");
   });
 
-  it("links to the creator's real page rather than to a view that never existed", () => {
-    expect(section).toContain("href={`/creators/${character.creator.username}`}");
+  it("links the identity to the creator's real page", () => {
+    const markup = renderToStaticMarkup(<CreatorCard creator={card} />);
+    expect(markup).toContain('href="/creators/noctis"');
+    expect(markup).toContain("Open Noctis&#x27;s creator profile");
+  });
+
+  it("offers Follow to a visitor", () => {
+    const markup = renderToStaticMarkup(<CreatorCard creator={card} />);
+    expect(markup).toContain("Follow");
+    expect(markup).not.toContain("Edit profile");
+  });
+
+  it("says Following when the viewer already does", () => {
+    const markup = renderToStaticMarkup(<CreatorCard creator={{ ...card, viewerFollows: true }} />);
+    expect(markup).toContain("Following");
+    expect(markup).toContain('aria-pressed="true"');
+  });
+
+  /*
+   * The owner keeps the card.
+   *
+   * Hiding it from its creator on the grounds that they already know who they
+   * are is exactly what made the page inconsistent. The layout is the same
+   * object for everybody; only the control in it changes.
+   */
+  it("keeps the whole card for the creator, and swaps the control", () => {
+    const markup = renderToStaticMarkup(<CreatorCard creator={{ ...card, owner: true }} />);
+    expect(markup).toContain("Noctis");
+    expect(markup).toContain("Followers");
+    expect(markup).toContain("Edit profile");
+    expect(markup).toContain("View your public profile");
+    expect(markup).not.toContain("aria-pressed");
+  });
+
+  it("shows the medal only from the top 100", () => {
+    expect(renderToStaticMarkup(<CreatorCard creator={card} />)).toContain("#42");
+    expect(renderToStaticMarkup(<CreatorCard creator={{ ...card, rank: 347 }} />)).not.toContain("#347");
+  });
+
+  /*
+   * A creation is never anonymous.
+   *
+   * An account with no handle still gets named, with the link and the follow
+   * control simply absent rather than the whole section disappearing — which
+   * is what used to happen, to every viewer except the creator.
+   */
+  it("still names a creator who has no public page yet", () => {
+    const markup = renderToStaticMarkup(<CreatorCard creator={{ ...card, username: "" }} />);
+    expect(markup).toContain("Noctis");
+    expect(markup).toContain("Followers");
+    expect(markup).not.toContain("href=\"/creators/");
+    expect(markup).toContain("has not opened a public profile yet");
+  });
+
+  it("carries no profile inside it", () => {
+    const markup = renderToStaticMarkup(<CreatorCard creator={card} />);
+    // A creator's achievements, worlds and history belong on their own page.
+    expect(markup).not.toContain("Achievement");
+    expect(markup).not.toContain("Activity");
+  });
+});
+
+describe("the creation page draws the creator for every viewer", () => {
+  const page = readFileSync(new URL("../src/app/characters/[id]/profile.tsx", import.meta.url), "utf8");
+
+  it("gates the section on the card rather than on a profile only the owner could read", () => {
+    expect(page).toContain('{creatorCard && <section id="creator"');
+    expect(page).not.toContain('{character.creator && <section id="creator"');
     expect(page).not.toContain("?view=creator&creator=");
   });
 
-  it("carries three numbers and no gallery", () => {
-    expect(section).toContain("Followers");
-    expect(section).toContain("Messages");
-    expect(section).toContain("Creations");
-    // A creator's achievements, worlds and history belong on their own page.
-    expect(section).not.toContain("AchievementBadge");
-    expect(section).not.toContain("ActivityList");
-  });
-
-  it("offers Follow to everybody except the creator themselves", () => {
-    expect(section).toContain("creatorCard && !creatorCard.owner");
+  it("uses the shared card rather than a second copy of it", () => {
+    expect(page).toContain("<CreatorCard creator={creatorCard}");
+    // One follow primitive, in src/lib/follows.ts.
+    expect(page).not.toContain("/api/follows");
   });
 });
 

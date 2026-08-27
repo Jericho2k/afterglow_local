@@ -549,6 +549,53 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS profile_follows_creator_idx ON profile_follows (creator_user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS profile_follows_follower_idx ON profile_follows (follower_user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS profile_activity_user_idx ON profile_activity (user_id, occurred_at DESC)");
+  /*
+   * Social discovery.
+   *
+   * The policies, the fanout function and the ranking rebuild live in
+   * 0022_social_discovery.sql. What is repeated here is only the shape a plain
+   * PostgreSQL database needs to run the same code paths: the tables the
+   * queries name and the indexes they read through. A deployment on Supabase
+   * has all of this from the migration and these statements are no-ops.
+   */
+  await pool().query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id uuid PRIMARY KEY,
+      user_id uuid NOT NULL,
+      type text NOT NULL,
+      actor_user_id uuid,
+      character_id uuid REFERENCES characters(id) ON DELETE CASCADE,
+      dedupe_key text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      read_at timestamptz
+    );
+  `);
+  await pool().query("CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications (user_id, created_at DESC, id DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS notifications_unread_idx ON notifications (user_id, created_at DESC) WHERE read_at IS NULL");
+  await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_idx ON notifications (user_id, dedupe_key)");
+  await pool().query(`
+    CREATE TABLE IF NOT EXISTS creation_rankings (
+      character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      category text NOT NULL DEFAULT '',
+      rank integer NOT NULL,
+      rank_total integer NOT NULL DEFAULT 0,
+      user_messages integer NOT NULL DEFAULT 0,
+      computed_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (character_id, category)
+    );
+  `);
+  await pool().query("CREATE INDEX IF NOT EXISTS creation_rankings_board_idx ON creation_rankings (category, rank)");
+  await pool().query("CREATE INDEX IF NOT EXISTS creation_rankings_creation_idx ON creation_rankings (character_id, rank)");
+  await pool().query(`
+    CREATE TABLE IF NOT EXISTS creation_rankings_refresh (
+      id boolean PRIMARY KEY DEFAULT true,
+      refreshed_at timestamptz NOT NULL DEFAULT '1970-01-01T00:00:00Z'
+    );
+  `);
+  await pool().query("INSERT INTO creation_rankings_refresh (id) VALUES (true) ON CONFLICT (id) DO NOTHING");
+  await pool().query("CREATE INDEX IF NOT EXISTS characters_creator_published_idx ON characters (user_id, published_at DESC NULLS LAST, id DESC) WHERE visibility = 'public'");
+  await pool().query("CREATE INDEX IF NOT EXISTS characters_messages_idx ON characters (user_message_count DESC, like_count DESC, id DESC) WHERE visibility = 'public'");
+  await pool().query("CREATE INDEX IF NOT EXISTS creator_stats_messages_idx ON creator_stats (user_messages DESC, followers DESC, user_id)");
   // Worlds V2: saves, comments and the rich-content columns. Mirrors
   // migrations 0014-0016 so the in-memory test database matches production.
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS save_count integer NOT NULL DEFAULT 0");

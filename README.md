@@ -30,8 +30,10 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 - Per-account ownership of every character, world, persona, chat, message, and memory, enforced by PostgreSQL row level security
 - Character visibility model (private / unlisted / public) ready for a creator marketplace, with chats and memories that stay private even when the character is published
 - Public creation pages that render only the sections a creator actually authored, and never expose the hidden prompt fields that steer the model
-- Discovery feed with search, platform-tag filtering, three honest orderings and a private per-user saved library
-- Creator profiles with followers, real creator statistics, a documented creator rank, achievements earned from real milestones, unlockable profile borders, a public activity history and a Top Characters panel
+- Discovery feed with search, platform-tag filtering, three honest orderings, a strictly chronological Following feed and a private per-user saved library
+- Creator profiles with followers, real creator statistics, a documented creator rank, achievements earned from real milestones, unlockable profile borders, a public activity history and a Top Characters panel — reachable from every creation, discovery card, world, ranked row and notification
+- Notifications when a creator you follow publishes, generated in the database, deduplicated by index, and opening the exact creation
+- Rankings for creations and creators, overall and per controlled genre, materialised rather than aggregated on view, with every row a link
 - Worlds scoped to a STORY: a conversation snapshots its creation's readable defaults when it begins and then owns its own set, so attaching lore to one story never edits the creation
 - Physical continuity inside Scene State: posture, support, each limb separately, held objects, contact points and environmental constraints, carried only where the story established them
 - A moderation-report queue
@@ -412,8 +414,28 @@ from here on.
 
 ## Creator profiles
 
-A creator profile is a page of its own at `/creators/{username}`, and a username
-remains the single explicit opt-in that makes a profile public at all.
+A creator profile is a page of its own at `/creators/{username}`.
+
+**Publishing is the opt-in to being named.** This used to be "choosing a
+username is the opt-in", and that is the whole of the report that a creation
+showed its creator to its creator and to nobody else: `profiles_select_own_or_public`
+returns a profile only when it is your own or it carries a username, so the join
+on a creation page resolved for the owner and produced NULL for every visitor —
+and the page rendered its entire creator section conditionally on that row. Same
+page, two different truths, and the wrong one shown to everybody who mattered.
+The separate, easily-missed act was gating attribution while the act that
+actually shows work to strangers had no attribution consequence at all.
+
+So a handle is assigned by `ensure_public_username` at the moment a creation or
+world first goes public. The one thing that must never do is publish an email
+address, and that is a real risk rather than a theoretical one: `handle_new_user`
+falls back to `split_part(email,'@',1)` when somebody signs up without typing a
+name, so a handle derived from the stored display name would put half of their
+email in front of the platform. The function reads `auth.users.email` — which is
+why it is `SECURITY DEFINER` and why the derivation cannot live in application
+code — recognises that placeholder, and replaces it with a neutral
+`creator_xxxxxxxx` instead. A display name somebody actually chose is never
+touched, and "Nocturne Atelier" still becomes `nocturne_atelier`.
 
 **Every figure on it is real or it is absent.** That constraint decides the
 design more than anything else:
@@ -460,7 +482,30 @@ handle, three totals and a Follow — and the rank medal appears only for the to
 100. A badge every creator carries is a label; one the hundred most-read
 creators carry is worth noticing. Every field it draws comes from joins on the
 query the page already ran, so the slowest surface in the product gained no
-round trips to show it.
+round trips to show it. **The card is shown to every viewer, the owner
+included**: hiding it from its creator on the grounds that they already know who
+they are is what made the page inconsistent, so the layout is the same object
+for everybody and only the control in it changes — Follow for a visitor, Edit
+profile for its owner. It is one component,
+`src/components/creator/CreatorCard.tsx`, used by the creation page and
+available to anything else that shows somebody's work.
+
+**Profile means the public page.** The shell's Profile destination opens
+`/creators/{username}` — what a creator actually wants to look at is how they
+appear to everybody else — and `?view=profile` is the editor, reached from a
+button on that page. The editor's header IS the profile header: same banner
+proportions, same overlapping avatar, same earned ring, and both pictures are
+changed by tapping the thing they are. It used to draw a "preview" with the ring
+and then, separately below, a plain circle that was the control the file picker
+wrote to; one wore the cosmetic and the other did not, and neither was labelled
+as the real one.
+
+**Follow is one primitive.** `src/lib/follows.ts` owns the optimistic dance —
+flip immediately, settle on the server's authoritative count, put the original
+back exactly on failure — and the profile, the creator card and the rankings
+board all call it. There were two hand-written copies of it before; two
+implementations of one control drift, first about what to do when the write
+fails and eventually about what Follow means.
 
 ## Cast members
 
@@ -518,16 +563,31 @@ primary character, because every join in the statement is a `LEFT JOIN`. A
 creator's own public creations appear too: excluding them made publishing
 unverifiable from the one surface meant to confirm it.
 
-Three orderings, each a plain sort over a real, trigger-maintained aggregate:
+Four feeds, each a plain sort over a real, trigger-maintained aggregate:
 
 | Tab | Ordering |
 | --- | --- |
 | Popular | `like_count` (saves) desc, then `chat_count`, then recency |
 | Most chatted | `chat_count` desc, then `message_count`, then recency |
 | New | `published_at` desc |
+| Following | `published_at` desc, scoped to creators this account follows |
 
 There is deliberately no "For You": every account receives the same rows for
 the same query, and no personalisation layer exists to make the label true.
+**Following** is the one feed that differs per account, and it differs for a
+reason the reader chose and can see. It is a `JOIN` onto `profile_follows`, not
+a filter applied afterwards — reading follow ids into the browser, fetching
+creations and narrowing them there would download work in order to discard it
+and would page incorrectly the moment it did. It is also **strictly
+chronological and never re-ranked**: an algorithm mixed into it would turn an
+instruction the reader gave into a suggestion the platform made, which is the
+failure mode that makes following worthless everywhere else. The two empty
+states are different problems and are told apart by a count of the viewer's own
+follows: "you are not following anyone yet" has an action, and "nobody you
+follow has published anything" does not. Following is never persisted as a
+saved ordering — it is a place somebody went, not a default they set, and
+remembering it would open the app on an empty feed for anybody who later
+unfollowed the two creators they had.
 Migration `0012` adds one partial index per ordering plus optional trigram
 indexes for search, and changes no table, column, constraint or policy.
 
@@ -591,6 +651,34 @@ one and writes nothing; only a creation this reader has never opened takes the
 create path, guarded by a ref rather than by state so two taps inside one frame
 produce one conversation. Beginning again is its own control beside it.
 
+### The main navigation
+
+The sidebar was the oldest surface left in the product: nine text glyphs
+(`⌂ ◫ ＋ ▤ ◉ ◎ ✎ ❏ ≛`) at whatever weight the font gave them, sitting beside
+pages built entirely out of Lucide. It has been redesigned rather than
+restructured — every destination is still there and still in the same relative
+order, because moving somebody's Saved library to teach them a new information
+architecture is not an improvement.
+
+What changed is that it now looks like the rest of Afterglow: one icon family at
+one size in one bounding box, three named groups (Browse, Your library, Account)
+instead of ten flat items, and one unmistakable active state — a soft two-stop
+panel with a warm rail on its leading edge, not a neon fill. Create keeps its
+place at the top as the only filled control. The account sits at the foot as an
+identity rather than a status pill: the same avatar and handle that appear on
+everything the account publishes, and tapping it opens the public profile.
+
+Below 760px the rail collapses to icons and the drawer restores the labels, as
+before. Rankings, Notifications and Profile are reachable in both.
+
+**Icons across the app converged on Lucide.** Fifty-three glyph controls in the
+shell alone — the chat header, the message actions, the composer, every drawer
+and picker, every toast dismissal — were replaced with the icon language the
+newer surfaces already used, at one stroke weight and one bounding box, each
+still carrying its own accessible label. The two marks that stayed are the
+brand's: the `logo-mark` and the gate's `◇`, which are Afterglow's own and are
+now simply not announced to a screen reader.
+
 ## Saving
 
 Save is the product's only affinity action, and it is one persistence model:
@@ -647,6 +735,136 @@ Adult mode permits consensual explicit fictional roleplay between adults. The sy
 - A follow row is visible to the two accounts it names and to nobody else. The follower count is public; the follower list is not.
 - Creator standings, achievements and activity are public aggregates over public work. None of them can be written by another account, and the ranking table can be written by nothing except the ranking function, which runs as its definer.
 
+## Notifications
+
+One event type: a creator you follow published something public. That narrowness
+is deliberate — a notification system whose first release already has six kinds
+has no way of learning which one people actually open, and every kind nobody
+opens costs the ones that matter. The shape is general, so the second type is a
+row rather than a redesign.
+
+**Generation is a database trigger, not a call in a route.** There are two
+routes that publish and there will be more; a creation that is public is a
+creation whose followers were told, and the database is where that stops
+depending on which endpoint was used. The trigger fires on the transition — was
+not published, now is — so editing a creation that is already public notifies
+nobody. It delegates to `fanout_creation_notifications`, which is ONE
+set-based `INSERT … SELECT` over `profile_follows`: a creator with fifty
+thousand followers is an insert over an index, not a loop, and emphatically not
+a browser walking a follower list. It is a separate function precisely so the
+day this needs to move off the publishing request it moves — a queue consumer
+calls exactly it with exactly its argument, the trigger stops calling it, and no
+row shape, route or component changes.
+
+**Nobody can write a notification.** There is no insert policy for
+`authenticated` at all: not for somebody else, not for yourself. The only writer
+is the fanout, running as its definer, which is what makes "a creator cannot
+spam their followers' bells" a property of the schema. Reading and marking read
+are restricted to your own rows, and the update grant covers `read_at` alone.
+
+**Generation is idempotent**, enforced by a unique `(user_id, dedupe_key)` index
+rather than by whoever writes the row. A creation that goes public, private and
+public again is one release; so is a retried request, a double-fired trigger,
+and eventually a re-run background job.
+
+**A notification never outlives what it points at.** A deleted creation takes
+its notifications with it through the foreign key. A creation merely turned
+private keeps its row — it may come back — and every read joins `characters` and
+requires it to still be public, so it vanishes from the list AND from the unread
+count. There is no such thing here as a row that leads nowhere, and no metadata
+about work that has been withdrawn.
+
+**Nothing is backfilled.** Following somebody does not deliver the back
+catalogue of releases nobody was told about at the time. Notifications begin
+when the system does.
+
+The bell and the list are two different requests because they have two very
+different costs. `?scope=unread` is what the shell asks on the way in: one count
+over a partial index that holds only unread rows, capped at 99 so it stops
+counting rather than walking a backlog somebody never opened. It never fetches
+the feed — downloading twenty notifications and their covers to decide whether
+to paint a four-pixel dot is the mistake the split exists to make impossible.
+One shared count serves every bell on screen (`src/lib/notification-state.ts`),
+so switching surfaces issues no request at all. The list is read only when
+somebody goes to look at it, and pages by timestamp cursor rather than offset so
+an arrival mid-scroll cannot shift a page boundary and hide a row.
+
+Tapping a notification opens the exact creation it is about. Not a filtered
+feed, not the creator's profile, not a modal describing it — it is a way back
+into the product, so anything between the tap and the thing is the feature
+failing.
+
+## Rankings
+
+Two boards at `?view=rankings`, and one metric: **user messages**, meaning turns
+a reader actually typed and sent into a published creation. Not the model's
+replies, not the opening greeting, not a regenerated alternative.
+`characters.message_count` counts all of those and is roughly double;
+`characters.user_message_count` is the number that means "people are using
+this", and the creator standing already uses it, so a creation's rank and its
+creator's rank cannot disagree about what they are counting.
+
+| Board | Ordering |
+| --- | --- |
+| Creations · Overall | user messages, then saves, then chats, then publication date, then id |
+| Creations · a genre | the same, within one controlled tag |
+| Creators | `creator_stats`: user messages, then followers, then saves, then published creations, then user id |
+
+`row_number` rather than `rank`, because a leaderboard with four creations at #1
+is not a leaderboard and the tie-breakers already make the order total — so the
+same input always produces the same board and a reader paging through it never
+sees a creation twice or misses one.
+
+**Categories are the controlled taxonomy's genre group and nothing else.**
+Creator hashtags are not eligible and cannot be: they are freeform text by
+design, and a ranking category anybody can mint by typing it is a ranking nobody
+can trust. The other taxonomy groups answer different questions — who the
+creation is centred on, who the reader plays as — and "the most-read Submissive
+creations" is not a board anybody is looking for. Fifteen genres is too many for
+tabs, so they are a picker.
+
+**Only public creations rank.** Not private, not drafts, and deliberately not
+unlisted: unlisted means "I have a link for you", and a leaderboard is the
+opposite of a link you were given. Every discovery index in the schema is
+already `WHERE visibility = 'public'`, so this agrees with the rest of the
+product rather than inventing a fourth meaning for eligibility.
+
+**A creation page shows one rank.** A creation that is #147 overall, #5 in
+Drama, #19 in Romance and #73 in Fantasy has exactly one interesting fact about
+it. The rule, in `bestRankBadge`: only 100 or better is eligible at all; a
+category rank beats the overall one; among categories the best number wins; ties
+break on the larger field first — fifth out of nine thousand beats fifth out of
+twelve — and then on the name, so the choice is total and the badge does not
+change between two page loads. Below the hundredth position the page says
+nothing, because a badge everybody carries is a label.
+
+**Every row is a destination**, which is the whole difference between a
+leaderboard and a table. The artwork and title open the creation, the byline
+opens its creator, a creator row opens their profile, and their most-read
+creation is a second link beside it. Follow works here through the same
+primitive it uses everywhere else. There is deliberately no chart, no sparkline
+and no delta — those would make it a dashboard, and nobody discovers anything on
+a dashboard. The top three get a warm mark; everybody else gets a number in the
+same quiet type, because a page where every row is gold is a page where nothing
+is.
+
+**Nothing is aggregated on view.** `creation_rankings` is materialised and
+rebuilt at most once every ten minutes behind the same single atomic claim
+`creator_stats` uses. `scripts/social-scale-benchmark.mjs` is what keeps that
+honest, and its first run is why the function looks the way it does: over
+120,000 creations the rebuild took **14.8 seconds**, inside whichever reader's
+request happened to win the claim. Two changes brought it to **1.7 seconds** —
+
+- **each board stores only its top 1,000.** Ranking everything is one pass;
+  WRITING it was 334,000 rows. Nothing needs that depth: the badge stops at 100
+  and nobody pages to the nine-hundredth entry. `rank_total` is still computed
+  over the whole eligible field, so "#5 of 12,480 in Drama" remains exactly
+  true.
+- **tags are expanded, not tested.** Each creation's own two or three tags are
+  matched against the fifteen-row category list, instead of evaluating an
+  `EXISTS` for every creation in every category — the same result, and roughly
+  two million fewer subquery probes.
+
 ## Verification
 
 ```bash
@@ -667,11 +885,21 @@ Without `TEST_DATABASE_URL` those tests skip and everything else still runs. CI 
 Two things a test suite cannot answer, and how they are answered instead:
 
 - **Layout.** Responsive behaviour was measured in Chromium against the real
-  components and the real stylesheets at 375, 390, 430, 768, 1280 and 1440,
-  checking for horizontal overflow, hit-area size and focus rings. That is
-  where the profile's two layout defects were found; neither was visible in the
-  source. The decisions those measurements depend on are held by
+  components and the real stylesheets at 375, 390, 430, 768, 1024, 1280 and
+  1440, checking for horizontal overflow, clipped text, hit-area size and focus
+  rings. That is where the profile's two layout defects were found, and where
+  this sprint found three more that were not visible in the source: the stat
+  row's value spilling 8px into the next column at 375, a page heading cut off
+  once the bell and "Mark all as read" shared its row, and a 20px tap target in
+  the sidebar. The decisions those measurements depend on are held by
   `tests/creator-page.test.ts` so a later edit that reintroduces one fails.
+- **Query plans at scale.** Whether a predicate is indexed is a claim about
+  what the PLANNER does, and it only has an opinion once the table is big
+  enough. `scripts/social-scale-benchmark.mjs` builds a throwaway database of
+  120,000 creations, 2,000 creators, 40,000 follows and ~790,000 notifications,
+  then prints the plan and the measured time for every statement the social
+  surfaces run, plus the query count and payload size of each page. Its first
+  run is why `refresh_creation_rankings` stores only the top of each board.
 - **Model behaviour.** Whether Concise actually produces a concise reply is a
   claim about what a model DOES, and it needs a paid endpoint. The offline half
   — that no rule in the prompt argues against the active mode, that the

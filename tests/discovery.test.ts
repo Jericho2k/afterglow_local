@@ -44,7 +44,9 @@ type Summary = {
 /** The route exactly as a caller writes it, with no opt-in added. */
 async function rawFeed(search = "") {
   const response = await discovery.GET(new Request(`http://test/api/discovery${search}`));
-  const body = await response.json() as { creations: Summary[]; hasMore: boolean; nextOffset: number };
+  const body = await response.json() as {
+    creations: Summary[]; hasMore: boolean; nextOffset: number; followingCreators: number | null;
+  };
   return { status: response.status, ...body };
 }
 
@@ -547,5 +549,112 @@ describe("saving from the feed", () => {
     expect(library.creations[0].savedByViewer).toBe(true);
     // The library is made of the same lean summaries, not full definitions.
     expect(library.creations[0]).not.toHaveProperty("greeting");
+  });
+});
+
+/**
+ * The Following feed.
+ *
+ * Following is worth nothing unless it changes what somebody sees, so this is
+ * the surface that gives it meaning. Three properties matter and each of them
+ * is a way the feature is usually got wrong:
+ *
+ *   IT IS EXACTLY WHO YOU FOLLOW. Not "creators like the ones you follow", and
+ *   not your follows blended with recommendations.
+ *
+ *   IT IS STRICTLY CHRONOLOGICAL. A reader asked for these creators; deciding
+ *   which of their releases they really meant is not the platform's to do.
+ *
+ *   IT IS FILTERED IN SQL. The alternative — read follows into the browser,
+ *   fetch creations, narrow them there — downloads work in order to discard it
+ *   and pages incorrectly the moment it does.
+ */
+describe("the following feed", () => {
+  const carol = "33333333-3333-4333-8333-333333333333";
+  const carolCreation = "aaaaaaaa-0000-4000-8000-000000000011";
+  const carolDraft = "aaaaaaaa-0000-4000-8000-000000000012";
+
+  beforeEach(async () => {
+    await query("INSERT INTO profiles (id,username,display_name) VALUES ($1,'carol','Carol')", [carol]);
+    // Published later than everything Alice has, so recency is observable.
+    await query(
+      `INSERT INTO characters (id,user_id,name,title,creation_type,visibility,published_at,tags,hashtags)
+       VALUES ($1,$2,'Elysia','Elysia','character','public',now() + interval '1 hour',$3::text[],$4::text[])`,
+      [carolCreation, carol, ["Drama"], []],
+    );
+    await query(
+      "INSERT INTO characters (id,user_id,name,title,visibility) VALUES ($1,$2,'Carol Draft','Carol Draft','private')",
+      [carolDraft, carol],
+    );
+  });
+
+  const following = () => rawFeed("?sort=following&adult=include");
+
+  it("is empty, and says which kind of empty, before anybody is followed", async () => {
+    const page = await following();
+    expect(page.creations).toEqual([]);
+    expect(page.followingCreators).toBe(0);
+  });
+
+  it("shows only the creators the reader actually follows", async () => {
+    await query("INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, carol]);
+    const page = await following();
+    expect(ids(page.creations)).toEqual([carolCreation]);
+    expect(page.followingCreators).toBe(1);
+    // Alice publishes plenty, and Bob does not follow her.
+    expect(ids(page.creations)).not.toContain(seraphine);
+  });
+
+  it("orders strictly by publication recency, newest first", async () => {
+    await query("INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2),($1,$3)", [bob, carol, alice]);
+    // Alice's most-saved creation is deliberately NOT the newest, so a feed
+    // that reranked by popularity would put it first.
+    await query("UPDATE characters SET published_at=now() - interval '2 hours' WHERE id=$1", [finalWar]);
+    await query("UPDATE characters SET published_at=now() - interval '1 hour' WHERE id=$1", [seraphine]);
+    await query("UPDATE characters SET published_at=now() - interval '3 hours' WHERE id=$1", [roommates]);
+    const page = await following();
+    expect(ids(page.creations)).toEqual([carolCreation, seraphine, finalWar, roommates]);
+  });
+
+  it("never includes a draft or an unlisted creation by a followed creator", async () => {
+    await query("INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2),($1,$3)", [bob, carol, alice]);
+    const listed = ids((await following()).creations);
+    expect(listed).not.toContain(carolDraft);
+    expect(listed).not.toContain(draft);
+    expect(listed).not.toContain(unlisted);
+  });
+
+  it("shows a newly published creation at the top", async () => {
+    await query("INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, alice]);
+    const fresh = "aaaaaaaa-0000-4000-8000-000000000013";
+    await query(
+      "INSERT INTO characters (id,user_id,name,title,visibility,published_at) VALUES ($1,$2,'Newest','Newest','public',now() + interval '2 hours')",
+      [fresh, alice],
+    );
+    expect(ids((await following()).creations)[0]).toBe(fresh);
+  });
+
+  it("stops showing a creator's work the moment they are unfollowed", async () => {
+    await query("INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, carol]);
+    expect(ids((await following()).creations)).toEqual([carolCreation]);
+    await query("DELETE FROM profile_follows WHERE follower_user_id=$1 AND creator_user_id=$2", [bob, carol]);
+    const page = await following();
+    expect(page.creations).toEqual([]);
+    expect(page.followingCreators).toBe(0);
+  });
+
+  it("pages in a stable order", async () => {
+    await query("INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2),($1,$3)", [bob, carol, alice]);
+    const first = await rawFeed("?sort=following&adult=include&limit=2");
+    expect(first.creations).toHaveLength(2);
+    expect(first.hasMore).toBe(true);
+    const second = await rawFeed(`?sort=following&adult=include&limit=2&offset=${first.nextOffset}`);
+    // No creation appears on both pages.
+    expect(ids(second.creations).filter((id) => ids(first.creations).includes(id))).toEqual([]);
+  });
+
+  it("does not count follows on the feeds that are not scoped to them", async () => {
+    await query("INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, carol]);
+    expect((await feed()).followingCreators).toBe(null);
   });
 });

@@ -274,15 +274,24 @@
 }
 .card:focus-within { border-color: var(--creation-accent-border, rgba(232, 121, 169, .4)); }
 
-.cardLink {
+/*
+ * The card body, and the link that covers it.
+ *
+ * The body is a plain element so the byline inside it can be a link to the
+ * creator; the title's anchor stretches over the whole card with a
+ * pseudo-element, which keeps "tap anywhere to open the creation" true while
+ * leaving exactly one anchor in the accessibility tree for it.
+ */
+.cardBody {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   color: inherit;
-  text-decoration: none;
 }
-.cardLink:focus-visible { outline: 2px solid var(--creation-accent-readable, var(--accent)); outline-offset: -2px; border-radius: 15px; }
+.cardLink { color: inherit; text-decoration: none; }
+.cardLink::after { content: ""; position: absolute; inset: 0; z-index: 1; border-radius: 15px; }
+.cardLink:focus-visible::after { outline: 2px solid var(--creation-accent-readable, var(--accent)); outline-offset: -2px; }
 
 .cover {
   position: relative;
@@ -339,7 +348,8 @@
 .saveButton {
   position: absolute;
   top: 6px; right: 6px;
-  z-index: 2;
+  /* Above the title's stretched link, which covers the whole card. */
+  z-index: 3;
   display: grid; place-items: center;
   width: 38px; height: 38px;
   border: 1px solid rgba(255, 255, 255, .14);
@@ -375,6 +385,15 @@
   min-width: 0;
   font-size: 9.5px; color: var(--faint);
 }
+/* Above the stretched link, so the creator's name is reachable on a card
+   whose whole surface opens the creation. */
+.bylineLink {
+  position: relative; z-index: 2;
+  align-self: flex-start; max-width: 100%;
+  text-decoration: none; border-radius: 8px;
+}
+.bylineLink:hover { color: #f0a6c6; }
+.bylineLink:focus-visible { outline: 2px solid var(--creation-accent-readable, var(--accent)); outline-offset: 2px; }
 .bylineAvatar {
   flex: none;
   width: 14px; height: 14px;
@@ -386,6 +405,8 @@
 
 .cardTitle {
   margin: 0;
+  /* The anchor is the title, so it inherits the title's type rather than
+     bringing an anchor's own. */
   font-family: var(--font-serif), Georgia, serif;
   font-size: 16.5px;
   font-weight: 600;

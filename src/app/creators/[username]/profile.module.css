@@ -405,11 +405,17 @@
 }
 
 @media (max-width: 619px) {
-  /* A phone reads top to bottom, so the three numbers get their own row each
-     rather than three cramped columns of two-character values. */
-  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 14px; }
-  .stat { flex-direction: column; align-items: flex-start; gap: 7px; }
-  .statIcon { width: 34px; height: 34px; border-radius: 11px; }
+  /*
+   * The three numbers, compacted.
+   *
+   * This rule used to also carry `.stat` and `.statIcon` overrides, and they
+   * did nothing at all: `.stat` is a class of the CREATOR module, which is
+   * where `CreatorStat` gets its class name from, so declaring it here
+   * generated a second, differently-hashed class that no element ever wore.
+   * That is why the mobile layout was never actually fixed on either surface.
+   * The real rule lives beside the component, in creator.module.css.
+   */
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 14px 10px; }
   .primaryAction { flex: 1; min-width: 0; }
   .identityActions { width: 100%; }
   .identityMeta { width: 100%; }

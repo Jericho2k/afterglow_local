@@ -16,27 +16,43 @@ import { canonicalTag, normalizeHashtag } from "./tags";
  * Each is a plain ordering over a real aggregate column, not a synthesised
  * score, so the label can be taken literally:
  *
- *   popular  — most saved, ties broken by chats
- *   chatted  — most chats started, ties broken by messages exchanged
- *   new      — most recently published
+ *   popular   — most saved, ties broken by chats
+ *   chatted   — most chats started, ties broken by messages exchanged
+ *   new       — most recently published
+ *   following — published by somebody this account follows, newest first
  *
- * There is no "For You". Every account receives the same rows for the same
- * query, and calling that personalised would be a lie.
+ * There is still no "For You". Every account receives the same rows for the
+ * same query, and calling that personalised would be a lie. `following` is the
+ * one ordering that differs per account, and it differs for a reason the reader
+ * chose and can see: they followed those creators.
+ *
+ * FOLLOWING IS NOT RE-RANKED. It is strictly `published_at DESC`, so it answers
+ * exactly one question — what have the people I follow put out, and when. An
+ * algorithm mixed into it would make Follow a suggestion rather than an
+ * instruction, which is the failure mode that makes following worthless
+ * everywhere else.
  */
-export const discoverySorts = ["popular", "chatted", "new"] as const;
+export const discoverySorts = ["popular", "chatted", "new", "following"] as const;
 export type DiscoverySort = typeof discoverySorts[number];
 
 export const discoverySortLabels: Record<DiscoverySort, string> = {
   popular: "Popular",
   chatted: "Most chatted",
   new: "New",
+  following: "Following",
 };
 
 export const discoverySortHints: Record<DiscoverySort, string> = {
   popular: "The most saved creations on Afterglow.",
   chatted: "Where the most stories have been started.",
   new: "The most recently published creations.",
+  following: "New work from the creators you follow, newest first.",
 };
+
+/** True when the feed is scoped to who the reader follows. */
+export function isFollowingSort(sort: DiscoverySort) {
+  return sort === "following";
+}
 
 export const defaultDiscoverySort: DiscoverySort = "popular";
 
@@ -155,9 +171,20 @@ export type DiscoveryPreferences = {
 
 export const emptyDiscoveryPreferences: DiscoveryPreferences = { tags: [], types: [], includeAdult: false };
 
-/** The part of a query worth remembering for next time. */
+/**
+ * The part of a query worth remembering for next time.
+ *
+ * `following` is deliberately never stored. It is a place somebody went, not a
+ * default they set: remembering it would open Afterglow on an empty feed for
+ * anybody who later unfollowed the two creators they had, and the fix would not
+ * be discoverable. The ordering they last chose from the general feed is kept
+ * instead.
+ */
 export function preferencesFromQuery(query: DiscoveryQuery): DiscoveryPreferences {
-  return { sort: query.sort, tags: [...query.tags], types: [...query.types], includeAdult: query.includeAdult };
+  return {
+    sort: isFollowingSort(query.sort) ? undefined : query.sort,
+    tags: [...query.tags], types: [...query.types], includeAdult: query.includeAdult,
+  };
 }
 
 /**

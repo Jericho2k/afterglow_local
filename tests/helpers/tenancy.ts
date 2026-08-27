@@ -38,6 +38,11 @@ export const migrationFiles = [
   "0007_productization_sprint_1.sql",
   "0008_canonical_generated_user_messages.sql",
   "0009_public_character_profile.sql",
+  // 0010 is storage buckets, which the shim does not provide; 0011 and 0012
+  // are ordinary schema and belong here, or the suite is testing a
+  // `characters` table that production does not have.
+  "0011_creation_model.sql",
+  "0012_discovery_feed.sql",
   "0013_scene_state.sql",
   "0014_worlds_v2.sql",
   "0015_rich_content.sql",
@@ -47,6 +52,7 @@ export const migrationFiles = [
   "0019_conversation_worlds.sql",
   "0020_scene_physical_state.sql",
   "0021_creator_profile_v2.sql",
+  "0022_social_discovery.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {

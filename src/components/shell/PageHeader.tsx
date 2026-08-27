@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { AppMenuButton } from "@/components/ui";
+import { NotificationBell } from "./NotificationBell";
 import styles from "./shell.module.css";
 
 /**
@@ -28,6 +29,14 @@ export function PageHeader({ eyebrow, title, lede, onOpenMenu, actions }: {
       <h1 className={styles.title}>{title}</h1>
       {lede && <p className={styles.lede}>{lede}</p>}
     </div>
-    {actions && <div className={styles.headerActions}>{actions}</div>}
+    {/* The bell rides in every page header rather than in a chrome layer of
+        its own, for the same reason the menu control does: this shell has one
+        header per surface and adding a second bar above it would be a second
+        thing to keep in step. It costs no request — one shared count serves
+        every bell that mounts. */}
+    <div className={styles.headerActions}>
+      {actions}
+      <NotificationBell />
+    </div>
   </header>;
 }

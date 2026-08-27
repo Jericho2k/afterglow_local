@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { AtSign, Compass, ExternalLink, MessageCircle, Sparkles, TrendingUp, UserRound, Users } from "lucide-react";
+import { AtSign, Camera, Compass, ExternalLink, ImagePlus, MessageCircle, Sparkles, TrendingUp, UserRound, Users, X } from "lucide-react";
 import type { Profile } from "@/lib/types";
 import type { AchievementState } from "@/lib/achievements";
 import { profileBorder, profileBorders, borderVariables, type ProfileBorderId } from "@/lib/cosmetics";
@@ -16,18 +16,28 @@ import { PageHeader } from "./PageHeader";
 import styles from "./shell.module.css";
 
 /**
- * Profile — the creator's own view of their identity.
+ * Edit profile — the creator's own view of their identity.
  *
- * This used to be a form and nothing else, with a caption explaining that
- * Afterglow invents no follower counts, no rank and no analytics. Those numbers
- * are real now, so they are shown; the principle behind that caption has not
- * changed at all. Every figure here comes from the same aggregate the public
- * page reads, every achievement is a threshold on one of them, and a border
- * this account has not earned is not offered — the server checks that again on
- * save, so a client that offered one anyway would still not be able to equip it.
+ * Two things changed here, and they are the same thing twice.
  *
- * Setting a username is still the single act that makes a profile public, and
- * it is still given its own explanation rather than a nine-pixel caption.
+ * FIRST, this is no longer what "Profile" means. Profile is the public page at
+ * /creators/{username}, because that is what a creator actually wants to look
+ * at: how they appear to everybody else. This is the surface that CHANGES it,
+ * reached from a button on that page, and it says so.
+ *
+ * SECOND, there is one avatar. This page used to draw a banner with the
+ * creator's avatar and its earned ring overlapping it, and then — directly
+ * below — a second, plain avatar with no ring at all, which was the one the
+ * file picker actually wrote to. Two pictures of the same person, one wearing
+ * the cosmetic and one not, and no way to tell which was the truth. The header
+ * below IS the editable header: it looks like the public one because it is
+ * built from the same components, and every control writes to the thing it is
+ * drawn on top of.
+ *
+ * Every figure here comes from the same aggregate the public page reads, every
+ * achievement is a threshold on one of them, and a border this account has not
+ * earned is not offered — the server checks that again on save, so a client
+ * that offered one anyway would still not be able to equip it.
  */
 
 type OwnProfile = Profile & {
@@ -42,10 +52,6 @@ type Standing = {
   achievements: AchievementState[];
   unlockedBorders: string[];
 };
-
-function initials(name: string) {
-  return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
-}
 
 export function ProfileView({ profile, onSaved, onOpenMenu }: {
   profile: Profile | null;
@@ -117,7 +123,6 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
     catch (reason) { setError(reason instanceof Error ? reason.message : "Image upload failed"); }
   }
 
-  const avatarSrc = avatarSource(profileAvatarBucket, avatarPath, "");
   const coverSrc = avatarSource(profileAvatarBucket, coverPath, "");
   const isPublic = Boolean(profile?.username);
   const unlocked = new Set(standing?.unlockedBorders ?? ["default"]);
@@ -128,9 +133,14 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
     <div className={styles.inner}>
       <PageHeader
         eyebrow="Your Afterglow account"
-        title="Profile"
+        title="Edit profile"
         lede="Your creator identity — the name, picture and standing that appear beside anything you publish. It is separate from the personas you play as inside stories."
         onOpenMenu={onOpenMenu}
+        actions={isPublic && profile?.username
+          ? <Link className={styles.profileLink} href={`/creators/${profile.username}`} style={{ marginTop: 0 }}>
+              <ExternalLink size={14} aria-hidden />View public profile
+            </Link>
+          : undefined}
       />
 
       <div className={styles.stack} style={{ maxWidth: 720 }}>
@@ -151,51 +161,66 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
             Messages counts what readers have sent to your published creations. Rank is ordered by that number, with
             followers, saves and published creations breaking ties.
           </p>
-          {isPublic && <Link className={styles.profileLink} href={`/creators/${profile?.username}`}>
-            View your public profile<ExternalLink size={14} aria-hidden />
-          </Link>}
+
         </section>}
 
         <section className={styles.card}>
-          {/* The banner, previewed at the shape it will actually occupy. */}
-          <div className={styles.coverField}>
-            <div className={styles.coverPreview}>
+          {/*
+            * The editable header, which is the header.
+            *
+            * Same banner proportions, same overlapping avatar, same earned ring
+            * — because it is the same `CreatorAvatar` the public page draws,
+            * given the border currently selected below. Change a ring and this
+            * changes; change the picture and this changes. There is nothing
+            * else on the page claiming to be the avatar, so there is nothing
+            * else for it to disagree with.
+            */}
+          <div className={styles.editHeader}>
+            <div className={styles.editCover}>
               {coverSrc ? <img src={coverSrc} alt="" /> : <span className={styles.coverEmpty} aria-hidden />}
-              <div className={styles.coverAvatar}>
-                <CreatorAvatar avatarPath={avatarPath} name={displayName || "You"} border={profileBorder(border)} size={64} />
-              </div>
-            </div>
-            <div className={styles.coverActions}>
-              <label className={`${uiStyles.button} ${uiStyles.secondary}`} style={{ cursor: "pointer" }}>
-                {coverSrc ? "Change banner" : "Add banner"}
+              <div className={styles.editCoverScrim} aria-hidden />
+              <label className={styles.editCoverButton}>
+                <ImagePlus size={14} aria-hidden />
+                <span>{coverSrc ? "Change cover" : "Add cover"}</span>
                 <input
-                  type="file" accept="image/png,image/jpeg,image/webp,image/gif" style={{ display: "none" }}
+                  type="file" accept="image/png,image/jpeg,image/webp,image/gif"
                   onChange={async (event) => { const file = event.target.files?.[0]; event.target.value = ""; await pickImage(file, setCoverPath); }}
                 />
               </label>
-              {coverSrc && <button className={`${uiStyles.button} ${uiStyles.secondary}`} onClick={() => setCoverPath("")}>Remove</button>}
+              {coverSrc && <button
+                type="button"
+                className={styles.editCoverRemove}
+                aria-label="Remove your cover image"
+                onClick={() => setCoverPath("")}
+              ><X size={14} aria-hidden /></button>}
             </div>
-          </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 16, margin: "18px 0" }}>
-            <span className={`${styles.avatar} ${styles.avatarLarge}`} aria-hidden>
-              {avatarSrc ? <img src={avatarSrc} alt="" /> : initials(displayName)}
-            </span>
-            <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
-              <label className={`${uiStyles.button} ${uiStyles.secondary}`} style={{ cursor: "pointer", justifySelf: "start" }}>
-                Choose image
+            <div className={styles.editIdentity}>
+              <label className={styles.editAvatar} title="Change your profile picture">
+                <CreatorAvatar avatarPath={avatarPath} name={displayName || "You"} border={profileBorder(border)} size={88} verified={isPublic} />
+                <span className={styles.editAvatarBadge} aria-hidden><Camera size={15} /></span>
+                <span className={styles.srOnly}>Change your profile picture</span>
                 <input
-                  type="file" accept="image/png,image/jpeg,image/webp,image/gif" style={{ display: "none" }}
+                  type="file" accept="image/png,image/jpeg,image/webp,image/gif"
                   onChange={async (event) => { const file = event.target.files?.[0]; event.target.value = ""; await pickImage(file, setAvatarPath); }}
                 />
               </label>
-              <span className={styles.fieldHint}>
-                {isPublic
-                  ? <><Compass size={12} aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }} />Visible to anyone who opens your creations.</>
-                  : <><UserRound size={12} aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }} />Private until you choose a username.</>}
-              </span>
+
+              <div className={styles.editIdentityCopy}>
+                {/* Live, from the fields below, so the header is a preview of
+                    the real page rather than a snapshot of the last save. */}
+                <strong>{displayName || "Your display name"}</strong>
+                <small>{username ? `@${username}` : "No public handle yet"}</small>
+                {bio.trim() && <p>{bio.trim()}</p>}
+              </div>
             </div>
           </div>
+
+          <p className={styles.fieldHint} style={{ marginTop: 14 }}>
+            {isPublic
+              ? <><Compass size={12} aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }} />This is how you appear on everything you publish.</>
+              : <><UserRound size={12} aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }} />Publish a creation and this becomes your public creator page.</>}
+          </p>
 
           <div className={styles.stack}>
             <div className={styles.field}>
@@ -218,7 +243,7 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
                 />
               </div>
               <span className={styles.fieldHint}>
-                Choosing a username opts this profile into public creator attribution: your name and picture appear on the creations and worlds you publish, and your profile gets a page of its own. Leave it blank to stay anonymous — your work still publishes, without a byline.
+                Your handle is the address of your public creator page, and it is what readers see beside everything you publish. Publishing anything publicly gives you one automatically; this is where you change it to something you would rather be called.
               </span>
             </div>
 
