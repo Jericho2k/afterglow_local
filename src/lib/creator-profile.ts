@@ -270,7 +270,7 @@ export async function creatorProfilePayload(
 ): Promise<CreatorProfilePayload> {
   const creatorId = String(input.row.id);
   const owner = creatorId === input.viewerId;
-  const standing = await creatorStandingFor(client, creatorId, input.viewerId);
+  const standing = await creatorStandingFor(client, creatorId);
 
   const [creations, worlds, topCharacters, activity, follows] = await Promise.all([
     creatorCreations(client, { creatorId, viewerId: input.viewerId, sort: input.sort, filter: input.filter }),

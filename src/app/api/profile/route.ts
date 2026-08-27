@@ -1,5 +1,5 @@
 import { asUser, creationSummaryFromRow, profileFromRow } from "@/lib/db";
-import { creatorStandingFor } from "@/lib/creator-stats";
+import { creatorStanding, creatorStandingFor, refreshCreatorStatsIfStale, syncOwnCreatorStanding } from "@/lib/creator-stats";
 import { isProfileBorderId, unlockedBorders } from "@/lib/cosmetics";
 import { profileSchema } from "@/lib/schemas";
 import { currentAccount, unauthorized } from "@/lib/session";
@@ -18,6 +18,12 @@ export async function GET(request?: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
   const username = request ? new URL(request.url).searchParams.get("username")?.trim().toLowerCase() : "";
+  if (!username) {
+    // Own profile: refresh and record in their own transactions first, for the
+    // reason spelled out in `refreshCreatorStatsIfStale`.
+    await refreshCreatorStatsIfStale(account.id);
+    await syncOwnCreatorStanding(account.id, await asUser(account.id, (client) => creatorStanding(client, account.id)));
+  }
   const payload = await asUser(account.id, async (client) => {
     const profile = username
       ? await client.query("SELECT * FROM profiles WHERE username=$1", [username])
@@ -33,10 +39,10 @@ export async function GET(request?: Request) {
        * is the surface a creator uses to CHANGE their profile, and it cannot
        * offer a border or a featured achievement without knowing which of them
        * are genuinely unlocked. It is also where a creator's own achievements
-       * and milestones get recorded — see `creatorStandingFor`, which syncs
-       * only for the account it belongs to.
+       * and milestones get recorded — by `syncOwnCreatorStanding` above,
+       * outside this transaction.
        */
-      const standing = await creatorStandingFor(client, account.id, account.id);
+      const standing = await creatorStandingFor(client, account.id);
       return {
         profile: publicProfile(row),
         creations: [],
@@ -117,7 +123,7 @@ export async function PATCH(request: Request) {
        * error — the client may simply be stale — so the unearned choice is
        * dropped and the rest of the save proceeds.
        */
-      const standing = await creatorStandingFor(client, account.id, account.id);
+      const standing = await creatorStandingFor(client, account.id);
       const allowedBorders = unlockedBorders(standing.metrics, standing.standing.rankTotal);
       const border = isProfileBorderId(value.profileBorder) && allowedBorders.includes(value.profileBorder)
         ? value.profileBorder

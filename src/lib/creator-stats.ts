@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
+import { asUser } from "./db";
 import { achievementStates, achievements, rankPercentile, type CreatorMetrics } from "./achievements";
 import { unlockedBorders } from "./cosmetics";
 
@@ -49,23 +50,35 @@ export const unrankedStanding: CreatorStandingRow = {
 /**
  * Rebuilds the standings when they have gone stale, at most once per window.
  *
- * Returns whether this caller actually did the work, which is only interesting
- * to a test — the caller's own read happens afterwards either way.
+ * Runs in a TRANSACTION OF ITS OWN, and that isolation is the point rather than
+ * a detail. PostgreSQL aborts a transaction after any failed statement, so a
+ * deployment that has not applied 0021 yet — where `refresh_creator_stats` does
+ * not exist — would have this failure take the rest of the request down with
+ * it, and a `try`/`catch` around the statement would not save the page it was
+ * written to save. The same reasoning as the locked-world probe in the creation
+ * route: a call that might not resolve does not belong inside somebody else's
+ * transaction.
  *
- * Deliberately never throws. A deployment that has not applied 0021 yet, or a
- * transient failure inside the aggregate, must cost a slightly stale rank and
- * nothing else: a profile page that fails because a ranking could not be
- * refreshed would be a worse product than one showing yesterday's number.
+ * Never throws either way. A profile that cannot refresh a ranking shows a
+ * slightly stale rank, which is a far better product than one that fails.
+ *
+ * Returns whether this caller actually did the work, which is only interesting
+ * to a test — the read happens afterwards regardless.
  */
-export async function refreshCreatorStatsIfStale(client: PoolClient, now = Date.now()) {
+export async function refreshCreatorStatsIfStale(userId: string, now = Date.now()) {
   try {
-    const claimed = await client.query(
-      "UPDATE creator_stats_refresh SET refreshed_at=now() WHERE id=true AND refreshed_at < $1 RETURNING refreshed_at",
-      [new Date(now - maxAgeMs).toISOString()],
-    );
-    if (!claimed.rowCount) return false;
-    await client.query("SELECT public.refresh_creator_stats()");
-    return true;
+    return await asUser(userId, async (client) => {
+      // Whoever wins this single atomic UPDATE does the work; every other
+      // concurrent reader gets false and serves what is already there. No lock,
+      // no queue, no background worker.
+      const claimed = await client.query(
+        "UPDATE creator_stats_refresh SET refreshed_at=now() WHERE id=true AND refreshed_at < $1 RETURNING refreshed_at",
+        [new Date(now - maxAgeMs).toISOString()],
+      );
+      if (!claimed.rowCount) return false;
+      await client.query("SELECT public.refresh_creator_stats()");
+      return true;
+    });
   } catch {
     return false;
   }
@@ -259,21 +272,38 @@ export async function creatorHasSyncedBefore(client: PoolClient, userId: string)
 }
 
 /**
+ * Recording what a creator has newly been observed to hold.
+ *
+ * Its own transaction, for the same reason the refresh has one: this WRITES,
+ * and a write that fails must cost the creator a delayed badge rather than
+ * costing them their profile page. Called only for the creator's own session —
+ * a visitor triggers nothing at all.
+ *
+ * The first sync for an account records what is already true WITHOUT
+ * announcing it, which is what stops a profile that has existed for a year from
+ * reporting that it reached every one of its milestones this afternoon.
+ */
+export async function syncOwnCreatorStanding(userId: string, standing: CreatorStandingRow) {
+  try {
+    await asUser(userId, async (client) => {
+      const announce = await creatorHasSyncedBefore(client, userId);
+      await syncCreatorAchievements(client, userId, standing, { announce });
+      await syncCreatorMilestones(client, userId, standing, { announce });
+    });
+  } catch (error) {
+    console.error("Creator achievements could not be recorded", error);
+  }
+}
+
+/**
  * Everything a profile needs about standing, in one pass.
  *
- * The sync half runs only for the creator's own session; a visitor reads what
- * is already stored and writes nothing at all.
+ * Pure reads. The refresh and the sync both live outside this call and outside
+ * the caller's transaction; see `refreshCreatorStatsIfStale` for why that
+ * separation is load-bearing rather than tidy.
  */
-export async function creatorStandingFor(client: PoolClient, creatorId: string, viewerId: string) {
-  await refreshCreatorStatsIfStale(client);
+export async function creatorStandingFor(client: PoolClient, creatorId: string) {
   const standing = await creatorStanding(client, creatorId);
-  if (creatorId === viewerId) {
-    // The first sync for an account records what is already true without
-    // announcing it; every later one is real history.
-    const announce = await creatorHasSyncedBefore(client, creatorId);
-    await syncCreatorAchievements(client, creatorId, standing, { announce }).catch(() => undefined);
-    await syncCreatorMilestones(client, creatorId, standing, { announce }).catch(() => undefined);
-  }
   const unlockedAt = new Map<string, string>();
   const recorded = await client.query("SELECT achievement_id,unlocked_at FROM profile_achievements WHERE user_id=$1", [creatorId]);
   for (const row of recorded.rows) unlockedAt.set(String(row.achievement_id), new Date(String(row.unlocked_at)).toISOString());
