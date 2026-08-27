@@ -41,10 +41,15 @@ const sceneState = await import("@/app/api/scene-state/route");
 const backup = await import("@/app/api/backup/route");
 const usage = await import("@/app/api/usage/route");
 const memoryFeedback = await import("@/app/api/memory-feedback/route");
+const conversationWorlds = await import("@/app/api/conversations/[id]/worlds/route");
+const follows = await import("@/app/api/follows/route");
+const creators = await import("@/app/api/creators/[username]/route");
 
 const aliceCharacter = "aaaaaaaa-0000-4000-8000-000000000001";
 const alicePublic = "aaaaaaaa-0000-4000-8000-000000000002";
 const aliceConversation = "cccccccc-0000-4000-8000-000000000001";
+const aliceWorld = "dddddddd-0000-4000-8000-000000000001";
+const bobWorld = "dddddddd-0000-4000-8000-000000000002";
 
 function post(url: string, body: unknown) {
   return new Request(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -77,6 +82,8 @@ beforeEach(async () => {
 
   await query("INSERT INTO characters (id,name,user_id,visibility) VALUES ($1,'Alice Private',$3,'private'),($2,'Alice Public',$3,'public')", [aliceCharacter, alicePublic, alice]);
   await query("INSERT INTO conversations (id,character_id,user_id,title) VALUES ($1,$2,$3,'Alice chat')", [aliceConversation, aliceCharacter, alice]);
+  await query("INSERT INTO worlds (id,user_id,name,description,content,visibility) VALUES ($1,$2,'Alice World','Hers','Alice canon','private')", [aliceWorld, alice]);
+  await query("INSERT INTO worlds (id,user_id,name,description,content,visibility) VALUES ($1,$2,'Bob World','His','Bob canon','private')", [bobWorld, bob]);
   await query("INSERT INTO messages (id,conversation_id,user_id,role,content,generation_started_at) VALUES ($4,$1,$2,'user','Private words',now())", [aliceConversation, alice, null, crypto.randomUUID()]);
   await query("INSERT INTO memories (id,character_id,conversation_id,user_id,content) VALUES ($4,$1,$2,$3,'Alice memory')", [aliceCharacter, aliceConversation, alice, crypto.randomUUID()]);
   await query("INSERT INTO usage_events (id,user_id,model,usage_type,estimated_cost_usd) VALUES ($2,$1,'deepseek-v4-flash','chat',2.5)", [alice, crypto.randomUUID()]);
@@ -91,6 +98,10 @@ describe("unauthenticated access", () => {
       backup.GET(),
       usage.GET(new Request("http://test/api/usage")),
       chat.POST(post("http://test/api/chat", { conversationId: aliceConversation, content: "hi", action: "send" })),
+      conversationWorlds.GET(new Request("http://test/api/conversations/x/worlds"), { params: Promise.resolve({ id: aliceConversation }) }),
+      conversationWorlds.POST(post("http://test/api/conversations/x/worlds", { worldId: aliceWorld }), { params: Promise.resolve({ id: aliceConversation }) }),
+      follows.POST(post("http://test/api/follows", { username: "alice_public" })),
+      creators.GET(new Request("http://test/api/creators/alice_public"), { params: Promise.resolve({ username: "alice_public" }) }),
     ]);
     for (const response of responses) expect(response.status).toBe(401);
   });
@@ -426,6 +437,116 @@ describe("public characters", () => {
  * everything they own, and show them nothing of anybody else's. It also has to
  * stay lean — a page of cards must not carry a page of hidden definitions.
  */
+/**
+ * A story's worlds, at the route boundary.
+ *
+ * The relation and its rules are covered in tests/conversation-worlds.test.ts
+ * and tests/tenancy.test.ts; what belongs here is the boundary the routes are
+ * responsible for — that a request naming somebody else's story or somebody
+ * else's world is refused rather than partially honoured.
+ */
+describe("a story's worlds", () => {
+  const params = (id: string) => ({ params: Promise.resolve({ id }) });
+
+  it("attaches a world the caller may read, to a story the caller owns", async () => {
+    account = { id: alice, email: null };
+    const response = await conversationWorlds.POST(
+      post("http://test/api/conversations/x/worlds", { worldId: aliceWorld }),
+      params(aliceConversation),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.worlds.map((world: { name: string }) => world.name)).toContain("Alice World");
+    // And it changed the STORY, never the creation.
+    const creationWorlds = await query("SELECT COUNT(*) count FROM character_worlds WHERE character_id=$1", [aliceCharacter]);
+    expect(Number(creationWorlds.rows[0].count)).toBe(0);
+  });
+
+  it("refuses a world the caller may not read", async () => {
+    account = { id: alice, email: null };
+    const response = await conversationWorlds.POST(
+      post("http://test/api/conversations/x/worlds", { worldId: bobWorld }),
+      params(aliceConversation),
+    );
+    expect(response.status).toBe(403);
+    const attached = await query("SELECT COUNT(*) count FROM conversation_worlds WHERE conversation_id=$1", [aliceConversation]);
+    expect(Number(attached.rows[0].count)).toBe(0);
+  });
+
+  it("refuses a story the caller does not own", async () => {
+    account = { id: bob, email: null };
+    const read = await conversationWorlds.GET(new Request("http://test/api/conversations/x/worlds"), params(aliceConversation));
+    expect(read.status).toBe(404);
+    const write = await conversationWorlds.POST(
+      post("http://test/api/conversations/x/worlds", { worldId: bobWorld }),
+      params(aliceConversation),
+    );
+    expect(write.status).toBe(404);
+  });
+
+  it("refuses a malformed id before looking anything up", async () => {
+    account = { id: alice, email: null };
+    const response = await conversationWorlds.POST(
+      post("http://test/api/conversations/x/worlds", { worldId: "not-a-uuid" }),
+      params(aliceConversation),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("detaches, and remembers that the story deliberately has none", async () => {
+    account = { id: alice, email: null };
+    await conversationWorlds.POST(post("http://test/api/conversations/x/worlds", { worldId: aliceWorld }), params(aliceConversation));
+    const response = await conversationWorlds.DELETE(
+      new Request(`http://test/api/conversations/x/worlds?worldId=${aliceWorld}`, { method: "DELETE" }),
+      params(aliceConversation),
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).worlds).toEqual([]);
+    const flag = await query("SELECT worlds_initialized FROM conversations WHERE id=$1", [aliceConversation]);
+    expect(flag.rows[0].worlds_initialized).toBe(true);
+  });
+});
+
+/**
+ * Following, at the route boundary.
+ */
+describe("following a creator", () => {
+  beforeEach(async () => {
+    await query("INSERT INTO profiles (id,username,display_name) VALUES ($1,'alice_public','Alice') ON CONFLICT (id) DO UPDATE SET username='alice_public'", [alice]);
+    await query("INSERT INTO profiles (id,display_name) VALUES ($1,'Bob') ON CONFLICT (id) DO NOTHING", [bob]);
+  });
+
+  it("follows, unfollows, and answers with the real count", async () => {
+    account = { id: bob, email: null };
+    const followed = await follows.POST(post("http://test/api/follows", { username: "alice_public" }));
+    expect(followed.status).toBe(200);
+    expect(await followed.json()).toMatchObject({ following: true });
+
+    const unfollowed = await follows.DELETE(new Request("http://test/api/follows?username=alice_public", { method: "DELETE" }));
+    expect(await unfollowed.json()).toMatchObject({ following: false });
+  });
+
+  it("is idempotent, so a double tap is one follow", async () => {
+    account = { id: bob, email: null };
+    await follows.POST(post("http://test/api/follows", { username: "alice_public" }));
+    await follows.POST(post("http://test/api/follows", { username: "alice_public" }));
+    const rows = await query("SELECT COUNT(*) count FROM profile_follows WHERE creator_user_id=$1", [alice]);
+    expect(Number(rows.rows[0].count)).toBe(1);
+  });
+
+  it("refuses a self-follow", async () => {
+    account = { id: alice, email: null };
+    const response = await follows.POST(post("http://test/api/follows", { username: "alice_public" }));
+    expect(response.status).toBe(400);
+  });
+
+  it("refuses a creator who has not chosen a public username", async () => {
+    account = { id: alice, email: null };
+    const response = await follows.POST(post("http://test/api/follows", { username: "nobody_here" }));
+    expect(response.status).toBe(404);
+  });
+});
+
 describe("owner management list", () => {
   const bobCharacter = "bbbbbbbb-0000-4000-8000-000000000001";
 
