@@ -63,7 +63,19 @@ export async function creatorCreations(
      LIMIT ${creationsPerPage} OFFSET $3`,
     values,
   );
-  return result.rows.map((row) => creationSummaryFromRow(row, input.viewerId));
+  /*
+   * "Messages" means one thing on this page.
+   *
+   * A card ordinarily shows `message_count`, which is every message row — the
+   * reader's turns, the model's replies and each regenerated alternative. The
+   * creator metrics beside this grid, and the Top Characters panel next to it,
+   * are USER messages. Two numbers under the same word on one page would be a
+   * page that contradicts itself, so the profile's grid shows the creator
+   * metric and says so here rather than aliasing it in the SQL where nobody
+   * would see the substitution. Discovery is untouched and keeps its own
+   * meaning of the word.
+   */
+  return result.rows.map((row) => creationSummaryFromRow({ ...row, message_count: row.user_message_count }, input.viewerId));
 }
 
 /**

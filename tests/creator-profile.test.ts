@@ -276,6 +276,19 @@ describe("profile borders", () => {
 });
 
 describe("what a profile actually selects", () => {
+  it("shows the same 'messages' the panel beside it shows", async () => {
+    // `message_count` is every message row and is roughly double; the grid, the
+    // Top Characters panel and the stat row on this page all mean USER
+    // messages, so they cannot disagree about the number under one word.
+    await makeCreation(creator, "Elysia", { messages: 500 });
+    const [card] = await asUser(reader, (client) => creatorCreations(client, {
+      creatorId: creator, viewerId: reader, sort: "popular", filter: "all",
+    }));
+    const [top] = await asUser(reader, (client) => creatorTopCharacters(client, creator, reader));
+    expect(card.messageCount).toBe(500);
+    expect(top.messages).toBe(500);
+  });
+
   it("orders creations by the same metric the headline uses", async () => {
     await makeCreation(creator, "Quiet one", { messages: 5 });
     await makeCreation(creator, "Popular one", { messages: 5000 });
