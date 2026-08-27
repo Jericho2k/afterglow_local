@@ -60,6 +60,7 @@
  * Rank
  * ------------------------------------------------------------------------ */
 .medal {
+  position: relative;
   display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid rgba(240, 201, 135, .34);
   border-radius: 999px;
@@ -83,6 +84,18 @@
  * row read as a record and not as a game.
  * ------------------------------------------------------------------------ */
 .badge {
+  /*
+   * Positioned so the screen-reader text inside it is contained BY IT.
+   *
+   * `.srOnly` is absolutely positioned, and an absolutely positioned element
+   * whose containing block sits outside a scroll container is not clipped by
+   * that container. Inside the horizontally scrolling badge row that meant the
+   * fourth and fifth badges' hidden labels sat at x≈500 on a 375px screen and
+   * pushed the DOCUMENT's scrollable width out with them — a page that scrolled
+   * sideways for text nobody could see. One line of `position` keeps them where
+   * they belong.
+   */
+  position: relative;
   display: flex; flex-direction: column; align-items: center; gap: 7px;
   text-align: center; min-width: 0;
 }

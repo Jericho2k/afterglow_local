@@ -18,6 +18,17 @@
   background: #0b080d;
   color: var(--ink, #f6eff4);
   padding-bottom: max(48px, env(safe-area-inset-bottom));
+  /*
+   * One measure for the whole page.
+   *
+   * Every band below — identity, bio, stats, achievements, body — is centred
+   * inside the same width with the same gutter, so the avatar, the first stat
+   * and the first creation card share one left edge. They did not: the identity
+   * row was centred at 1180 while the cards were pinned to the gutter, which
+   * put a fifty-pixel step between the name and the numbers underneath it.
+   */
+  --page-measure: 1244px;
+  --page-gutter: clamp(16px, 4vw, 32px);
 }
 
 /* ---------------------------------------------------------------------------
@@ -52,9 +63,8 @@
   grid-template-columns: auto minmax(0, 1fr);
   align-items: end;
   gap: 14px clamp(14px, 3vw, 22px);
-  max-width: 1180px; margin: 0 auto;
-  padding: 0 clamp(16px, 4vw, 32px);
-  margin-top: clamp(-56px, -9vw, -44px);
+  max-width: var(--page-measure); margin: clamp(-56px, -9vw, -44px) auto 0;
+  padding: 0 var(--page-gutter);
 }
 .identityCopy { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding-bottom: 4px; }
 .name {
@@ -111,10 +121,11 @@
 .identityMeta strong { color: var(--ink, #f6eff4); }
 
 .bio {
-  max-width: 1180px; margin: 16px auto 0;
-  padding: 0 clamp(16px, 4vw, 32px);
+  max-width: var(--page-measure); margin: 16px auto 0;
+  padding: 0 var(--page-gutter);
+  /* The paragraph itself keeps a readable measure inside that band. */
+  text-wrap: pretty;
   color: #cbbcc6; font-size: 14px; line-height: 1.6;
-  max-width: min(1180px, 74ch);
   white-space: pre-wrap;
 }
 
@@ -124,21 +135,28 @@
 .stats {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  max-width: 1180px; margin: 24px auto 0;
-  padding: 18px clamp(16px, 4vw, 24px);
+  /*
+   * A card's EDGE sits where the page's text starts, and its own padding
+   * insets its contents from there — which is what makes the avatar above it
+   * and this card's left edge share a line at every width.
+   */
+  width: calc(100% - var(--page-gutter) * 2);
+  max-width: calc(var(--page-measure) - var(--page-gutter) * 2);
+  margin: 24px auto 0;
+  padding: 18px var(--page-gutter);
   border: 1px solid var(--edge, rgba(255, 255, 255, .08));
   border-radius: 20px;
   background: linear-gradient(140deg, rgba(30, 22, 34, .9), rgba(18, 13, 21, .9));
-  margin-left: clamp(16px, 4vw, 32px); margin-right: clamp(16px, 4vw, 32px);
 }
 
 /* ---------------------------------------------------------------------------
  * Achievements
  * ------------------------------------------------------------------------ */
 .achievements {
-  max-width: 1180px;
-  margin: 20px clamp(16px, 4vw, 32px) 0;
-  padding: 18px clamp(16px, 4vw, 24px) 22px;
+  width: calc(100% - var(--page-gutter) * 2);
+  max-width: calc(var(--page-measure) - var(--page-gutter) * 2);
+  margin: 20px auto 0;
+  padding: 18px var(--page-gutter) 22px;
   border: 1px solid var(--edge, rgba(255, 255, 255, .08));
   border-radius: 20px;
   background: rgba(22, 17, 26, .8);
@@ -163,9 +181,13 @@
   font-family: var(--font-serif), Georgia, serif;
   font-size: 19px; font-weight: 600;
 }
+/* A "View all" is a real control on a phone, so it gets a real hit area: 46x20
+   was a link-sized target in a product that is used with thumbs. */
 .sectionLink {
+  display: inline-flex; align-items: center;
+  min-height: 40px; margin: -8px -8px -8px 0;
   border: 0; background: none; color: #f0a6c6; cursor: pointer;
-  font-family: var(--font-sans); font-size: 11px; padding: 4px;
+  font-family: var(--font-sans); font-size: 11px; padding: 0 8px;
 }
 .sectionLink:hover { color: #f6c5da; }
 .sectionLink:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; border-radius: 6px; }
@@ -176,9 +198,9 @@
 .body {
   display: grid; grid-template-columns: minmax(0, 1fr);
   gap: 22px;
-  max-width: 1180px;
+  max-width: var(--page-measure);
   margin: 22px auto 0;
-  padding: 0 clamp(16px, 4vw, 32px);
+  padding: 0 var(--page-gutter);
 }
 .primary { min-width: 0; display: flex; flex-direction: column; gap: 18px; }
 .side { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
