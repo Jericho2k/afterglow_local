@@ -138,6 +138,9 @@ export function CreatorCard({ creator, onError, onFollowChange }: {
           {standing && <em>{standing}</em>}
           <ArrowUpRight size={15} aria-hidden />
         </Link>
-      : <p className={styles.cardQuiet}>This creator has not opened a public profile yet.</p>}
+      /* Every account has a page, so this is a defensive branch rather than a
+         product state: it can only be reached by a row written before 0023 and
+         not yet backfilled. It says nothing about the creator. */
+      : <p className={styles.cardQuiet}>This creator&apos;s page is not available right now.</p>}
   </div>;
 }

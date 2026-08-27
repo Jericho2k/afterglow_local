@@ -122,7 +122,7 @@ export async function rankedCreators(
        top.id top_id,top.title top_title,top.name top_name,top.avatar_path top_avatar_path,
        top.avatar_url top_avatar_url,top.accent top_accent,top.user_message_count top_messages
      FROM creator_stats cs
-     JOIN profiles p ON p.id=cs.user_id AND p.username IS NOT NULL
+     JOIN profiles p ON p.id=cs.user_id
      LEFT JOIN profile_follows f ON f.creator_user_id=cs.user_id AND f.follower_user_id=$1
      LEFT JOIN LATERAL (
        SELECT id,title,name,avatar_path,avatar_url,accent,user_message_count

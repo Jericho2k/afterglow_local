@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { AtSign, Camera, Compass, ExternalLink, ImagePlus, MessageCircle, Sparkles, TrendingUp, UserRound, Users, X } from "lucide-react";
+import { AtSign, Camera, Compass, ExternalLink, ImagePlus, MessageCircle, Sparkles, TrendingUp, Users, X } from "lucide-react";
 import type { Profile } from "@/lib/types";
 import type { AchievementState } from "@/lib/achievements";
 import { profileBorder, profileBorders, borderVariables, type ProfileBorderId } from "@/lib/cosmetics";
@@ -124,7 +124,13 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
   }
 
   const coverSrc = avatarSource(profileAvatarBucket, coverPath, "");
-  const isPublic = Boolean(profile?.username);
+  /*
+   * Every account has a public page. There is no "not public yet" state to
+   * branch on any more — only whether this creator has got round to putting a
+   * name, a picture and a bio on theirs, which is their business and not
+   * something the product should comment on.
+   */
+  const handle = profile?.username ?? "";
   const unlocked = new Set(standing?.unlockedBorders ?? ["default"]);
   const unlockedAchievements = (standing?.achievements ?? []).filter((achievement) => achievement.unlocked);
   const tier = standing ? rankSummary(standing.rank.position, standing.rank.total) : "";
@@ -136,8 +142,8 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
         title="Edit profile"
         lede="Your creator identity — the name, picture and standing that appear beside anything you publish. It is separate from the personas you play as inside stories."
         onOpenMenu={onOpenMenu}
-        actions={isPublic && profile?.username
-          ? <Link className={styles.profileLink} href={`/creators/${profile.username}`} style={{ marginTop: 0 }}>
+        actions={handle
+          ? <Link className={styles.profileLink} href={`/creators/${handle}`} style={{ marginTop: 0 }}>
               <ExternalLink size={14} aria-hidden />View public profile
             </Link>
           : undefined}
@@ -197,7 +203,7 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
 
             <div className={styles.editIdentity}>
               <label className={styles.editAvatar} title="Change your profile picture">
-                <CreatorAvatar avatarPath={avatarPath} name={displayName || "You"} border={profileBorder(border)} size={88} verified={isPublic} />
+                <CreatorAvatar avatarPath={avatarPath} name={displayName || "You"} border={profileBorder(border)} size={88} verified />
                 <span className={styles.editAvatarBadge} aria-hidden><Camera size={15} /></span>
                 <span className={styles.srOnly}>Change your profile picture</span>
                 <input
@@ -217,9 +223,8 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
           </div>
 
           <p className={styles.fieldHint} style={{ marginTop: 14 }}>
-            {isPublic
-              ? <><Compass size={12} aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }} />This is how you appear on everything you publish.</>
-              : <><UserRound size={12} aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }} />Publish a creation and this becomes your public creator page.</>}
+            <Compass size={12} aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }} />
+            This is your public page, and how you appear on everything you publish.
           </p>
 
           <div className={styles.stack}>
@@ -243,7 +248,7 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
                 />
               </div>
               <span className={styles.fieldHint}>
-                Your handle is the address of your public creator page, and it is what readers see beside everything you publish. Publishing anything publicly gives you one automatically; this is where you change it to something you would rather be called.
+                Your handle is the address of your page — afterglow.app/creators/{handle || "your_handle"} — and it is what readers see beside everything you publish. You were given one when you signed up; change it here to whatever you would rather be called.
               </span>
             </div>
 

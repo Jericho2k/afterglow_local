@@ -104,47 +104,41 @@ describeTenancy("multi-tenant isolation", () => {
     expect(await visibleCount(pool, bob, "personas", "id=$1", [alicePersona])).toBe(0);
   });
 
-  it("keeps the profile of an account that has published nothing private", async () => {
-    expect(await visibleCount(pool, bob, "profiles", "id=$1", [hermit])).toBe(0);
-    expect(await visibleCount(pool, hermit, "profiles", "id=$1", [hermit])).toBe(1);
+  /*
+   * There is no such thing as a profile that is not public.
+   *
+   * This used to be "a username is the creator's explicit opt-in", then "publishing
+   * is the opt-in". Both left two classes of account and made every policy in the
+   * social layer ask which kind it was looking at. Everybody has a page; whether
+   * they have put a name and a picture on it is their business, and an empty page
+   * is not a private one.
+   */
+  it("gives every account a readable, addressable profile", async () => {
+    expect(await visibleCount(pool, bob, "profiles", "id=$1", [hermit])).toBe(1);
+    expect(await visibleCount(pool, hermit, "profiles", "id=$1", [bob])).toBe(1);
+    const handle = await asAccount(pool, bob, (run) => run("SELECT username FROM profiles WHERE id=$1", [hermit]));
+    expect(handle.rows[0].username).toMatch(/^[a-z0-9][a-z0-9_-]{2,29}$/);
   });
 
-  /*
-   * Publishing is the opt-in to public attribution.
-   *
-   * This used to be "choosing a username is the opt-in", and that is the whole
-   * of the report that a creation showed its creator to its creator and to
-   * nobody else: publishing had no attribution consequence, so a creator who
-   * never found the username field was anonymous on a page everybody could
-   * read. Now the act of showing work to strangers is what names its author.
-   */
-  it("names a creator the moment they publish, and not before", async () => {
-    const creator = "44444444-4444-4444-8444-444444444444";
-    await createAccount(pool, creator, "creator@example.com");
-    expect(await visibleCount(pool, bob, "profiles", "id=$1", [creator])).toBe(0);
-
-    await asAccount(pool, creator, (run) => run(
-      "INSERT INTO characters (id,name,user_id,visibility) VALUES (gen_random_uuid(),'Draft',$1,'private')", [creator]));
-    expect(await visibleCount(pool, bob, "profiles", "id=$1", [creator])).toBe(0);
-
-    await asAccount(pool, creator, (run) => run(
-      "INSERT INTO characters (id,name,user_id,visibility,published_at) VALUES (gen_random_uuid(),'Published',$1,'public',now())", [creator]));
-    expect(await visibleCount(pool, bob, "profiles", "id=$1", [creator])).toBe(1);
+  it("still lets nobody edit a profile that is not theirs", async () => {
+    await asAccount(pool, bob, async (run) => {
+      const updated = await run("UPDATE profiles SET display_name='hijacked' WHERE id=$1", [hermit]);
+      expect(updated.rowCount).toBe(0);
+    });
   });
 
   /*
    * A handle is never derived from an email address.
    *
-   * `handle_new_user` falls back to the email's local part when somebody signs
-   * up without typing a display name, so deriving a public handle from the
-   * stored display name would publish half of their email to the platform. The
-   * placeholder is recognised and replaced instead.
+   * `handle_new_user` falls back to the email's local part when somebody signs up
+   * without typing a display name, so deriving a handle from the stored name would
+   * publish half of their email to the platform. The placeholder is recognised and
+   * a neutral handle is generated instead — and the placeholder is not published
+   * as a display name either.
    */
   it("never publishes an email fragment as a handle or a name", async () => {
     const shy = "6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b6b";
     await createAccount(pool, shy, "verysecret.address@example.com");
-    await asAccount(pool, shy, (run) => run(
-      "INSERT INTO characters (id,name,user_id,visibility,published_at) VALUES (gen_random_uuid(),'Published',$1,'public',now())", [shy]));
     const profile = await asAccount(pool, shy, (run) => run("SELECT username,display_name FROM profiles WHERE id=$1", [shy]));
     const { username, display_name: displayName } = profile.rows[0] as { username: string; display_name: string };
     expect(username).toBeTruthy();
@@ -153,15 +147,23 @@ describeTenancy("multi-tenant isolation", () => {
     expect(username).toMatch(/^[a-z0-9][a-z0-9_-]{2,29}$/);
   });
 
-  it("keeps a chosen display name, and derives a readable handle from it", async () => {
+  /*
+   * A name somebody actually typed at sign-up becomes their handle.
+   *
+   * And it becomes it THEN, not later: a handle is an address, so a display name
+   * changed afterwards does not silently rewrite it and break every link to the
+   * page. Changing it is something the creator does deliberately, in the editor.
+   */
+  it("derives a readable handle from a chosen display name, once", async () => {
     const named = "7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b7b";
-    await createAccount(pool, named, "n@example.com");
-    await asAccount(pool, named, (run) => run("UPDATE profiles SET display_name='Nocturne Atelier' WHERE id=$1", [named]));
-    await asAccount(pool, named, (run) => run(
-      "INSERT INTO characters (id,name,user_id,visibility,published_at) VALUES (gen_random_uuid(),'Published',$1,'public',now())", [named]));
-    const profile = await asAccount(pool, named, (run) => run("SELECT username,display_name FROM profiles WHERE id=$1", [named]));
-    expect(profile.rows[0].username).toBe("nocturne_atelier");
-    expect(profile.rows[0].display_name).toBe("Nocturne Atelier");
+    await createAccount(pool, named, "n@example.com", "Nocturne Atelier");
+    const first = await asAccount(pool, named, (run) => run("SELECT username,display_name FROM profiles WHERE id=$1", [named]));
+    expect(first.rows[0].username).toBe("nocturne_atelier");
+    expect(first.rows[0].display_name).toBe("Nocturne Atelier");
+
+    await asAccount(pool, named, (run) => run("UPDATE profiles SET display_name='Somebody Else' WHERE id=$1", [named]));
+    const second = await asAccount(pool, named, (run) => run("SELECT username FROM profiles WHERE id=$1", [named]));
+    expect(second.rows[0].username).toBe("nocturne_atelier");
   });
 
   it("isolates favorites while maintaining a public aggregate count", async () => {
@@ -415,10 +417,20 @@ describeTenancy("multi-tenant isolation", () => {
     ))).rejects.toThrow(/profile_follows_not_self/i);
   });
 
-  it("P — refuses to follow an account that has published nothing", async () => {
+  it("P — lets anybody be followed, and still refuses the two that matter", async () => {
+    // Anybody has a page, so anybody can be followed.
+    await asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, hermit]));
+    expect(await visibleCount(pool, bob, "profile_follows", "creator_user_id=$1", [hermit])).toBe(1);
+    await asAccount(pool, bob, (run) => run("DELETE FROM profile_follows WHERE follower_user_id=$1", [bob]));
+
+    // Following as somebody else, and following yourself, are still refused.
     await expect(asAccount(pool, bob, (run) => run(
-      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, hermit],
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [alice, hermit],
     ))).rejects.toThrow(/row-level security/i);
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$1)", [bob],
+    ))).rejects.toThrow(/profile_follows_not_self|violates check/i);
   });
 
   it("P — is idempotent, so a double tap cannot double-count", async () => {
@@ -456,11 +468,13 @@ describeTenancy("multi-tenant isolation", () => {
     });
   });
 
-  it("P — hides an achievement belonging to an account that has published nothing", async () => {
+  it("P — shows an achievement on any profile, and lets only its owner write it", async () => {
     await asAccount(pool, hermit, (run) => run(
       "INSERT INTO profile_achievements (user_id,achievement_id) VALUES ($1,'creations_1') ON CONFLICT DO NOTHING", [hermit]));
-    expect(await visibleCount(pool, bob, "profile_achievements", "user_id=$1", [hermit])).toBe(0);
-    expect(await visibleCount(pool, hermit, "profile_achievements", "user_id=$1", [hermit])).toBe(1);
+    expect(await visibleCount(pool, bob, "profile_achievements", "user_id=$1", [hermit])).toBe(1);
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_achievements (user_id,achievement_id) VALUES ($1,'followers_100')", [hermit],
+    ))).rejects.toThrow(/row-level security/i);
   });
 
   it("P — keeps activity public-readable, self-writable, and unrepeatable", async () => {

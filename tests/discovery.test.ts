@@ -38,7 +38,7 @@ type Summary = {
   id: string; title: string; name: string; creationType: string; tagline: string;
   tags: string[]; hashtags: string[]; nsfwEnabled: boolean;
   messageCount: number; chatCount: number; saveCount: number; savedByViewer: boolean;
-  ownedByViewer: boolean; creator: { username: string } | null;
+  ownedByViewer: boolean; creator: { id: string; username: string } | null;
 };
 
 /** The route exactly as a caller writes it, with no opt-in added. */
@@ -197,10 +197,19 @@ describe("what a card receives", () => {
     expect(card.creationType).toBe("cast");
   });
 
-  it("attributes a creation to its creator only where they published a username", async () => {
-    expect((await feed()).creations[0].creator?.username).toBe("nova");
-    await query("UPDATE profiles SET username=NULL WHERE id=$1", [alice]);
-    expect((await feed()).creations[0].creator).toBeNull();
+  /*
+   * Every creation is attributed.
+   *
+   * This used to say "only where they published a username", which is the rule
+   * that made a public creation look anonymous to everybody but its owner.
+   * There is no such thing as a profile that is not public, so a card always
+   * names who made it.
+   */
+  it("attributes every creation to its creator", async () => {
+    for (const card of (await feed()).creations) {
+      expect(card.creator?.id).toBeTruthy();
+      expect(card.creator?.username).toBe("nova");
+    }
   });
 });
 

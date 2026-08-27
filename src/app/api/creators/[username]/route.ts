@@ -6,10 +6,11 @@ import { currentAccount, unauthorized } from "@/lib/session";
 /**
  * A public creator profile.
  *
- * Addressed by username rather than by id, because a username is the creator's
- * explicit opt-in to being public — `profiles_select_own_or_public` will not
- * return a profile without one, so an account that never chose a username has
- * no addressable profile at all rather than one that happens to be empty.
+ * Addressed by username rather than by id, because a handle is a page's address
+ * and an id is not something anybody types or shares. Every account has one from
+ * the moment it is created, so every profile resolves; a creator who has not put
+ * a name, a picture or a bio on theirs simply has an empty page, which is not
+ * the same thing as a private one.
  *
  * Everything the page draws comes back in one response. That is a deliberate
  * choice against the alternative, which is a page that renders and then makes

@@ -607,6 +607,17 @@
 
 .editIdentity {
   display: flex; align-items: flex-end; gap: 14px;
+  /*
+   * Above the banner, not under it.
+   *
+   * The cover is `position: relative`, which makes it a positioned element;
+   * this row is pulled up over it by a negative margin but was not positioned
+   * itself, so the painting order put the banner on top and the display name
+   * disappeared behind it. Positioning this row is what makes "overlaps the
+   * banner" mean overlaps rather than is covered by.
+   */
+  position: relative;
+  z-index: 1;
   /* The avatar overlaps the banner exactly as it does on the public page. */
   margin-top: -34px;
   padding: 0 4px 0 18px;

@@ -414,28 +414,41 @@ from here on.
 
 ## Creator profiles
 
-A creator profile is a page of its own at `/creators/{username}`.
+A creator profile is a page of its own at `/creators/{username}`, and
+**everybody has one**.
 
-**Publishing is the opt-in to being named.** This used to be "choosing a
-username is the opt-in", and that is the whole of the report that a creation
-showed its creator to its creator and to nobody else: `profiles_select_own_or_public`
-returns a profile only when it is your own or it carries a username, so the join
-on a creation page resolved for the owner and produced NULL for every visitor —
-and the page rendered its entire creator section conditionally on that row. Same
-page, two different truths, and the wrong one shown to everybody who mattered.
-The separate, easily-missed act was gating attribution while the act that
-actually shows work to strangers had no attribution consequence at all.
+There is no such thing as a profile that is not public. That took two goes to
+get right. It was originally "a username is the creator's explicit opt-in",
+which is the whole of the report that a public creation showed its creator to
+its creator and to nobody else: `profiles_select_own_or_public` returned a
+profile only when it was your own or it carried a username, so the join on a
+creation page resolved for the owner and produced NULL for every visitor — and
+the page rendered its entire creator section conditionally on that row. The
+first fix moved the opt-in to publishing, which was the right direction and did
+not go far enough: it still left two classes of account and made every policy in
+the social layer ask which kind it was looking at.
 
-So a handle is assigned by `ensure_public_username` at the moment a creation or
-world first goes public. The one thing that must never do is publish an email
-address, and that is a real risk rather than a theoretical one: `handle_new_user`
-falls back to `split_part(email,'@',1)` when somebody signs up without typing a
-name, so a handle derived from the stored display name would put half of their
-email in front of the platform. The function reads `auth.users.email` — which is
-why it is `SECURITY DEFINER` and why the derivation cannot live in application
-code — recognises that placeholder, and replaces it with a neutral
-`creator_xxxxxxxx` instead. A display name somebody actually chose is never
-touched, and "Nocturne Atelier" still becomes `nocturne_atelier`.
+So every account gets a handle when it is created, and every policy that used to
+ask has stopped asking. Whether somebody has put a picture, a name and a bio on
+their page is their business; an empty page is not a private one.
+
+The one thing that must never happen is publishing an email address, and it is a
+real risk rather than a theoretical one: `handle_new_user` falls back to
+`split_part(email,'@',1)` when somebody signs up without typing a name, so a
+handle derived from the stored display name would put half of their email in
+front of the platform. `ensure_public_username` reads `auth.users.email` —
+which is why it is `SECURITY DEFINER` and why the derivation cannot live in
+application code — recognises that placeholder, and generates a neutral
+`creator_xxxxxxxx` instead. A name somebody actually typed becomes their handle:
+"Nocturne Atelier" becomes `nocturne_atelier`. It is derived **once**, at
+sign-up: a handle is an address, so changing a display name later does not
+silently rewrite it and break every link to the page. Changing it is something
+the creator does deliberately, in the editor.
+
+Ranking still requires published work, and that is the only membership test left
+anywhere: ranking accounts that have published nothing would put the whole
+platform in a tie at the bottom and make the number meaningless for the people
+who have.
 
 **Every figure on it is real or it is absent.** That constraint decides the
 design more than anything else:
@@ -888,11 +901,16 @@ Two things a test suite cannot answer, and how they are answered instead:
   components and the real stylesheets at 375, 390, 430, 768, 1024, 1280 and
   1440, checking for horizontal overflow, clipped text, hit-area size and focus
   rings. That is where the profile's two layout defects were found, and where
-  this sprint found three more that were not visible in the source: the stat
+  this sprint found five more that were not visible in the source: the stat
   row's value spilling 8px into the next column at 375, a page heading cut off
-  once the bell and "Mark all as read" shared its row, and a 20px tap target in
-  the sidebar. The decisions those measurements depend on are held by
-  `tests/creator-page.test.ts` so a later edit that reintroduces one fails.
+  once the bell and "Mark all as read" shared its row, a 20px tap target in the
+  sidebar, the profile editor's display name painted over by its own banner at
+  every width, and — the one that actually locked the page — the shell's error
+  banner sitting in the flow of a two-column grid, which turned it into two
+  rows, squeezed the open view into the 286px column and clipped it with
+  `overflow: hidden` so it reported `scrolled to 0 of 2156`. The decisions those
+  measurements depend on are held by `tests/creator-page.test.ts` and
+  `tests/surface-layout.test.tsx` so a later edit that reintroduces one fails.
 - **Query plans at scale.** Whether a predicate is indexed is a claim about
   what the PLANNER does, and it only has an opinion once the table is big
   enough. `scripts/social-scale-benchmark.mjs` builds a throwaway database of

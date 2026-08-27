@@ -864,7 +864,17 @@ export default function AppShell() {
           panel, so a Chats page whose creations never arrived said nothing at
           all and stayed blank until the tab was reloaded. This banner belongs
           to the shell, so it is visible on whichever surface is open, and it
-          offers the retry that the reader was previously performing with F5. */}
+          offers the retry that the reader was previously performing with F5.
+
+          It is POSITIONED, and that is load-bearing rather than cosmetic. This
+          element is a direct child of the shell's two-column grid, so while it
+          was in normal flow it became a third grid item: the sidebar was pushed
+          into column two, the open view was squeezed into the 286px column of a
+          new second row, and the grid grew past the `height: 100dvh` that
+          `overflow: hidden` then clipped — leaving the view unable to scroll at
+          all. A background refresh failing halfway through a session was enough
+          to lock the page somebody was reading. `.account-notice` was already
+          fixed for the same reason; this one had been missed. */}
       {libraryError&&<div className="library-error" role="alert">
         <TriangleAlert size={16} aria-hidden />
         <div><strong>Some of your library could not be loaded.</strong><small>{libraryError}</small></div>

@@ -95,7 +95,7 @@ export async function GET(request: Request) {
       `SELECT r.rank,r.rank_total,r.user_messages,${creationColumns}
        FROM creation_rankings r
        JOIN characters c ON c.id=r.character_id AND c.visibility='public'
-       LEFT JOIN profiles p ON p.id=c.user_id AND p.username IS NOT NULL
+       LEFT JOIN profiles p ON p.id=c.user_id
        LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$1
        WHERE r.category=$2
        ORDER BY r.rank ASC

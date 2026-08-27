@@ -23,6 +23,7 @@ const menuCss = readFileSync(new URL("../src/components/nav/menu.module.css", im
 const creationCss = readFileSync(new URL("../src/app/characters/[id]/profile.module.css", import.meta.url), "utf8");
 const worldCss = readFileSync(new URL("../src/app/worlds/[id]/profile.module.css", import.meta.url), "utf8");
 const globals = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+const shellCss = readFileSync(new URL("../src/components/shell/shell.module.css", import.meta.url), "utf8");
 
 /** The declarations inside one rule, by its exact selector text. */
 function rule(css: string, selector: string) {
@@ -239,5 +240,58 @@ describe("the creation hero aligns on one column", () => {
     expect(rule(creationCss, ".ctaRow")).toContain("width: 100%");
     expect(rule(creationCss, ".primaryCta")).toContain("flex: 1");
     expect(rule(creationCss, ".heroCopy")).toContain("padding: 46vh 20px 26px");
+  });
+});
+
+
+/**
+ * Two defects found in a browser, pinned so a tidy-up cannot bring them back.
+ *
+ * Both were invisible in the source and obvious on screen, which is why they
+ * are asserted against the stylesheets rather than described in a comment.
+ */
+describe("the shell's grid has exactly two in-flow children", () => {
+  /*
+   * `main.app-shell` is `display: grid; grid-template-columns: 286px 1fr;
+   * height: 100dvh; overflow: hidden`. A THIRD in-flow child turns that into
+   * two rows: the sidebar moves to column two, the open view is squeezed into
+   * the 286px column of the new row, and the grid grows past the height that
+   * `overflow: hidden` then clips — so the view cannot be scrolled at all.
+   *
+   * Measured: with the banner in flow the profile page reported
+   * `scrolled to 0 of 2156` and its Save control was unreachable. Both shell
+   * banners are therefore positioned, and neither may go back into the flow.
+   */
+  for (const banner of [".account-notice", ".library-error"]) {
+    it(`keeps ${banner} out of the shell's grid flow`, () => {
+      expect(rule(globals, banner)).toContain("position:fixed");
+    });
+  }
+
+  it("still lets the view fill its column", () => {
+    expect(rule(globals, ".app-shell")).toContain("grid-template-columns:286px 1fr");
+    expect(rule(shellCss, ".page")).toContain("overflow-y: auto");
+  });
+});
+
+describe("the editable profile header", () => {
+  /*
+   * The avatar row is pulled up over the banner by a negative margin. The
+   * banner is `position: relative`, which puts it in a later paint step than
+   * an in-flow sibling — so until this row was positioned too, the top 12px of
+   * the display name was painted over by the cover at every width and with any
+   * length of bio. Measured before the fix: covered at 4 of 4 sample points.
+   */
+  it("paints the identity above the banner it overlaps", () => {
+    const identity = rule(shellCss, ".editIdentity");
+    expect(identity).toContain("margin-top: -34px");
+    expect(identity).toContain("position: relative");
+    expect(identity).toContain("z-index: 1");
+  });
+
+  it("has one avatar, and it is the control", () => {
+    // The duplicate plain avatar this replaced is gone for good.
+    expect(shellCss).not.toContain(".avatarLarge");
+    expect(rule(shellCss, ".editAvatar")).toContain("cursor: pointer");
   });
 });

@@ -383,11 +383,26 @@ describeSocial("social discovery", () => {
     expect(JSON.stringify(other)).not.toContain(reader);
   });
 
-  it("never lists a creator who has not opted into a public profile", async () => {
+  /*
+   * The board is about published work, not about who filled in a profile.
+   *
+   * Ranking an account that has published nothing would put every account on
+   * the platform in a tie at the bottom and make the number meaningless for the
+   * ones who have. That, and only that, is what decides membership.
+   */
+  it("ranks a creator once they have published, and drops them when they unpublish", async () => {
     await seedBoard();
     await pool.query("SELECT public.refresh_creator_stats()");
     expect(await creatorsBoard(reader)).toHaveLength(1);
-    await pool.query("UPDATE profiles SET username=NULL WHERE id=$1", [creator]);
+
+    // The reader has a profile and a handle like everybody else, and is not on
+    // the board because they have published nothing.
+    const handles = await asAccount(pool, reader, (run) => run("SELECT username FROM profiles WHERE id=$1", [reader]));
+    expect(handles.rows[0].username).toBeTruthy();
+    expect((await creatorsBoard(reader)).map((row) => row.id)).toEqual([creator]);
+
+    await asAccount(pool, creator, (run) => run("UPDATE characters SET visibility='private' WHERE user_id=$1", [creator]));
+    await pool.query("SELECT public.refresh_creator_stats()");
     expect(await creatorsBoard(reader)).toEqual([]);
   });
 

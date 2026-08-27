@@ -135,7 +135,7 @@ export async function GET(request: Request) {
          (mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c
        ${joins}
-       LEFT JOIN profiles p ON p.id=c.user_id AND p.username IS NOT NULL
+       LEFT JOIN profiles p ON p.id=c.user_id
        LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$1
        WHERE ${where.join(" AND ")}
        ORDER BY ${orderings[query.sort]}

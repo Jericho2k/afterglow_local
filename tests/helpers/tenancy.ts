@@ -53,6 +53,7 @@ export const migrationFiles = [
   "0020_scene_physical_state.sql",
   "0021_creator_profile_v2.sql",
   "0022_social_discovery.sql",
+  "0023_every_profile_is_public.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {
@@ -115,9 +116,20 @@ async function freshDatabase(name: string) {
   return url.toString();
 }
 
-/** Creates an account the way Supabase Auth would, trigger included. */
-export async function createAccount(pool: Pool, id: string, email: string) {
-  await pool.query("INSERT INTO auth.users (id,email) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING", [id, email]);
+/**
+ * Creates an account the way Supabase Auth would, trigger included.
+ *
+ * `displayName` is what the sign-up form puts in `raw_user_meta_data`, and it
+ * matters to more than cosmetics: the profile trigger reads it, and the handle
+ * is derived from it at that moment. Omitting it is a real sign-up too — the
+ * one where somebody left the name blank — and the two produce deliberately
+ * different handles.
+ */
+export async function createAccount(pool: Pool, id: string, email: string, displayName?: string) {
+  await pool.query(
+    "INSERT INTO auth.users (id,email,raw_user_meta_data) VALUES ($1,$2,$3::jsonb) ON CONFLICT (id) DO NOTHING",
+    [id, email, JSON.stringify(displayName ? { display_name: displayName } : {})],
+  );
   return id;
 }
 

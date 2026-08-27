@@ -96,7 +96,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
          (follows.creator_user_id IS NOT NULL) creator_followed,
          (mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c
-       LEFT JOIN profiles p ON p.id=c.user_id AND (p.id=$2 OR p.username IS NOT NULL)
+       LEFT JOIN profiles p ON p.id=c.user_id
        LEFT JOIN creator_stats cs ON cs.user_id=c.user_id
        LEFT JOIN profile_follows follows ON follows.creator_user_id=c.user_id AND follows.follower_user_id=$2
        LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$2
@@ -225,15 +225,13 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
      * `creator_stats` is refreshed by whoever opens a profile page, not by
      * everybody who opens a creation.
      *
-     * The card is built whenever the profile row RESOLVED, and no longer
-     * requires a username. That condition is the whole of the "the creator is
-     * invisible to everybody but the creator" report: an account that never
-     * chose a handle had no publicly readable profile, so this join produced
-     * NULL for every visitor and a row for the owner, and the page drew its
-     * whole creator section conditionally on it. 0022 gives every publishing
-     * account a handle, and this stops depending on one — a creation whose
-     * creator somehow has no profile page still says who made it, with the
-     * link and the follow control simply absent.
+     * The card is built whenever the profile row RESOLVED, and the join no
+     * longer asks whether the creator has a handle. That question is the whole
+     * of the "the creator is invisible to everybody but the creator" report:
+     * an account without one had no publicly readable profile, so this join
+     * produced NULL for every visitor and a row for the owner, and the page
+     * drew its entire creator section conditionally on it. Every account has a
+     * page now (0023), so there is nothing left to ask.
      */
     const creatorId = row.creator_id ? String(row.creator_id) : "";
     const standing = {

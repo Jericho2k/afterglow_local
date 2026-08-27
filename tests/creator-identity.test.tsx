@@ -192,16 +192,21 @@ describe("the creator card names the creator to everybody", () => {
   /*
    * A creation is never anonymous.
    *
-   * An account with no handle still gets named, with the link and the follow
-   * control simply absent rather than the whole section disappearing — which
-   * is what used to happen, to every viewer except the creator.
+   * Every account has a page, so the card always has somewhere to send a
+   * reader. The handle-less branch is defensive rather than a product state —
+   * a row written before every profile became public and not yet backfilled —
+   * and even then the creator is still named, with the link and the follow
+   * control simply absent rather than the whole section disappearing, which is
+   * what used to happen to every viewer except the creator.
    */
-  it("still names a creator who has no public page yet", () => {
+  it("names the creator even if their page cannot be addressed", () => {
     const markup = renderToStaticMarkup(<CreatorCard creator={{ ...card, username: "" }} />);
     expect(markup).toContain("Noctis");
     expect(markup).toContain("Followers");
     expect(markup).not.toContain("href=\"/creators/");
-    expect(markup).toContain("has not opened a public profile yet");
+    // Nothing here comments on the creator; it reports a page it cannot reach.
+    expect(markup).not.toContain("has not opened");
+    expect(markup).toContain("not available right now");
   });
 
   it("carries no profile inside it", () => {
