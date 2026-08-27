@@ -8,7 +8,7 @@ import { buildWriterPrompt, continueSceneCue, continuityPlacementFor, writerMess
 import { sceneStateEnabled, sceneStateRetrievalHintEnabled } from "@/lib/memory-flags";
 import { sceneFieldsOf, sceneRetrievalCue } from "@/lib/scene-state";
 import { currentSceneState, dropSceneStateForMessage, maybeUpdateSceneState } from "@/lib/scene-state-store";
-import { conversationWorldRecords, ensureConversationWorlds } from "@/lib/conversation-worlds";
+import { conversationWorldRecords, ensureConversationWorldsSafely } from "@/lib/conversation-worlds";
 import { anchoredFetchLimit, recallText, selectAnchoredMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
@@ -39,6 +39,19 @@ export async function POST(request: Request) {
   const { conversationId, content, action } = parsed.data;
   if (action === "send" && !content) return Response.json({ error: "Message cannot be empty" }, { status: 400 });
 
+  /*
+   * A story written before conversation worlds existed is given its set before
+   * the prompt is assembled, in a transaction of its own.
+   *
+   * The prompt is built inside the transaction below, so unlike the read paths
+   * this one cannot pass a flag it has already read and has to ask. That costs
+   * one small indexed transaction per message, which is nothing beside the
+   * model call it precedes, and it buys the thing that matters: a backfill that
+   * cannot run costs a story its lore for one turn, never the reader their
+   * message. See `ensureConversationWorldsSafely`.
+   */
+  await ensureConversationWorldsSafely(account.id, conversationId);
+
   // Phase one: resolve and validate everything the prompt needs, inside a
   // single account-scoped transaction.
   const prepared = await asUser(account.id, async (client) => {
@@ -55,14 +68,13 @@ export async function POST(request: Request) {
      * receives a copy of the Creation's readable defaults when it begins and
      * owns its set from then on, so attaching a world here cannot reach into
      * the Creation, into the creator's published canon, or into anybody else's
-     * story. `ensureConversationWorlds` gives a story written before the
-     * relation existed its set on first use; after that it is one indexed read.
+     * story. The backfill above gives a story written before the relation
+     * existed its set on first use; after that this is one indexed read.
      *
      * Readability is re-checked inside `conversationWorldRecords`, so a world
      * whose creator makes it private stops feeding this prompt immediately
      * even though the link survives. See src/lib/conversation-worlds.ts.
      */
-    await ensureConversationWorlds(client, account.id, row);
     const worldRows = await conversationWorldRecords(client, account.id, conversationId);
     const personaResult = row.persona_id
       ? await client.query("SELECT * FROM personas WHERE id=$1 AND user_id=$2", [row.persona_id, account.id])

@@ -6,7 +6,7 @@ import { asUser, ensureSchema, query, setPoolForTesting } from "@/lib/db";
 import {
   attachConversationWorld, conversationWorldRecords, conversationWorldSummaries,
   copyConversationWorldsForBranch, detachConversationWorld, ensureConversationWorlds,
-  initializeConversationWorlds, readableDefaultWorldIds, setConversationWorlds,
+  ensureConversationWorldsSafely, initializeConversationWorlds, readableDefaultWorldIds, setConversationWorlds,
 } from "@/lib/conversation-worlds";
 
 /**
@@ -262,5 +262,50 @@ describe("summaries never carry lore", () => {
     expect(card.name).toBe("World A");
     expect(card.description).toBe("World A description");
     expect(JSON.stringify(card)).not.toContain("lore document");
+  });
+});
+
+/**
+ * The backfill is a compatibility path, and a compatibility path must not be
+ * able to break the product it is there to keep working.
+ *
+ * This is the shape of a real failure: a deployment where `conversation_worlds`
+ * is not usable — the migration has not been applied, or the grant is missing —
+ * while every other table is fine. Because PostgreSQL abandons a transaction
+ * after any failed statement, running the backfill inside a reader's
+ * transaction turns "this story has no worlds yet" into "this story will not
+ * open", and it does so ONLY for accounts whose creations actually have worlds
+ * to copy: an account with none never reaches the failing statement at all.
+ */
+describe("a backfill that cannot run does not break the story", () => {
+  it("reports failure instead of throwing", async () => {
+    const story = await makeStory(owner);
+    await query("DROP TABLE conversation_worlds");
+
+    await expect(ensureConversationWorldsSafely(owner, story)).resolves.toBe(false);
+  });
+
+  it("leaves the story readable, and leaves it to be retried", async () => {
+    const story = await makeStory(owner);
+    await query("DROP TABLE conversation_worlds");
+    await ensureConversationWorldsSafely(owner, story);
+
+    // The reader's own transaction was never involved, so it is still usable.
+    const row = await asUser(owner, (client) =>
+      client.query("SELECT worlds_initialized FROM conversations WHERE id=$1", [story]));
+    expect(row.rows[0].worlds_initialized).toBe(false);
+  });
+
+  it("still initializes once the relation works", async () => {
+    const story = await makeStory(owner);
+    expect(await ensureConversationWorldsSafely(owner, story)).toBe(true);
+    expect(await storyWorldNames(owner, story)).toEqual(["World A"]);
+    // Idempotent: a story that has its set is not given another one.
+    expect(await ensureConversationWorldsSafely(owner, story)).toBe(false);
+  });
+
+  it("does nothing for a story that is not this account's", async () => {
+    const story = await makeStory(owner);
+    expect(await ensureConversationWorldsSafely(stranger, story)).toBe(false);
   });
 });

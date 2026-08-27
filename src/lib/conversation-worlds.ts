@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { worldSummaryFromRow } from "./db";
+import { asUser, worldSummaryFromRow } from "./db";
 import type { WorldSummary } from "./types";
 
 /**
@@ -96,6 +96,43 @@ export async function ensureConversationWorlds(client: PoolClient, userId: strin
   if (conversation.worlds_initialized) return false;
   await initializeConversationWorlds(client, userId, String(conversation.id), String(conversation.character_id));
   return true;
+}
+
+/**
+ * The same backfill, isolated so it cannot take a read down with it.
+ *
+ * `ensureConversationWorlds` WRITES, and every caller that needs it is on a
+ * read path — opening a chat, drawing the world sheet, building a prompt.
+ * PostgreSQL aborts a transaction after any failed statement, so running the
+ * backfill inside the caller's transaction means that anything wrong with it
+ * (a database that has not applied 0019, a missing grant, a world deleted
+ * between the two statements) does not degrade to "this story has no worlds
+ * yet" — it degrades to "this story will not open", because every subsequent
+ * statement in that transaction fails too.
+ *
+ * So it gets its own transaction. A story that could not be initialized keeps
+ * `worlds_initialized = false` and is retried on the next read, and the reason
+ * is logged rather than swallowed: this exists to stop a compatibility path
+ * from breaking the product, NOT to hide that it is broken.
+ */
+export async function ensureConversationWorldsSafely(userId: string, conversationId: string, initialized?: boolean) {
+  // A caller that has already read the flag passes it, and a story that has its
+  // set costs nothing at all — no transaction, no statement. Only a story that
+  // predates the relation pays for this, and it pays once.
+  if (initialized) return false;
+  try {
+    return await asUser(userId, async (client) => {
+      const result = await client.query(
+        "SELECT id,character_id,worlds_initialized FROM conversations WHERE id=$1 AND user_id=$2",
+        [conversationId, userId],
+      );
+      if (!result.rowCount) return false;
+      return ensureConversationWorlds(client, userId, result.rows[0]);
+    });
+  } catch (error) {
+    console.error(`Conversation ${conversationId} could not be given its world set`, error);
+    return false;
+  }
 }
 
 /**

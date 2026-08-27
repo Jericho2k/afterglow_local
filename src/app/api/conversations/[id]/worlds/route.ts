@@ -1,7 +1,7 @@
 import { ownedConversation } from "@/lib/access";
 import { asUser, worldSummaryFromRow } from "@/lib/db";
 import {
-  attachConversationWorld, conversationWorldSummaries, detachConversationWorld, ensureConversationWorlds,
+  attachConversationWorld, conversationWorldSummaries, detachConversationWorld, ensureConversationWorldsSafely,
 } from "@/lib/conversation-worlds";
 import { currentAccount, unauthorized } from "@/lib/session";
 
@@ -55,15 +55,28 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   if (!uuid.test(id)) return Response.json({ error: "Conversation not found" }, { status: 404 });
 
-  const attached = await asUser(account.id, async (client) => {
+  const first = await asUser(account.id, async (client) => {
     const row = await ownedConversation(client, account.id, id);
     if (!row) return null;
-    // A story from before this relation existed gets its snapshot here rather
-    // than appearing to have deliberately no worlds.
-    await ensureConversationWorlds(client, account.id, row);
-    return conversationWorldSummaries(client, account.id, id);
+    return {
+      initialized: Boolean(row.worlds_initialized),
+      worlds: await conversationWorldSummaries(client, account.id, id),
+    };
   });
-  if (!attached) return Response.json({ error: "Conversation not found" }, { status: 404 });
+  if (!first) return Response.json({ error: "Conversation not found" }, { status: 404 });
+
+  /*
+   * A story from before this relation existed gets its snapshot here rather
+   * than appearing to have deliberately no worlds.
+   *
+   * In a transaction of its own, so a backfill that cannot run leaves the sheet
+   * empty and the reason logged rather than taking the whole request down, and
+   * only for a story that has not been given a set — an initialized story pays
+   * nothing for this. Re-read only when it actually attached something.
+   */
+  const attached = await ensureConversationWorldsSafely(account.id, id, first.initialized)
+    ? await asUser(account.id, (client) => conversationWorldSummaries(client, account.id, id))
+    : first.worlds;
 
   // Both lists in one response: the picker needs "attached to this story" and
   // "available to attach", and asking for them separately would be two round
@@ -80,10 +93,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!uuid.test(id)) return Response.json({ error: "Conversation not found" }, { status: 404 });
   if (!uuid.test(worldId)) return Response.json({ error: "Invalid world" }, { status: 400 });
 
+  await ensureConversationWorldsSafely(account.id, id);
+
   const result = await asUser(account.id, async (client) => {
     const row = await ownedConversation(client, account.id, id);
     if (!row) return { error: "Conversation not found" as const, status: 404 as const };
-    await ensureConversationWorlds(client, account.id, row);
     const attached = await attachConversationWorld(client, account.id, id, worldId);
     if (!attached) return { error: "That world is not available to you" as const, status: 403 as const };
     return { worlds: await conversationWorldSummaries(client, account.id, id) };

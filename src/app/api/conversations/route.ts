@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import { characterSnapshot, ownedPersona, readableCharacter } from "@/lib/access";
 import { asUser, characterFromRow, conversationFromRow, coreCanonFromRow, getUserSettings, memoryArcFromRow, memoryFromRow, messageForViewer, messageFromRow } from "@/lib/db";
 import { copySceneStatesForBranch } from "@/lib/scene-state-store";
-import { copyConversationWorldsForBranch, ensureConversationWorlds, initializeConversationWorlds } from "@/lib/conversation-worlds";
+import { copyConversationWorldsForBranch, ensureConversationWorldsSafely, initializeConversationWorlds } from "@/lib/conversation-worlds";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 
 /**
@@ -187,21 +187,33 @@ export async function GET(request: Request) {
     const conversations = listResult.rows.map(conversationFromRow);
     const conversation = requestedId ? conversations.find((item) => item.id === requestedId) : conversations[0];
     if (!conversation) return { error: "Conversation not found", status: 404 as const };
-    // A story written before conversation worlds existed is given its set the
-    // first time it is opened. The migration does this for every conversation
-    // that existed when it ran; this covers a database that has not had it
-    // applied yet, and costs one indexed read for every story that has.
-    const row = listResult.rows.find((item) => String(item.id) === conversation.id);
-    if (row) await ensureConversationWorlds(client, account.id, row);
     const messages = await client.query(
       "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC, id ASC",
       [conversation.id, account.id],
     );
-    return { conversations, conversation, messages: messages.rows.map(messageFromRow).map((message)=>messageForViewer(message,includeDiagnostics)) };
+    const row = listResult.rows.find((item) => String(item.id) === conversation.id);
+    return {
+      conversations, conversation, worldsInitialized: Boolean(row?.worlds_initialized),
+      messages: messages.rows.map(messageFromRow).map((message)=>messageForViewer(message,includeDiagnostics)),
+    };
   });
 
   if ("error" in payload) return Response.json({ error: payload.error }, { status: payload.status });
-  return Response.json(payload);
+
+  /*
+   * A story written before conversation worlds existed is given its set here.
+   *
+   * AFTER the read, and in a transaction of its own. This is a write on a read
+   * path, and a write on a read path that shares the reader's transaction can
+   * only fail one way: by failing the read. Opening a chat must not depend on a
+   * compatibility backfill succeeding — the chat does not draw its worlds, the
+   * sheet that does runs the same backfill, and a story that could not be
+   * initialized is retried rather than left broken.
+   */
+  await ensureConversationWorldsSafely(account.id, payload.conversation.id, payload.worldsInitialized);
+  // `worldsInitialized` is a fact about the row, not part of the chat: it exists
+  // so the backfill above can skip a story that has already had one.
+  return Response.json({ conversations: payload.conversations, conversation: payload.conversation, messages: payload.messages });
 }
 
 export async function POST(request: Request) {
