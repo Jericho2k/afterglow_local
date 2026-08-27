@@ -46,6 +46,7 @@ export const migrationFiles = [
   "0018_memory_feedback.sql",
   "0019_conversation_worlds.sql",
   "0020_scene_physical_state.sql",
+  "0021_creator_profile_v2.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {
@@ -61,10 +62,19 @@ export async function applyMigrations(pool: Pool, files: readonly string[]) {
  * A database with the real migrations applied.
  *
  * `through` stops after the named file, so a test can seed the schema as it
- * stood before a migration and then apply that migration to it.
+ * stood before a migration and then apply that migration to it — which is the
+ * only way to check that a BACKFILL converts existing data correctly.
+ *
+ * `database` puts a suite on a database of its own. Every suite here begins by
+ * dropping and rebuilding its schema, and Vitest runs files in parallel, so two
+ * suites sharing one database would tear each other's tables out mid-run. A
+ * suite that needs its own migration order therefore needs its own database,
+ * and asking for one by name is cheaper to reason about than making the whole
+ * test run serial.
  */
-export async function migratedPool(options: { through?: string } = {}) {
-  const pool = new Pool({ connectionString: tenancyDatabaseUrl, max: 4, ssl: false });
+export async function migratedPool(options: { through?: string; database?: string } = {}) {
+  const connectionString = options.database ? await freshDatabase(options.database) : tenancyDatabaseUrl;
+  const pool = new Pool({ connectionString, max: 4, ssl: false });
   const client = await pool.connect();
   try {
     // Start from a clean schema so a re-run never inherits earlier state.
@@ -78,6 +88,25 @@ export async function migratedPool(options: { through?: string } = {}) {
   if (stop < 0) throw new Error(`Unknown migration: ${options.through}`);
   await applyMigrations(pool, migrationFiles.slice(0, stop + 1));
   return pool;
+}
+
+/** Creates (or reuses) a sibling database beside the configured one. */
+async function freshDatabase(name: string) {
+  const url = new URL(tenancyDatabaseUrl);
+  const target = `${url.pathname.replace(/^\//, "") || "postgres"}_${name}`;
+  const admin = new Pool({ connectionString: tenancyDatabaseUrl, max: 1, ssl: false });
+  try {
+    // CREATE DATABASE cannot run inside a transaction, and IF NOT EXISTS is not
+    // available for it, so an existing database is simply reused — the schema
+    // rebuild above is what makes a re-run clean.
+    await admin.query(`CREATE DATABASE ${JSON.stringify(target).replace(/"/g, '"')}`).catch((error) => {
+      if (!String(error?.message ?? "").includes("already exists")) throw error;
+    });
+  } finally {
+    await admin.end();
+  }
+  url.pathname = `/${target}`;
+  return url.toString();
 }
 
 /** Creates an account the way Supabase Auth would, trigger included. */

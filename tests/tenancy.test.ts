@@ -304,6 +304,153 @@ describeTenancy("multi-tenant isolation", () => {
   });
 
   /**
+   * Creator Profile V2.
+   *
+   * Four new relations, and the question for each is the same: what does the
+   * product intentionally make public, and what must stay private even though
+   * it is about public work?
+   *
+   *   A FOLLOWER COUNT is public. The follower LIST is not — a creator learning
+   *   exactly which accounts read their work is a different product with
+   *   different consent.
+   *
+   *   AN ACHIEVEMENT and a MILESTONE are public, because they are thresholds on
+   *   numbers that are already public. Writing one is self-only, so no account
+   *   can grant another one anything.
+   *
+   *   A RANK is a public aggregate over public work, readable by anybody and
+   *   writable by nobody: only the ranking function, which runs as its definer,
+   *   may change a row.
+   *
+   * The creators here are their own accounts rather than Alice, because a
+   * public profile requires a username and the suite above deliberately asserts
+   * that Alice has never chosen one.
+   */
+  const nova = "77777777-7777-4777-8777-777777777777";
+  const eris = "66666666-6666-4666-8666-666666666666";
+  const novaCreation = "78787878-7878-4878-8878-787878787878";
+
+  beforeAll(async () => {
+    await createAccount(pool, nova, "nova@example.com");
+    await createAccount(pool, eris, "eris@example.com");
+    await asAccount(pool, nova, async (run) => {
+      await run("UPDATE profiles SET username='nova' WHERE id=$1", [nova]);
+      await run("INSERT INTO characters (id,name,user_id,visibility,user_message_count) VALUES ($1,'Nova Public',$2,'public',40)", [novaCreation, nova]);
+      await run("INSERT INTO characters (id,name,user_id,visibility) VALUES (gen_random_uuid(),'Nova Private',$1,'private')", [nova]);
+    });
+    await asAccount(pool, eris, (run) => run("UPDATE profiles SET username='eris' WHERE id=$1", [eris]));
+  });
+
+  it("P — lets an account follow and unfollow, and nobody else do it for them", async () => {
+    await asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [bob, nova]));
+    expect(await visibleCount(pool, bob, "profile_follows", "creator_user_id=$1", [nova])).toBe(1);
+
+    // Bob cannot make somebody else follow anybody.
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [eris, nova],
+    ))).rejects.toThrow(/row-level security/i);
+    // Nor delete somebody else's follow.
+    await asAccount(pool, eris, async (run) => {
+      expect((await run("DELETE FROM profile_follows WHERE follower_user_id=$1", [bob])).rowCount).toBe(0);
+    });
+    expect(await visibleCount(pool, bob, "profile_follows", "creator_user_id=$1", [nova])).toBe(1);
+  });
+
+  it("P — refuses a self-follow at the database, not just in a route", async () => {
+    // Nova rather than Bob, because Bob has no public profile and would be
+    // refused by the policy first — this asserts the CHECK constraint itself.
+    await expect(asAccount(pool, nova, (run) => run(
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$1)", [nova],
+    ))).rejects.toThrow(/profile_follows_not_self/i);
+  });
+
+  it("P — refuses to follow an account with no public profile", async () => {
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, alice],
+    ))).rejects.toThrow(/row-level security/i);
+  });
+
+  it("P — is idempotent, so a double tap cannot double-count", async () => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await asAccount(pool, bob, (run) => run(
+        "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [bob, nova]));
+    }
+    const count = await asAccount(pool, nova, (run) => run("SELECT follower_count FROM profiles WHERE id=$1", [nova]));
+    expect(Number(count.rows[0].follower_count)).toBe(1);
+  });
+
+  it("P — publishes the follower count while keeping the follower list private", async () => {
+    await asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [bob, nova]));
+
+    // Carol sees Nova's count, and cannot see who is in it.
+    const seen = await asAccount(pool, eris, (run) => run("SELECT follower_count FROM profiles WHERE id=$1", [nova]));
+    expect(Number(seen.rows[0].follower_count)).toBe(1);
+    expect(await visibleCount(pool, eris, "profile_follows", "creator_user_id=$1", [nova])).toBe(0);
+    // The creator may see that somebody follows them; that is their own row.
+    expect(await visibleCount(pool, nova, "profile_follows", "creator_user_id=$1", [nova])).toBe(1);
+  });
+
+  it("P — keeps achievements public-readable and self-writable only", async () => {
+    await asAccount(pool, nova, (run) => run(
+      "INSERT INTO profile_achievements (user_id,achievement_id) VALUES ($1,'creations_1') ON CONFLICT DO NOTHING", [nova]));
+    // Public, because it is a threshold on numbers that are already public.
+    expect(await visibleCount(pool, bob, "profile_achievements", "user_id=$1", [nova])).toBe(1);
+    // But Bob cannot award one.
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_achievements (user_id,achievement_id) VALUES ($1,'rank_top_10')", [nova],
+    ))).rejects.toThrow(/row-level security/i);
+    await asAccount(pool, bob, async (run) => {
+      expect((await run("DELETE FROM profile_achievements WHERE user_id=$1", [nova])).rowCount).toBe(0);
+    });
+  });
+
+  it("P — hides an achievement belonging to an account with no public profile", async () => {
+    await asAccount(pool, alice, (run) => run(
+      "INSERT INTO profile_achievements (user_id,achievement_id) VALUES ($1,'creations_1') ON CONFLICT DO NOTHING", [alice]));
+    expect(await visibleCount(pool, bob, "profile_achievements", "user_id=$1", [alice])).toBe(0);
+    expect(await visibleCount(pool, alice, "profile_achievements", "user_id=$1", [alice])).toBe(1);
+  });
+
+  it("P — keeps activity public-readable, self-writable, and unrepeatable", async () => {
+    await asAccount(pool, nova, (run) => run(
+      "INSERT INTO profile_activity (id,user_id,kind,key,title,subject) VALUES (gen_random_uuid(),$1,'milestone','followers:100','Milestone reached','100 followers')", [nova]));
+    expect(await visibleCount(pool, bob, "profile_activity", "user_id=$1", [nova])).toBe(1);
+
+    // The same threshold cannot fire twice.
+    await expect(asAccount(pool, nova, (run) => run(
+      "INSERT INTO profile_activity (id,user_id,kind,key,title,subject) VALUES (gen_random_uuid(),$1,'milestone','followers:100','Milestone reached','100 followers')", [nova],
+    ))).rejects.toThrow(/duplicate key|profile_activity_key_idx/i);
+
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO profile_activity (id,user_id,kind,key,title,subject) VALUES (gen_random_uuid(),$1,'rank','rank:10','Entered the Top 10','Top 10 creator')", [nova],
+    ))).rejects.toThrow(/row-level security/i);
+  });
+
+  it("P — publishes the standings and lets nobody write them", async () => {
+    await asAccount(pool, nova, (run) => run("SELECT public.refresh_creator_stats()"));
+    const seen = await asAccount(pool, bob, (run) => run("SELECT rank,user_messages,published_creations FROM creator_stats WHERE user_id=$1", [nova]));
+    expect(seen.rowCount).toBe(1);
+    expect(Number(seen.rows[0].rank)).toBeGreaterThan(0);
+    expect(Number(seen.rows[0].user_messages)).toBe(40);
+    // Only published work counts: Nova has one public creation and one private.
+    expect(Number(seen.rows[0].published_creations)).toBe(1);
+
+    await expect(asAccount(pool, bob, (run) => run(
+      "UPDATE creator_stats SET rank=1 WHERE user_id=$1", [nova],
+    ))).rejects.toThrow(/permission denied|row-level security/i);
+    await expect(asAccount(pool, bob, (run) => run(
+      "INSERT INTO creator_stats (user_id,rank) VALUES ($1,1)", [bob],
+    ))).rejects.toThrow(/permission denied|row-level security/i);
+  });
+
+  it("P — does not rank an account that has published nothing", async () => {
+    await asAccount(pool, nova, (run) => run("SELECT public.refresh_creator_stats()"));
+    expect(await visibleCount(pool, bob, "creator_stats", "user_id=$1", [eris])).toBe(0);
+  });
+
+  /**
    * Worlds V2.
    *
    * A world is now a public object with its own saves and its own discussion,

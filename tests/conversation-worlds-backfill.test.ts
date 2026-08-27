@@ -41,7 +41,9 @@ describeBackfill("existing stories keep the canon they were already written with
 
   beforeAll(async () => {
     // The schema as it stood before conversation worlds existed.
-    pool = await migratedPool({ through: "0018_memory_feedback.sql" });
+    // Its own database: this suite rewinds the schema to 0018, and the isolation
+    // suite next door rebuilds the same one from scratch in parallel.
+    pool = await migratedPool({ through: "0018_memory_feedback.sql", database: "backfill" });
     await createAccount(pool, alice, "alice@example.com");
     await createAccount(pool, bob, "bob@example.com");
 

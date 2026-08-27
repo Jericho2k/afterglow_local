@@ -258,6 +258,42 @@ async function schema() {
       world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
       PRIMARY KEY (character_id, world_id)
     );
+    CREATE TABLE IF NOT EXISTS profile_follows (
+      follower_user_id uuid NOT NULL,
+      creator_user_id uuid NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (follower_user_id, creator_user_id)
+    );
+    CREATE TABLE IF NOT EXISTS creator_stats (
+      user_id uuid PRIMARY KEY,
+      published_creations integer NOT NULL DEFAULT 0,
+      published_worlds integer NOT NULL DEFAULT 0,
+      user_messages bigint NOT NULL DEFAULT 0,
+      saves bigint NOT NULL DEFAULT 0,
+      followers integer NOT NULL DEFAULT 0,
+      rank integer,
+      rank_total integer NOT NULL DEFAULT 0,
+      computed_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS creator_stats_refresh (
+      id boolean PRIMARY KEY DEFAULT true,
+      refreshed_at timestamptz NOT NULL DEFAULT '1970-01-01T00:00:00Z'
+    );
+    CREATE TABLE IF NOT EXISTS profile_achievements (
+      user_id uuid NOT NULL,
+      achievement_id text NOT NULL,
+      unlocked_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, achievement_id)
+    );
+    CREATE TABLE IF NOT EXISTS profile_activity (
+      id uuid PRIMARY KEY,
+      user_id uuid NOT NULL,
+      kind text NOT NULL,
+      key text NOT NULL DEFAULT '',
+      title text NOT NULL,
+      subject text NOT NULL DEFAULT '',
+      occurred_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS conversation_worlds (
       conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
       world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -493,6 +529,26 @@ async function schema() {
   await pool().query("ALTER TABLE conversation_scene_states ADD COLUMN IF NOT EXISTS physical_actors jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE conversation_scene_states ADD COLUMN IF NOT EXISTS physical_contacts text[] NOT NULL DEFAULT ARRAY[]::text[]");
   await pool().query("ALTER TABLE conversation_scene_states ADD COLUMN IF NOT EXISTS physical_constraints text[] NOT NULL DEFAULT ARRAY[]::text[]");
+  /*
+   * Creator Profile V2.
+   *
+   * The counters, triggers, policies and the ranking function live in
+   * 0021_creator_profile_v2.sql. What is repeated here is only the shape a
+   * plain PostgreSQL database needs to run the same code paths: the columns
+   * the queries name, and the two relations they read. A deployment on
+   * Supabase has all of this from the migration and these statements are
+   * no-ops.
+   */
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS cover_path text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_border text NOT NULL DEFAULT 'default'");
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS featured_achievements text[] NOT NULL DEFAULT ARRAY[]::text[]");
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS follower_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS following_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS user_message_count integer NOT NULL DEFAULT 0");
+  await pool().query("CREATE INDEX IF NOT EXISTS characters_creator_popular_idx ON characters (user_id, user_message_count DESC, id DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS profile_follows_creator_idx ON profile_follows (creator_user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS profile_follows_follower_idx ON profile_follows (follower_user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS profile_activity_user_idx ON profile_activity (user_id, occurred_at DESC)");
   // Worlds V2: saves, comments and the rich-content columns. Mirrors
   // migrations 0014-0016 so the in-memory test database matches production.
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS save_count integer NOT NULL DEFAULT 0");
