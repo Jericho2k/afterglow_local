@@ -10,13 +10,24 @@ import { DiscoveryFeed } from "@/components/feed";
 import { YourCreations } from "@/components/creations";
 import { WorldsHub, WorldEditor } from "@/components/worlds";
 import { RichMessage, StyledMessage, openingBlocksFor } from "@/components/rich";
+import {
+  ArrowDown, ArrowUp, Bell, BookMarked, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight,
+  Compass, Eraser, FileText, GitBranch, Globe2, LoaderCircle, LogOut, MessagesSquare, MoreHorizontal,
+  Pencil, Play, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Sparkles, Star, Trash2,
+  TriangleAlert, Trophy, UserRound, Users, X,
+} from "lucide-react";
 import { ChatsView } from "./ChatsView";
 import { InstructionsSheet } from "./InstructionsSheet";
 import { LibraryView } from "./LibraryView";
 import { MemoryFeedback } from "./MemoryFeedback";
 import { PersonasView } from "./PersonasView";
+import { NotificationsView } from "./NotificationsView";
 import { ProfileView } from "./ProfileView";
 import { SettingsSheet } from "./SettingsSheet";
+import { ShellNavProvider } from "./ShellNav";
+import { RankingsView } from "@/components/rankings";
+import { unreadLabel } from "@/lib/notifications";
+import { clearUnreadNotifications, useUnreadNotifications } from "@/lib/notification-state";
 import { activeInstructionCount, instructionSummary } from "@/lib/chat-instructions";
 import { forgetAllStoredDrafts } from "@/components/studio/drafts";
 import { compactMessagePreview } from "@/lib/message-format";
@@ -25,7 +36,7 @@ import { AppMenuButton } from "@/components/ui";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
 import { claimDepth, justCreatedParam, rootDepth } from "@/lib/back-navigation";
-import { chatHref, commandFromSearch, isCurrentHref, routeFromSearch, viewHref, type AppView } from "@/lib/shell-route";
+import { chatHref, commandFromSearch, isCurrentHref, routeFromSearch, viewHref, type AppView, type ShellView } from "@/lib/shell-route";
 import { savedCreationDestination } from "@/lib/creation-actions";
 import { mergeCreationLists } from "@/lib/shell-library";
 import { acceptsResponse, adoptChatView, chatFailed, chatLoaded, clearChatView, emptyChatView, openChatView, type ChatView } from "@/lib/chat-view";
@@ -225,6 +236,77 @@ export default function AppShell() {
     if(isCurrentHref(window.location,target))return;
     router.push(target);
   },[router]);
+  // `openOwnProfile` is declared above `goToView` so the sidebar can call it,
+  // and needs it for the account that has no public page yet. A ref rather
+  // than a reorder, because the ordering above is the one the rest of the
+  // component depends on.
+  /**
+   * Opening your own profile means opening your PUBLIC page.
+   *
+   * "Profile" used to mean the editor, so the one thing a creator could not
+   * easily do was look at themselves the way everybody else does. It is a real
+   * page at /creators/{username} and this is what goes there; the editor is
+   * still one tap away from it, and is still where `?view=profile` lands.
+   *
+   * An account that has published nothing has no public page yet, so it gets
+   * the editor — which is the surface that explains how to get one.
+   */
+  const ownUsername=profile?.username ?? "";
+  const openOwnProfile=useCallback(()=>{
+    setSidebarOpen(false);
+    if(ownUsername){router.push(`/creators/${ownUsername}`);return;}
+    goToView("profile");
+  },[ownUsername,router,goToView]);
+
+  const { unread: unreadNotifications } = useUnreadNotifications();
+  const profileAvatar = profile?.avatarPath ? avatarSource(profileAvatarBucket, profile.avatarPath, "") : "";
+
+  /**
+   * The navigation, as data.
+   *
+   * Three groups rather than one flat list of ten, and the grouping is the
+   * product's own shape rather than a tidy-up: BROWSE is other people's work,
+   * LIBRARY is yours, ACCOUNT is you. Every destination that existed before is
+   * still here and still in the same relative order.
+   *
+   * `match` rather than an equality test, because two views can be the same
+   * destination — a chat is Chats, and there is nowhere else for it to be.
+   */
+  const navSections = useMemo(() => [
+    {
+      id: "browse",
+      label: "Browse",
+      items: [
+        { id: "home", label: "Discover", icon: Compass, match: (view: AppView) => view === "home", open: () => goToView("home") },
+        { id: "rankings", label: "Rankings", icon: Trophy, match: (view: AppView) => view === "rankings", open: () => goToView("rankings") },
+        { id: "notifications", label: "Notifications", icon: Bell, match: (view: AppView) => view === "notifications", open: () => goToView("notifications") },
+      ],
+    },
+    {
+      id: "library",
+      label: "Your library",
+      items: [
+        { id: "chats", label: "Chats", icon: MessagesSquare, match: (view: AppView) => view === "chats" || view === "chat", open: () => goToView("chats") },
+        { id: "creations", label: "Creations", icon: Sparkles, match: (view: AppView) => view === "creations", open: () => goToView("creations") },
+        { id: "worlds", label: "Worlds", icon: Globe2, match: (view: AppView) => view === "worlds", open: () => goToView("worlds") },
+        { id: "saved", label: "Saved", icon: BookMarked, match: (view: AppView) => view === "saved", open: () => goToView("saved") },
+      ],
+    },
+    {
+      id: "account",
+      label: "Account",
+      items: [
+        // Profile opens the PUBLIC page. The editor is reached from it, and is
+        // still what `?view=profile` resolves to.
+        { id: "profile", label: "Profile", icon: UserRound, match: (view: AppView) => view === "profile", open: () => openOwnProfile() },
+        { id: "personas", label: "Personas", icon: Users, match: (view: AppView) => view === "personas", open: () => goToView("personas") },
+        { id: "settings", label: "Settings", icon: Settings, match: () => false, open: () => { setSettingsOpen(true); setSidebarOpen(false); } },
+      ],
+    },
+  ], [goToView, openOwnProfile]);
+
+  /** What a component deep inside a surface uses to navigate; see ShellNav.tsx. */
+  const shellNav = useMemo(() => ({ openView: (view: ShellView) => goToView(view) }), [goToView]);
 
   /**
    * Opening a story.
@@ -775,33 +857,105 @@ export default function AppShell() {
   if (!authenticated) return <AuthGate />;
 
   return (
+    <ShellNavProvider value={shellNav}>
     <main className="app-shell">
-      {accountNotice&&<div className="account-notice" role="status"><span>✦</span>{accountNotice}<button onClick={()=>setAccountNotice("")}>×</button></div>}
+      {accountNotice&&<div className="account-notice" role="status"><Sparkles size={14} aria-hidden />{accountNotice}<button onClick={()=>setAccountNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
       {/* The shell's own lists failing used to be reported only inside the chat
           panel, so a Chats page whose creations never arrived said nothing at
           all and stayed blank until the tab was reloaded. This banner belongs
           to the shell, so it is visible on whichever surface is open, and it
           offers the retry that the reader was previously performing with F5. */}
       {libraryError&&<div className="library-error" role="alert">
-        <span aria-hidden>⚠</span>
+        <TriangleAlert size={16} aria-hidden />
         <div><strong>Some of your library could not be loaded.</strong><small>{libraryError}</small></div>
         <button onClick={()=>{setLibraryError("");refreshLibraries();}}>Try again</button>
       </div>}
-      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
-        <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}>×</button></div>
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`} aria-label="Afterglow navigation">
+        <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}><X size={18} aria-hidden /></button></div>
+        {/*
+          * The main navigation.
+          *
+          * Redesigned rather than restructured: every destination the app had
+          * is still here and still where it was in the order, because moving
+          * somebody's Saved library to teach them a new information
+          * architecture is not an improvement. What changed is that it now
+          * looks like the rest of Afterglow —
+          *
+          *   ONE ICON FAMILY. It used to be nine text glyphs (⌂ ◫ ＋ ▤ ◉ ◎ ✎
+          *   ❏ ≛) at whatever weight the font gave them, beside surfaces built
+          *   entirely out of Lucide. They were the single most visible piece of
+          *   the old product left in the new one.
+          *
+          *   THREE GROUPS, NAMED. Browse, Library and Account. Ten flat items
+          *   is a list somebody reads every time; three groups of three or four
+          *   is a shape they learn once.
+          *
+          *   ONE ACTIVE STATE, and it is unmistakable without being loud: a
+          *   soft gradient panel and a warm accent rail, not a neon fill.
+          *
+          * Create keeps its place at the top as the one primary action, and it
+          * is the only filled control in here.
+          */}
+        <button
+          className="nav-create"
+          onClick={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); setSidebarOpen(false); }}
+        >
+          <Plus size={17} aria-hidden /><strong>Create</strong>
+        </button>
+
         <nav className="primary-nav">
-          <button className={activeView === "home" ? "active" : ""} onClick={() => goToView("home")}><span>⌂</span><strong>Home</strong></button>
-          <button className={activeView === "chats" || activeView === "chat" ? "active" : ""} onClick={() => goToView("chats")}><span>◫</span><strong>Chats</strong></button>
-          <button onClick={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); setSidebarOpen(false); }}><span>＋</span><strong>Create</strong></button>
-          <button className={activeView === "worlds" ? "active" : ""} onClick={() => goToView("worlds")}><span>▤</span><strong>Worlds</strong></button>
-          <button className={activeView === "profile" ? "active" : ""} onClick={() => goToView("profile")}><span>◉</span><strong>Profile</strong></button>
-          <button className={activeView === "personas" ? "active" : ""} onClick={() => goToView("personas")}><span>◎</span><strong>Personas</strong></button>
-          <button className={activeView === "creations" ? "active" : ""} onClick={() => goToView("creations")}><span>✎</span><strong>Your Creations</strong></button>
-          <button className={activeView === "saved" ? "active" : ""} onClick={() => goToView("saved")}><span>❏</span><strong>Saved</strong></button>
-          <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><span>≛</span><strong>Settings</strong></button>
+          {navSections.map((section) => <div key={section.id} className="nav-group">
+            <span className="nav-group-label">{section.label}</span>
+            {section.items.map((item) => {
+              const Icon = item.icon;
+              const active = item.match(activeView);
+              return <button
+                key={item.id}
+                className={active ? "active" : ""}
+                aria-current={active ? "page" : undefined}
+                onClick={() => item.open()}
+              >
+                <span className="nav-icon"><Icon size={17} aria-hidden /></span>
+                <strong>{item.label}</strong>
+                {/* The dot rides the nav item too, so somebody who is on a
+                    surface with no header bell still learns there is
+                    something waiting. Never colour alone: the count is in the
+                    accessible name. */}
+                {item.id === "notifications" && unreadNotifications > 0 && <>
+                  <span className="nav-dot" aria-hidden />
+                  <span className="nav-sr">{unreadLabel(unreadNotifications)} unread</span>
+                </>}
+              </button>;
+            })}
+          </div>)}
         </nav>
-        <section className="sidebar-characters" aria-label="Your Creations"><button className="sidebar-section-link" onClick={()=>goToView("creations")}>Your Creations<span aria-hidden>›</span></button>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}>•••</button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button aria-label={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}>View creation</button><button aria-label={`Edit ${creationTitle(character)}`} onClick={()=>{setSidebarCharacterMenuId(null);setSidebarOpen(false);router.push(`/characters/${character.id}/edit`);}}>Edit creation</button></div>}</div>)}</section>
-        <div className="sidebar-footer"><div className="privacy-pill"><span>◆</span><div><strong>{profile?.displayName || activePersona?.name || "Your account"}</strong><small>{activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small></div></div><div className="sidebar-links"><button className="sidebar-lock" aria-label="Sign out" title="Sign out" onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}><span>⇥</span><strong>Sign out</strong></button></div></div>
+        <section className="sidebar-characters" aria-label="Your Creations"><button className="sidebar-section-link" onClick={()=>goToView("creations")}>Your Creations<ChevronRight size={12} aria-hidden /></button>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}><MoreHorizontal size={14} aria-hidden /></button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button aria-label={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}>View creation</button><button aria-label={`Edit ${creationTitle(character)}`} onClick={()=>{setSidebarCharacterMenuId(null);setSidebarOpen(false);router.push(`/characters/${character.id}/edit`);}}>Edit creation</button></div>}</div>)}</section>
+        <div className="sidebar-footer">
+          {/* The account, as an identity rather than as a status pill: the same
+              avatar and handle that appear on everything this account
+              publishes, so the footer and the creator card agree. */}
+          <button
+            className="account-pill"
+            onClick={() => openOwnProfile()}
+            aria-label={profile?.username ? `Open your public creator profile, @${profile.username}` : "Edit your profile"}
+          >
+            <span className="account-avatar">
+              {profileAvatar
+                ? <img src={profileAvatar} alt="" />
+                : <UserRound size={16} aria-hidden />}
+            </span>
+            <span className="account-copy">
+              <strong>{profile?.displayName || activePersona?.name || "Your account"}</strong>
+              <small>{profile?.username ? `@${profile.username}` : activePersona ? `Playing as ${activePersona.name}` : "Private library"}</small>
+            </span>
+          </button>
+          <button
+            className="sidebar-lock"
+            aria-label="Sign out"
+            title="Sign out"
+            onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); clearUnreadNotifications(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}
+          ><LogOut size={16} aria-hidden /></button>
+        </div>
       </aside>
       {/* The floating hamburger is gone. Every shell view now renders the one
           canonical menu control inside its own header, which is what removes
@@ -818,14 +972,16 @@ export default function AppShell() {
         onOpenMenu={() => setSidebarOpen(true)}
         onCreate={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); }}
         onChanged={() => { void loadCharacters(); void loadChatIndex().catch(() => undefined); }}
-      /> : selected ? (
+      /> : activeView === "notifications" ? <NotificationsView onOpenMenu={() => setSidebarOpen(true)} />
+        : activeView === "rankings" ? <RankingsView onOpenMenu={() => setSidebarOpen(true)} />
+        : selected ? (
         <section className="chat-panel">
           <header className="chat-header">
             <div className="chat-identity"><AppMenuButton className="chat-menu-button" onOpen={() => setSidebarOpen(true)} /><button className="identity-profile" title={`View ${creationTitle(selected)}`} onClick={() => openCharacterPage(selected.id)}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{creationTitle(selected)}</strong><small>{selected.creationType === "character" ? `Chatting as ${activePersona?.name || "You"}` : creationKindLine(selected)}</small></span></button></div>
             <div className="header-actions">
-              <button className="icon-button labeled" onClick={() => setStoryNavigation(openStory())}><span>⌘</span><span>Story</span></button>
-              {isAdmin && <button className="icon-button labeled" onClick={() => setMemoryOpen(true)}><span>⌁</span><span>Memories</span>{memories.length > 0 && <b>{memories.length}</b>}</button>}
-              {selected.ownedByViewer?<button className="icon-button labeled" title={`Edit ${creationTitle(selected)}`} onClick={() => { setStudioStartSection("basics"); setEditing(selected); setStudioOpen(true); }}><span>✎</span><span>Edit</span></button>:<button className="icon-button labeled" title={`View ${creationTitle(selected)}`} onClick={()=>openCharacterPage(selected.id)}><span>◉</span><span>Page</span></button>}
+              <button className="icon-button labeled" onClick={() => setStoryNavigation(openStory())}><SlidersHorizontal size={16} aria-hidden /><span>Story</span></button>
+              {isAdmin && <button className="icon-button labeled" onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} aria-hidden /><span>Memories</span>{memories.length > 0 && <b>{memories.length}</b>}</button>}
+              {selected.ownedByViewer?<button className="icon-button labeled" title={`Edit ${creationTitle(selected)}`} onClick={() => { setStudioStartSection("basics"); setEditing(selected); setStudioOpen(true); }}><Pencil size={16} aria-hidden /><span>Edit</span></button>:<button className="icon-button labeled" title={`View ${creationTitle(selected)}`} onClick={()=>openCharacterPage(selected.id)}><FileText size={16} aria-hidden /><span>Page</span></button>}
             </div>
           </header>
           <div className="messages" ref={attachMessageList} onScroll={trackScrollPosition}>
@@ -844,31 +1000,31 @@ export default function AppShell() {
                 <div className="message-stack">
                   <div className="message-meta"><strong>{message.role === "assistant" ? creationSubject(selected) : activePersona?.name || "You"}</strong><time>{time(message.createdAt)}</time></div>
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`} style={editingMessageId === message.id && editWidth ? { width: editWidth } : undefined}>
-                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" && openingBlocks(message, index) ? <RichMessage blocks={openingBlocks(message, index)} bucket={characterAvatarBucket} /> : <StyledMessage content={message.content} providerEscapes={message.role === "assistant"} />) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}>‹</button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}>›</button><em>Selected</em></div>}</>}
+                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" && openingBlocks(message, index) ? <RichMessage blocks={openingBlocks(message, index)} bucket={characterAvatarBucket} /> : <StyledMessage content={message.content} providerEscapes={message.role === "assistant"} />) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}><ChevronLeft size={15} aria-hidden /></button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}><ChevronRight size={15} aria-hidden /></button><em>Selected</em></div>}</>}
                   </div>
-                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}>✎ Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}>⌫ Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?"◌ Creating…":"⑂ Branch here"}</button>{isAdmin && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}>⌁ {recallLabel(message)}</button>}{conversation && <MemoryFeedback messageId={message.id} conversationId={conversation.id} />}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}>↻ Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}>▶ Continue</button></>}</div>}
+                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}><Pencil size={12} aria-hidden />Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}><Eraser size={12} aria-hidden />Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?<><LoaderCircle size={12} className="spin" aria-hidden />Creating…</>:<><GitBranch size={12} aria-hidden />Branch here</>}</button>{isAdmin && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}><BrainCircuit size={12} aria-hidden />{recallLabel(message)}</button>}{conversation && <MemoryFeedback messageId={message.id} conversationId={conversation.id} />}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}><RefreshCw size={12} aria-hidden />Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}><Play size={12} aria-hidden />Continue</button></>}</div>}
                 </div>
               </article>
             ))}
             </>}
           </div>
-          {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
-          {chatNotice && <div className="success-banner" role="status"><span>✓</span><strong>{chatNotice}</strong><button onClick={() => setChatNotice("")}>×</button></div>}
+          {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
+          {chatNotice && <div className="success-banner" role="status"><Check size={14} aria-hidden /><strong>{chatNotice}</strong><button onClick={() => setChatNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
           <div className="composer-wrap">
-            {!atBottom && <button className="jump-latest" aria-label="Jump to the latest message" onClick={scrollToBottom}>↓ Latest</button>}
-            <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span>•</span><span>{activePersona?.name || "You"}</span>{conversation && activeInstructionCount(conversation) > 0 && <><span>•</span><span>{activeInstructionCount(conversation)} instructions</span></>}</div>
+            {!atBottom && <button className="jump-latest" aria-label="Jump to the latest message" onClick={scrollToBottom}><ArrowDown size={13} aria-hidden />Latest</button>}
+            <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span aria-hidden>·</span><span>{activePersona?.name || "You"}</span>{conversation && activeInstructionCount(conversation) > 0 && <><span aria-hidden>·</span><span>{activeInstructionCount(conversation)} instructions</span></>}</div>
             {composerToolsOpen && <div className="composer-tools">
-              <button onClick={() => openComposerTool("world")}><span>▤</span><strong>Worlds</strong><small>{storyWorlds===null?"In this story":storyWorlds.length===1?"1 in this story":`${storyWorlds.length} in this story`}</small></button>
-              <button onClick={() => openComposerTool("persona")}><span>◉</span><strong>Persona</strong><small>{activePersona?.name || "Choose who you are"}</small></button>
-              <button onClick={() => openComposerTool("instructions")}><span>⌘</span><strong>Instructions</strong><small>{instructionSummary(conversation)}</small></button>
-              <button onClick={() => openComposerTool("model")}><span>✦</span><strong>Engine</strong><small>{modelCatalog.engines.find((engine)=>engine.id===(conversation?.rpEngineId||settings.roleplayPreset))?.label || "Choose an engine"}</small></button>
+              <button onClick={() => openComposerTool("world")}><Globe2 size={16} aria-hidden /><strong>Worlds</strong><small>{storyWorlds===null?"In this story":storyWorlds.length===1?"1 in this story":`${storyWorlds.length} in this story`}</small></button>
+              <button onClick={() => openComposerTool("persona")}><Users size={16} aria-hidden /><strong>Persona</strong><small>{activePersona?.name || "Choose who you are"}</small></button>
+              <button onClick={() => openComposerTool("instructions")}><SlidersHorizontal size={16} aria-hidden /><strong>Instructions</strong><small>{instructionSummary(conversation)}</small></button>
+              <button onClick={() => openComposerTool("model")}><Sparkles size={16} aria-hidden /><strong>Engine</strong><small>{modelCatalog.engines.find((engine)=>engine.id===(conversation?.rpEngineId||settings.roleplayPreset))?.label || "Choose an engine"}</small></button>
             </div>}
             <div className="composer">
-              <button className={`composer-plus ${composerToolsOpen ? "active" : ""}`} aria-label="Chat tools" onClick={() => setComposerToolsOpen((value) => !value)}>{composerToolsOpen ? "×" : "+"}</button>
+              <button className={`composer-plus ${composerToolsOpen ? "active" : ""}`} aria-label="Chat tools" onClick={() => setComposerToolsOpen((value) => !value)}>{composerToolsOpen ? <X size={18} aria-hidden /> : <Plus size={18} aria-hidden />}</button>
               <textarea ref={composerRef} value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${inlineTitle(creationSubject(selected), 24)}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
-              <button className="send-button" aria-label="Send message" disabled={streaming || !composer.trim()} onClick={() => void send()}>↑</button>
+              <button className="send-button" aria-label="Send message" disabled={streaming || !composer.trim()} onClick={() => void send()}><ArrowUp size={18} aria-hidden /></button>
             </div>
-            <small className="composer-hint"><span className="desktop-composer-hint">Enter to send · Shift + Enter for a new line</span><span className="mobile-composer-hint">Enter for a new line · Tap ↑ to send</span></small>
+            <small className="composer-hint"><span className="desktop-composer-hint">Enter to send · Shift + Enter for a new line</span><span className="mobile-composer-hint">Enter for a new line · Tap send to send</span></small>
           </div>
         </section>
       ) : chatView.request ? (
@@ -884,7 +1040,7 @@ export default function AppShell() {
          */
         <ChatSkeletonPanel />
       ) : (
-        <section className="empty-state"><div className="orb">✦</div><span className="eyebrow">Your private story studio</span><h1>Create someone<br />worth remembering.</h1><p>Shape their history, voice, desires, and boundaries. Afterglow keeps the moments that matter.</p><button className="primary" onClick={() => setStudioOpen(true)}>Create your first character</button></section>
+        <section className="empty-state"><div className="orb" aria-hidden>✦</div><span className="eyebrow">Your private story studio</span><h1>Create someone<br />worth remembering.</h1><p>Shape their history, voice, desires, and boundaries. Afterglow keeps the moments that matter.</p><button className="primary" onClick={() => setStudioOpen(true)}>Create your first character</button></section>
       )}
 
       {editingWorld && <WorldEditor
@@ -929,6 +1085,7 @@ export default function AppShell() {
       {storyNavigation.surface==="model" && conversation && <ModelPicker catalog={modelCatalog} conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
       {storyNavigation.surface==="world" && conversation && <StoryWorldPicker conversationId={conversation.id} title={selected?creationTitle(selected):"this story"} onClose={closeStoryNavigation} onChanged={setStoryWorlds} />}
     </main>
+    </ShellNavProvider>
   );
 }
 
@@ -978,7 +1135,7 @@ function Avatar({ character, large = false }: { character: AvatarSubject; large?
  * browser has nothing, and the symptom is otherwise a blank page.
  */
 function ConfigNotice() {
-  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">◇</div>
+  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol" aria-hidden>◇</div>
     <span className="eyebrow">Configuration needed</span>
     <h1>Almost there.</h1>
     <p>This build has no Supabase settings baked into it, so sign-in cannot load.</p>
@@ -1019,7 +1176,7 @@ function AuthGate() {
   }
   async function resend(){if(!email){setError("Enter your email address first.");return;}setBusy(true);setError("");try{const {error:resendError}=await supabaseBrowser().auth.resend({type:"signup",email,options:{emailRedirectTo:`${window.location.origin}/auth/callback?next=/`}});if(resendError)throw resendError;setNotice("A fresh verification link is on its way.");}catch(reason){setError(reason instanceof Error?reason.message:"Could not resend verification");}finally{setBusy(false);}}
 
-  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">◇</div>
+  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol" aria-hidden>◇</div>
     <span className="eyebrow">{mode === "signup" ? "Create an account" : "Welcome back"}</span>
     <h1>{mode === "signup" ? "Begin your story." : "Sign in."}</h1>
     <p>{mode === "signup" ? "Your characters, chats, and memories stay private to your account." : "Your library is waiting exactly where you left it."}</p>
@@ -1029,7 +1186,7 @@ function AuthGate() {
       <input type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" />
       <button className="primary" disabled={busy || !email || password.length < 8}>{busy ? "One moment…" : mode === "signup" ? "Create account" : "Sign in"}</button>
       {error && <small className="form-error">{error}</small>}
-      {notice && <div className="verification-notice"><span>✦</span><p>{notice}</p><button type="button" disabled={busy} onClick={()=>void resend()}>Resend email</button></div>}
+      {notice && <div className="verification-notice"><Sparkles size={15} aria-hidden /><p>{notice}</p><button type="button" disabled={busy} onClick={()=>void resend()}>Resend email</button></div>}
     </form>
     <button className="text-button auth-switch" onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); setNotice(""); }}>
       {mode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}
@@ -1069,7 +1226,7 @@ function MemoryDrawer({ character, conversation, memories, onClose, onChange }: 
     onChange();
   }
   const memoryKinds: ChoiceOption[] = [{value:"identity",label:"Identity"},{value:"relationship",label:"Relationship"},{value:"event",label:"Event"},{value:"promise",label:"Promise"},{value:"preference",label:"Preference"},{value:"boundary",label:"Boundary"},{value:"open_loop",label:"Open loop"}];
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer"><header><div><span className="eyebrow">Continuity</span><h2>{character.name}&apos;s memories</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="memory-explainer"><span>⌁</span><p>Generated memories belong only to this chat. Active promises and open loops receive protected recall; resolved ones remain in the permanent archive.</p>{conversation && <button disabled={busy || conversation.messageCount < 2} onClick={async () => { setBusy(true); try { await api("/api/memories/consolidate",{method:"POST",body:JSON.stringify({conversationId:conversation.id})}); onChange(); } finally { setBusy(false); } }}>{busy?"Remembering…":"Refresh now"}</button>}</div><SceneStatePanel conversation={conversation}/>{conversation?.summary && <section className="summary-card"><span className="eyebrow">Rolling story-so-far · this chat</span><p>{conversation.summary}</p></section>}<div className="memory-list">{memories.map((memory) => <article key={memory.id} className={`memory-card memory-${memory.status}`}><div><span className={`memory-pin ${memory.pinned ? "pinned" : ""}`}>{memory.pinned ? "◆ Pinned" : `Importance ${memory.importance}/5`} · {memory.conversationId ? "This chat" : "All chats"} · {memory.status}</span><span className="memory-controls"><ChoiceField label="Memory type" value={memory.kind} options={memoryKinds} onChange={(value)=>void updateMemory(memory,{kind:value as Memory["kind"]})} compact/>{(memory.kind === "promise" || memory.kind === "open_loop") && <ChoiceField label="Memory status" value={memory.status} options={[{value:"active",label:"Active"},{value:"resolved",label:"Resolved"},{value:"superseded",label:"Superseded"}]} onChange={(value)=>void updateMemory(memory,{status:value as Memory["status"],resolution:value === "active" ? "" : memory.resolution})} compact/>}<button onClick={() => void updateMemory(memory,{pinned:!memory.pinned})}>{memory.pinned?"Unpin":"Pin"}</button><button onClick={() => { const value=window.prompt("Edit memory",memory.content)?.trim(); if(value&&value!==memory.content) void updateMemory(memory,{content:value}); }}>Edit</button><button onClick={async () => { if(!window.confirm("Delete this memory?")) return; await api(`/api/memories?id=${memory.id}`, { method: "DELETE" }); onChange(); }}>Delete</button></span></div><p>{memory.content}</p>{memory.resolution && <p className="memory-resolution">Resolved: {memory.resolution}</p>}{memory.keywords.length > 0 && <small>{memory.keywords.map((key) => `#${key}`).join("  ")}</small>}</article>)}</div><form className="memory-form" onSubmit={async (e) => { e.preventDefault(); setBusy(true); try { await api("/api/memories", { method: "POST", body: JSON.stringify({ characterId: character.id, conversationId: scope === "chat" ? conversation?.id ?? null : null, content, kind:"event", keywords: keywords.split(",").map((x) => x.trim()).filter(Boolean), importance: 5, pinned: true }) }); setContent(""); setKeywords(""); onChange(); } finally { setBusy(false); } }}><span className="eyebrow">Add pinned journal</span><ChoiceField label="Use in" value={scope} options={[{value:"chat",label:"This chat only"},{value:"character",label:"All chats with this character"}]} onChange={(value)=>setScope(value as "chat"|"character")}/><textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="A fact, promise, preference, or piece of lore…" rows={3} /><input value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="Recall keywords, comma separated" /><button className="primary" disabled={busy || !content.trim()}>Add to memory</button></form></aside></div>;
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer"><header><div><span className="eyebrow">Continuity</span><h2>{character.name}&apos;s memories</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="memory-explainer"><BrainCircuit size={16} aria-hidden /><p>Generated memories belong only to this chat. Active promises and open loops receive protected recall; resolved ones remain in the permanent archive.</p>{conversation && <button disabled={busy || conversation.messageCount < 2} onClick={async () => { setBusy(true); try { await api("/api/memories/consolidate",{method:"POST",body:JSON.stringify({conversationId:conversation.id})}); onChange(); } finally { setBusy(false); } }}>{busy?"Remembering…":"Refresh now"}</button>}</div><SceneStatePanel conversation={conversation}/>{conversation?.summary && <section className="summary-card"><span className="eyebrow">Rolling story-so-far · this chat</span><p>{conversation.summary}</p></section>}<div className="memory-list">{memories.map((memory) => <article key={memory.id} className={`memory-card memory-${memory.status}`}><div><span className={`memory-pin ${memory.pinned ? "pinned" : ""}`}>{memory.pinned ? "◆ Pinned" : `Importance ${memory.importance}/5`} · {memory.conversationId ? "This chat" : "All chats"} · {memory.status}</span><span className="memory-controls"><ChoiceField label="Memory type" value={memory.kind} options={memoryKinds} onChange={(value)=>void updateMemory(memory,{kind:value as Memory["kind"]})} compact/>{(memory.kind === "promise" || memory.kind === "open_loop") && <ChoiceField label="Memory status" value={memory.status} options={[{value:"active",label:"Active"},{value:"resolved",label:"Resolved"},{value:"superseded",label:"Superseded"}]} onChange={(value)=>void updateMemory(memory,{status:value as Memory["status"],resolution:value === "active" ? "" : memory.resolution})} compact/>}<button onClick={() => void updateMemory(memory,{pinned:!memory.pinned})}>{memory.pinned?"Unpin":"Pin"}</button><button onClick={() => { const value=window.prompt("Edit memory",memory.content)?.trim(); if(value&&value!==memory.content) void updateMemory(memory,{content:value}); }}>Edit</button><button onClick={async () => { if(!window.confirm("Delete this memory?")) return; await api(`/api/memories?id=${memory.id}`, { method: "DELETE" }); onChange(); }}>Delete</button></span></div><p>{memory.content}</p>{memory.resolution && <p className="memory-resolution">Resolved: {memory.resolution}</p>}{memory.keywords.length > 0 && <small>{memory.keywords.map((key) => `#${key}`).join("  ")}</small>}</article>)}</div><form className="memory-form" onSubmit={async (e) => { e.preventDefault(); setBusy(true); try { await api("/api/memories", { method: "POST", body: JSON.stringify({ characterId: character.id, conversationId: scope === "chat" ? conversation?.id ?? null : null, content, kind:"event", keywords: keywords.split(",").map((x) => x.trim()).filter(Boolean), importance: 5, pinned: true }) }); setContent(""); setKeywords(""); onChange(); } finally { setBusy(false); } }}><span className="eyebrow">Add pinned journal</span><ChoiceField label="Use in" value={scope} options={[{value:"chat",label:"This chat only"},{value:"character",label:"All chats with this character"}]} onChange={(value)=>setScope(value as "chat"|"character")}/><textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="A fact, promise, preference, or piece of lore…" rows={3} /><input value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="Recall keywords, comma separated" /><button className="primary" disabled={busy || !content.trim()}>Add to memory</button></form></aside></div>;
 }
 
 type RecallItem =
@@ -1110,8 +1267,8 @@ function RecallDrawer({ message, onClose }: { message: Message; onClose: () => v
   const expected = message.memoryIds.length + message.arcIds.length;
   return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
     <aside className="memory-drawer recall-drawer">
-      <header><div><span className="eyebrow">Reply context</span><h2>What this reply remembered</h2></div><button className="icon-button" onClick={onClose}>×</button></header>
-      <div className="memory-explainer"><span>⌁</span><p>Every reply also receives the complete creation profile, the current rolling summary, and the recent transcript. Listed below are the {expected === 1 ? "one additional continuity item" : `${expected} additional continuity items`} recalled from the permanent archive for this reply.</p></div>
+      <header><div><span className="eyebrow">Reply context</span><h2>What this reply remembered</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header>
+      <div className="memory-explainer"><BrainCircuit size={16} aria-hidden /><p>Every reply also receives the complete creation profile, the current rolling summary, and the recent transcript. Listed below are the {expected === 1 ? "one additional continuity item" : `${expected} additional continuity items`} recalled from the permanent archive for this reply.</p></div>
       <div className="memory-list">
         {!detail && !failed && <section className="summary-card"><span className="eyebrow">Reading this reply&apos;s recall</span></section>}
         {failed && <section className="summary-card"><span className="eyebrow">Recall unavailable</span><p>This reply&apos;s recall could not be read. Nothing has been lost — close and reopen this panel to try again.</p></section>}
@@ -1140,7 +1297,7 @@ function ConversationDrawer({ character, conversation, settings, catalog, person
   const [personaId,setPersonaId] = useState(personas.find((item) => item.isDefault)?.id ?? personas[0]?.id ?? "");
   const engine=catalog.engines.find((item)=>item.id===(conversation?.rpEngineId||settings.roleplayPreset));
   const activePersona=personas.find((item)=>item.id===conversation?.personaId)??personas.find((item)=>item.isDefault);
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer conversation-drawer"><header><div><span className="eyebrow">Story control center</span><h2>{character.name}</h2></div><button className="icon-button" onClick={onClose}>×</button></header>{conversation&&<section className="story-controls"><div className="story-control-grid"><button onClick={onOpenModel}><span>✦</span><strong>Engine</strong><small>{engine?.label||conversation.rpEngineId}</small></button><button onClick={onOpenPersona}><span>◉</span><strong>Persona</strong><small>{activePersona?.name||"Choose who you are"}</small></button><button onClick={onOpenInstructions}><span>⌘</span><strong>Instructions</strong><small>{instructionSummary(conversation)}</small></button><button onClick={onOpenWorld}><span>▤</span><strong>Worlds</strong><small>{storyWorldCount===null?"In this story":storyWorldCount===1?"1 in this story":`${storyWorldCount} in this story`}</small></button></div><div className="story-preferences"><ChoiceField label="Response length" value={conversation.responseLength||"default"} onChange={(value)=>void onUpdate({responseLength:value==="default"?null:value as Conversation["responseLength"]})} options={[{value:"default",label:`Use default (${settings.responseLength})`},{value:"concise",label:"Concise",description:"Tighter replies with fewer beats."},{value:"natural",label:"Natural",description:"Preserves Afterglow's current pacing."},{value:"detailed",label:"Detailed",description:"Fuller scenes where the moment supports it."}]}/><ChoiceField label="Creativity" value={conversation.temperature==null?"default":String(conversation.temperature)} onChange={(value)=>void onUpdate({temperature:value==="default"?null:Number(value)})} options={[{value:"default",label:`Use default (${settings.temperature})`},{value:"0.7",label:"Grounded"},{value:"0.95",label:"Balanced"},{value:"1.15",label:"Expressive"}]}/></div><p className="setting-note">These choices affect only this story. Messages, branches, and continuity stay intact.</p></section>}<div className="drawer-action"><span className="field-label">Start another story as</span><div className="persona-choice-grid">{personas.map((persona)=><button key={persona.id} className={personaId===persona.id?"selected":""} onClick={()=>setPersonaId(persona.id)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available persona"}</small></span></button>)}</div><button className="primary" disabled={creating} onClick={() => onNew(0,personaId || null)}>{creating?"◌ Starting…":"＋ Start separate story"}</button><p>Opening messages appear as options on the first reply. Existing stories are never reset.</p></div><div className="conversation-list">{conversations.map((item) => <article key={item.id} className={`conversation-card ${item.id === activeId ? "active" : ""}`}><button className="conversation-main" onClick={() => onSelect(item.id)}><strong>{item.title}</strong><span>{item.messageCount} messages · {personas.find((persona) => persona.id === item.personaId)?.name || "Default persona"} · {new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(item.updatedAt))}</span></button><div><button title="Rename" onClick={async () => { const title = window.prompt("Conversation title",item.title)?.trim(); if (!title || title === item.title) return; await api(`/api/conversations/${item.id}`,{method:"PATCH",body:JSON.stringify({title})}); onChange(); }}>✎</button><button title="Delete" onClick={async () => { if (!window.confirm(`Delete “${item.title}” and its chat-specific memories? All-chats journal entries will remain.`)) return; await api(`/api/conversations/${item.id}`,{method:"DELETE"}); onChange(); }}>⌫</button></div></article>)}</div></aside></div>;
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer conversation-drawer"><header><div><span className="eyebrow">Story control center</span><h2>{character.name}</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header>{conversation&&<section className="story-controls"><div className="story-control-grid"><button onClick={onOpenModel}><Sparkles size={16} aria-hidden /><strong>Engine</strong><small>{engine?.label||conversation.rpEngineId}</small></button><button onClick={onOpenPersona}><Users size={16} aria-hidden /><strong>Persona</strong><small>{activePersona?.name||"Choose who you are"}</small></button><button onClick={onOpenInstructions}><SlidersHorizontal size={16} aria-hidden /><strong>Instructions</strong><small>{instructionSummary(conversation)}</small></button><button onClick={onOpenWorld}><Globe2 size={16} aria-hidden /><strong>Worlds</strong><small>{storyWorldCount===null?"In this story":storyWorldCount===1?"1 in this story":`${storyWorldCount} in this story`}</small></button></div><div className="story-preferences"><ChoiceField label="Response length" value={conversation.responseLength||"default"} onChange={(value)=>void onUpdate({responseLength:value==="default"?null:value as Conversation["responseLength"]})} options={[{value:"default",label:`Use default (${settings.responseLength})`},{value:"concise",label:"Concise",description:"Tighter replies with fewer beats."},{value:"natural",label:"Natural",description:"Preserves Afterglow's current pacing."},{value:"detailed",label:"Detailed",description:"Fuller scenes where the moment supports it."}]}/><ChoiceField label="Creativity" value={conversation.temperature==null?"default":String(conversation.temperature)} onChange={(value)=>void onUpdate({temperature:value==="default"?null:Number(value)})} options={[{value:"default",label:`Use default (${settings.temperature})`},{value:"0.7",label:"Grounded"},{value:"0.95",label:"Balanced"},{value:"1.15",label:"Expressive"}]}/></div><p className="setting-note">These choices affect only this story. Messages, branches, and continuity stay intact.</p></section>}<div className="drawer-action"><span className="field-label">Start another story as</span><div className="persona-choice-grid">{personas.map((persona)=><button key={persona.id} className={personaId===persona.id?"selected":""} onClick={()=>setPersonaId(persona.id)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available persona"}</small></span></button>)}</div><button className="primary" disabled={creating} onClick={() => onNew(0,personaId || null)}>{creating?<><LoaderCircle size={15} className="spin" aria-hidden />Starting…</>:<><Plus size={15} aria-hidden />Start separate story</>}</button><p>Opening messages appear as options on the first reply. Existing stories are never reset.</p></div><div className="conversation-list">{conversations.map((item) => <article key={item.id} className={`conversation-card ${item.id === activeId ? "active" : ""}`}><button className="conversation-main" onClick={() => onSelect(item.id)}><strong>{item.title}</strong><span>{item.messageCount} messages · {personas.find((persona) => persona.id === item.personaId)?.name || "Default persona"} · {new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"}).format(new Date(item.updatedAt))}</span></button><div><button title="Rename" onClick={async () => { const title = window.prompt("Conversation title",item.title)?.trim(); if (!title || title === item.title) return; await api(`/api/conversations/${item.id}`,{method:"PATCH",body:JSON.stringify({title})}); onChange(); }}><Pencil size={14} aria-hidden /></button><button title="Delete" onClick={async () => { if (!window.confirm(`Delete “${item.title}” and its chat-specific memories? All-chats journal entries will remain.`)) return; await api(`/api/conversations/${item.id}`,{method:"DELETE"}); onChange(); }}><Trash2 size={14} aria-hidden /></button></div></article>)}</div></aside></div>;
 }
 
 /**
@@ -1198,7 +1355,7 @@ function StoryWorldPicker({conversationId,title,onClose,onChanged}:{conversation
     <aside className="memory-drawer picker-drawer">
       <header>
         <div><span className="eyebrow">This story only</span><h2>Worlds in {inlineTitle(title,28)}</h2></div>
-        <button className="icon-button" aria-label="Close" onClick={onClose}>×</button>
+        <button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button>
       </header>
       <div className="picker-body">
         <p>These worlds are canon for <strong>this story</strong>. Adding or removing one here changes what the writer reads in this conversation and nothing else — the creation itself, its other stories, and anybody else&apos;s stories are untouched.</p>
@@ -1246,13 +1403,13 @@ type ChoiceOption = { value: string; label: string; description?: string };
 function ChoiceField({ label, value, options, onChange, compact = false }: { label: string; value: string; options: ChoiceOption[]; onChange: (value: string) => void; compact?: boolean }) {
   const [open,setOpen] = useState(false);
   const selected = options.find((option)=>option.value===value) ?? options[0];
-  return <div className={`choice-field ${compact?"compact":""}`}><span className="field-label">{label}</span><button type="button" className="choice-trigger" onClick={()=>setOpen(true)}><span><strong>{selected?.label||"Choose"}</strong>{selected?.description&&<small>{selected.description}</small>}</span><b>⌄</b></button>{open&&<div className="choice-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)setOpen(false);}}><section className="choice-modal" role="dialog" aria-modal="true" aria-label={label}><header><div><span className="eyebrow">Choose an option</span><h3>{label}</h3></div><button type="button" className="icon-button" onClick={()=>setOpen(false)}>×</button></header><div className="choice-options">{options.map((option)=><button type="button" key={option.value} className={option.value===value?"selected":""} onClick={()=>{onChange(option.value);setOpen(false);}}><span className="choice-radio">{option.value===value?"●":"○"}</span><span><strong>{option.label}</strong>{option.description&&<small>{option.description}</small>}</span></button>)}</div></section></div>}</div>;
+  return <div className={`choice-field ${compact?"compact":""}`}><span className="field-label">{label}</span><button type="button" className="choice-trigger" onClick={()=>setOpen(true)}><span><strong>{selected?.label||"Choose"}</strong>{selected?.description&&<small>{selected.description}</small>}</span><b><ChevronDown size={15} aria-hidden /></b></button>{open&&<div className="choice-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)setOpen(false);}}><section className="choice-modal" role="dialog" aria-modal="true" aria-label={label}><header><div><span className="eyebrow">Choose an option</span><h3>{label}</h3></div><button type="button" className="icon-button" aria-label="Close" onClick={()=>setOpen(false)}><X size={18} aria-hidden /></button></header><div className="choice-options">{options.map((option)=><button type="button" key={option.value} className={option.value===value?"selected":""} onClick={()=>{onChange(option.value);setOpen(false);}}><span className="choice-radio">{option.value===value?"●":"○"}</span><span><strong>{option.label}</strong>{option.description&&<small>{option.description}</small>}</span></button>)}</div></section></div>}</div>;
 }
 
 function PersonaPicker({ personas, selectedId, onClose, onManage, onCreated, onSave }: { personas: Persona[]; selectedId: string | null; onClose: () => void; onManage: () => void; onCreated:(persona:Persona)=>void; onSave: (personaId: string | null) => Promise<void> }) {
   const [pending,setPending] = useState<string|null>(selectedId); const [busy,setBusy] = useState(false); const [creating,setCreating]=useState(false); const [name,setName]=useState(""); const [description,setDescription]=useState(""); const [error,setError]=useState("");
   async function create(){setBusy(true);setError("");try{const data=await api<{persona:Persona}>("/api/personas",{method:"POST",body:JSON.stringify({name,description,avatarUrl:"",avatarPath:"",accent:"#e879a9",isDefault:personas.length===0})});onCreated(data.persona);setPending(data.persona.id);setCreating(false);}catch(e){setError(e instanceof Error?e.message:"Could not create persona");}finally{setBusy(false);}}
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer persona-picker"><header><div><span className="eyebrow">This story</span><h2>Choose persona</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="picker-body"><p>Choose who you are in this chat. Changing persona does not reset its messages or memories.</p><div className="persona-picker-list">{personas.map((persona)=><button key={persona.id} className={pending===persona.id?"selected":""} onClick={()=>setPending(persona.id)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available for any chat"}</small><p>{compactMessagePreview(persona.description||"No profile details yet.",150)}</p></span><b>{pending===persona.id?"✓":""}</b></button>)}</div>{creating?<div className="inline-create"><label>Persona name<input autoFocus value={name} onChange={(e)=>setName(e.target.value)}/></label><label>What should characters know?<textarea rows={6} value={description} onChange={(e)=>setDescription(e.target.value)}/></label><div><button className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary" disabled={busy||!name.trim()} onClick={()=>void create()}>{busy?"Creating…":"Create persona"}</button></div></div>:<div className="picker-create-actions"><button className="secondary create-from-picker" onClick={()=>setCreating(true)}>＋ Create persona</button><button className="secondary create-from-picker" onClick={onManage}>✎ Manage</button></div>}{!personas.length&&!creating&&<div className="empty-library-note">Create your first persona to tell characters who they are speaking with.</div>}{error&&<div className="form-error">{error}</div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!pending} onClick={async()=>{setBusy(true);try{await onSave(pending);}finally{setBusy(false);}}}>{busy?"Saving…":"Use persona"}</button></footer></aside></div>;
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer persona-picker"><header><div><span className="eyebrow">This story</span><h2>Choose persona</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="picker-body"><p>Choose who you are in this chat. Changing persona does not reset its messages or memories.</p><div className="persona-picker-list">{personas.map((persona)=><button key={persona.id} className={pending===persona.id?"selected":""} onClick={()=>setPending(persona.id)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available for any chat"}</small><p>{compactMessagePreview(persona.description||"No profile details yet.",150)}</p></span><b>{pending===persona.id?"✓":""}</b></button>)}</div>{creating?<div className="inline-create"><label>Persona name<input autoFocus value={name} onChange={(e)=>setName(e.target.value)}/></label><label>What should characters know?<textarea rows={6} value={description} onChange={(e)=>setDescription(e.target.value)}/></label><div><button className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary" disabled={busy||!name.trim()} onClick={()=>void create()}>{busy?"Creating…":"Create persona"}</button></div></div>:<div className="picker-create-actions"><button className="secondary create-from-picker" onClick={()=>setCreating(true)}><Plus size={15} aria-hidden />Create persona</button><button className="secondary create-from-picker" onClick={onManage}><Pencil size={15} aria-hidden />Manage</button></div>}{!personas.length&&!creating&&<div className="empty-library-note">Create your first persona to tell characters who they are speaking with.</div>}{error&&<div className="form-error">{error}</div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!pending} onClick={async()=>{setBusy(true);try{await onSave(pending);}finally{setBusy(false);}}}>{busy?"Saving…":"Use persona"}</button></footer></aside></div>;
 }
 
 function ModelPicker({ catalog, conversation, onClose, onSave }: { catalog: ModelCatalog; conversation: Conversation; onClose: () => void; onSave: (changes: Pick<Conversation,"providerId"|"modelId"|"rpEngineId">) => Promise<void> }) {
@@ -1268,7 +1425,7 @@ function ModelPicker({ catalog, conversation, onClose, onSave }: { catalog: Mode
     return [engine.label,engine.description,...engine.tags].some((value)=>value.toLowerCase().includes(normalizedSearch));
   });
   function toggleFavorite(id:string){setFavorites((current)=>{const next=current.includes(id)?current.filter((item)=>item!==id):[...current,id];localStorage.setItem("afterglow_favorite_models",JSON.stringify(next));return next;});}
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer model-picker"><header><div><span className="eyebrow">How this story is written</span><h2>Roleplay engine</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="picker-body"><p>The engine decides how the roleplay is handled — pacing, escalation, initiative, how much the cast is kept apart. Your creation stays the character it is, and your world, persona, history and memory are unchanged when you switch.</p><div className={`model-navigation ${searchOpen?"searching":""}`}>{searchOpen?<><input autoFocus value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="Search engines" aria-label="Search engines"/><button className="icon-button" aria-label="Close search" onClick={()=>{setSearchOpen(false);setSearch("");}}>×</button></>:<><button className={section==="discover"?"active":""} onClick={()=>setSection("discover")}>Discover</button><button className={section==="favorites"?"active":""} onClick={()=>setSection("favorites")}>Favorites</button><button className="model-search-button" aria-label="Search engines" onClick={()=>setSearchOpen(true)}>⌕</button></>}</div><div className="model-card-list">{engines.map((engine)=><article key={engine.id} className={engine.id===engineId?"model-card selected":"model-card"}><button className="model-card-main" onClick={()=>setEngineId(engine.id)}><span className="model-radio">{engine.id===engineId?"●":"○"}</span><span><strong>{engine.label}</strong><small>{engine.description}</small><span className="model-tags">{engine.adult&&<em>18+ RP</em>}{engine.tags.map((tag)=><i key={tag}>{tag}</i>)}</span></span></button><button className={favorites.includes(engine.id)?"model-favorite active":"model-favorite"} aria-label={favorites.includes(engine.id)?`Remove ${engine.label} from favourites`:`Favourite ${engine.label}`} onClick={()=>toggleFavorite(engine.id)}>☆</button></article>)}</div>{!engines.length&&<div className="empty-library-note">{searchOpen?"No engines match that search.":"Favourite an engine in Discover and it will appear here."}</div>}<button className="advanced-model-toggle" onClick={()=>setAdvanced((value)=>!value)}><span><strong>Writer model</strong><small>{selectedModel?.label||conversation.modelId}</small></span><b>{advanced?"⌃":"⌄"}</b></button>{advanced&&<div className="advanced-model-panel"><p>The engine above is Afterglow&apos;s brief for how to write. The writer model is the language model that writes to it — a different capability, not a different style.</p><ChoiceField label="Provider" value={providerId} onChange={(value)=>{setProviderId(value);setModelId(catalog.models.find((model)=>model.providerId===value)?.id||"");}} options={catalog.providers.map((provider)=>({value:provider.id,label:provider.label}))}/><ChoiceField label="Writer model" value={modelId} onChange={setModelId} options={models.map((model)=>({value:model.id,label:model.label,description:model.description}))}/></div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!selectedModel} onClick={async()=>{if(!selectedModel)return;setBusy(true);try{await onSave({providerId,modelId:selectedModel.id,rpEngineId:engineId});}finally{setBusy(false);}}}>{busy?"Switching…":"Use engine"}</button></footer></aside></div>;
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer model-picker"><header><div><span className="eyebrow">How this story is written</span><h2>Roleplay engine</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="picker-body"><p>The engine decides how the roleplay is handled — pacing, escalation, initiative, how much the cast is kept apart. Your creation stays the character it is, and your world, persona, history and memory are unchanged when you switch.</p><div className={`model-navigation ${searchOpen?"searching":""}`}>{searchOpen?<><input autoFocus value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="Search engines" aria-label="Search engines"/><button className="icon-button" aria-label="Close search" onClick={()=>{setSearchOpen(false);setSearch("");}}><X size={16} aria-hidden /></button></>:<><button className={section==="discover"?"active":""} onClick={()=>setSection("discover")}>Discover</button><button className={section==="favorites"?"active":""} onClick={()=>setSection("favorites")}>Favorites</button><button className="model-search-button" aria-label="Search engines" onClick={()=>setSearchOpen(true)}><Search size={15} aria-hidden /></button></>}</div><div className="model-card-list">{engines.map((engine)=><article key={engine.id} className={engine.id===engineId?"model-card selected":"model-card"}><button className="model-card-main" onClick={()=>setEngineId(engine.id)}><span className="model-radio">{engine.id===engineId?"●":"○"}</span><span><strong>{engine.label}</strong><small>{engine.description}</small><span className="model-tags">{engine.adult&&<em>18+ RP</em>}{engine.tags.map((tag)=><i key={tag}>{tag}</i>)}</span></span></button><button className={favorites.includes(engine.id)?"model-favorite active":"model-favorite"} aria-label={favorites.includes(engine.id)?`Remove ${engine.label} from favourites`:`Favourite ${engine.label}`} onClick={()=>toggleFavorite(engine.id)}><Star size={15} fill={favorites.includes(engine.id)?"currentColor":"none"} aria-hidden /></button></article>)}</div>{!engines.length&&<div className="empty-library-note">{searchOpen?"No engines match that search.":"Favourite an engine in Discover and it will appear here."}</div>}<button className="advanced-model-toggle" onClick={()=>setAdvanced((value)=>!value)}><span><strong>Writer model</strong><small>{selectedModel?.label||conversation.modelId}</small></span><b><ChevronDown size={15} className={advanced?"flip":""} aria-hidden /></b></button>{advanced&&<div className="advanced-model-panel"><p>The engine above is Afterglow&apos;s brief for how to write. The writer model is the language model that writes to it — a different capability, not a different style.</p><ChoiceField label="Provider" value={providerId} onChange={(value)=>{setProviderId(value);setModelId(catalog.models.find((model)=>model.providerId===value)?.id||"");}} options={catalog.providers.map((provider)=>({value:provider.id,label:provider.label}))}/><ChoiceField label="Writer model" value={modelId} onChange={setModelId} options={models.map((model)=>({value:model.id,label:model.label,description:model.description}))}/></div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!selectedModel} onClick={async()=>{if(!selectedModel)return;setBusy(true);try{await onSave({providerId,modelId:selectedModel.id,rpEngineId:engineId});}finally{setBusy(false);}}}>{busy?"Switching…":"Use engine"}</button></footer></aside></div>;
 }
 
 /**

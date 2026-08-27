@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Bookmark, Compass, Globe2, Lock, MessageCircle, Pencil, Sparkles, Trash2, UserRound } from "lucide-react";
+import { ArrowUpRight, Bookmark, Compass, Globe2, Lock, MessageCircle, Pencil, Sparkles, Trash2, UserRound, X } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { backFallbacks } from "@/lib/back-navigation";
 import { avatarSource, profileAvatarBucket, worldCoverBucket } from "@/lib/storage";
+import { creatorProfileHref } from "@/lib/follows";
 import { toggleCreationSave } from "@/lib/saves";
 import { toggleWorldSave } from "@/lib/world-saves";
 import { compactCount } from "@/lib/format";
@@ -198,19 +199,33 @@ export default function WorldProfile({ worldId }: { worldId: string }) {
         <CreationGrid creations={creations} onToggleSave={(creation) => void saveCreation(creation)} />
       </section>}
 
+      {/* The creator, and a way to reach them.
+          This used to be an avatar and a handle that went nowhere, which made
+          a world the one public surface where finding out who made something
+          was a dead end. The identity is a link now, exactly as it is on a
+          creation page and on a discovery card. */}
       {world.creator && <section className={`${styles.card} ${styles.creatorCard}`}>
         <header><UserRound size={16} /><h2>Creator</h2></header>
-        <div className={styles.creator}>
-          <span className={styles.creatorAvatar}>
-            {world.creator.avatarPath
-              ? <img src={avatarSource(profileAvatarBucket, world.creator.avatarPath, "")} alt="" />
-              : initials(world.creator.displayName || world.creator.username)}
-          </span>
-          <div>
-            <strong>{world.creator.username ? `@${world.creator.username}` : world.creator.displayName}</strong>
-            {world.creator.displayName && world.creator.username && <small>{world.creator.displayName}</small>}
-          </div>
-        </div>
+        {(() => {
+          const creator = world.creator;
+          const name = creator.displayName || `@${creator.username}`;
+          const href = creatorProfileHref(creator.username);
+          const identity = <>
+            <span className={styles.creatorAvatar}>
+              {creator.avatarPath
+                ? <img src={avatarSource(profileAvatarBucket, creator.avatarPath, "")} alt="" />
+                : initials(creator.displayName || creator.username)}
+            </span>
+            <div>
+              <strong>{creator.username ? `@${creator.username}` : creator.displayName}</strong>
+              {creator.displayName && creator.username && <small>{creator.displayName}</small>}
+            </div>
+            {href && <ArrowUpRight className={styles.creatorArrow} size={16} aria-hidden />}
+          </>;
+          return href
+            ? <Link className={styles.creator} href={href} aria-label={`Open ${name}'s creator profile`}>{identity}</Link>
+            : <div className={styles.creator}>{identity}</div>;
+        })()}
       </section>}
 
       <section className={styles.card}>
@@ -240,6 +255,6 @@ export default function WorldProfile({ worldId }: { worldId: string }) {
       </section>
     </div>
 
-    {error && <div className={styles.toast} role="status">{error}<button onClick={() => setError("")} aria-label="Dismiss">×</button></div>}
+    {error && <div className={styles.toast} role="status">{error}<button onClick={() => setError("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
   </main>;
 }

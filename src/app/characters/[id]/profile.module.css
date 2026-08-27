@@ -163,6 +163,40 @@
 
 .byline { margin: 2px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
 .byline strong { color: var(--ink); font-weight: 600; }
+/* The handle is a link to its owner, and it looks like one on hover without
+   shouting in a line that is otherwise metadata. */
+.bylineCreator {
+  color: var(--ink); font-weight: 600; text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.bylineCreator:hover { color: #ffd9ea; border-bottom-color: rgba(232, 121, 169, .5); }
+.bylineCreator:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 3px; border-radius: 4px; }
+
+/*
+ * The rank badge.
+ *
+ * A chip, not a trophy cabinet: one line, one number, in the same warm gold the
+ * creator medal uses so the two read as the same kind of statement. It appears
+ * only for a rank worth mentioning, so it is never a row of "—".
+ */
+.rankBadge {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 7px;
+  align-self: flex-start;
+  margin: 10px 0 0; padding: 5px 12px;
+  border: 1px solid rgba(240, 201, 135, .34);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(240, 201, 135, .16), rgba(184, 114, 46, .1));
+  color: #f0c987;
+  font-family: var(--font-sans); font-size: 11px; letter-spacing: .02em;
+}
+.rankBadge strong { font-weight: 600; color: #ffdb94; }
+.rankBadge svg { flex: 0 0 auto; }
+
+.srOnly {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 
 .ctaRow { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 100%; margin-top: 6px; }
 .primaryCta {
@@ -447,59 +481,13 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
 /*
  * The creator, compactly.
  *
- * One row of identity, one row of numbers, one link out. It has to stay
- * SMALLER than the creation it sits beside — a creator's achievements, worlds
- * and history belong on their own page, and putting a second profile inside
- * this one would leave the reader unsure which page they are on.
+ * The card itself now lives in src/components/creator/CreatorCard.tsx and
+ * carries its own styles, because the same identity has to appear beside a
+ * creation, on a ranked row and anywhere else somebody's work is shown — and
+ * three inline copies of it is how they drift apart. What is left here is only
+ * the SLOT: the section this page gives it, which has to stay smaller than the
+ * creation it sits beside.
  */
-.creator { display: flex; align-items: center; gap: 12px; }
-.creatorCopy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
-.creator strong { display: block; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.creator small { display: block; font-size: 11.5px; color: var(--faint); }
-.creatorCopy > span { align-self: flex-start; margin-top: 2px; }
-
-.followButton {
-  flex: 0 0 auto; min-height: 38px; min-width: 88px;
-  border: 0; border-radius: 11px;
-  background: linear-gradient(135deg, #e879a9, #8a5cf6);
-  color: #1a0f18; padding: 0 14px;
-  font-family: var(--font-sans); font-size: 11.5px; font-weight: 600;
-  cursor: pointer;
-}
-.followButton:hover:not(:disabled) { filter: brightness(1.06); }
-.followButton:disabled { opacity: .6; cursor: progress; }
-.followButton:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-/* Following is a state rather than a second call to action, so it recedes. */
-.followingButton {
-  background: rgba(255, 255, 255, .05);
-  border: 1px solid var(--edge, rgba(255, 255, 255, .12));
-  color: var(--ink);
-}
-.followingButton:hover:not(:disabled) { border-color: rgba(238, 104, 137, .4); color: #f0a6c6; filter: none; }
-
-.creatorStats {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px; margin: 14px 0 0;
-  border-radius: 12px; overflow: hidden; background: var(--line);
-}
-.creatorStats > div { display: flex; flex-direction: column; gap: 3px; background: #16121a; padding: 10px 11px; }
-.creatorStats dt { font-family: var(--font-sans); font-size: 8.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--faint); }
-.creatorStats dd { margin: 0; font-family: var(--font-serif), Georgia, serif; font-size: 17px; color: var(--ink); }
-
-.creatorLink {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  min-height: 44px; margin-top: 12px; text-decoration: none;
-  border: 1px solid rgba(232, 121, 169, .26); border-radius: 12px;
-  background: rgba(232, 121, 169, .08); padding: 0 12px;
-  font-size: 12.5px; font-weight: 560; color: #f2dcea;
-  transition: background .18s;
-}
-.creatorLink em {
-  font-style: normal; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
-  color: #f0a6c6; border: 1px solid rgba(232, 121, 169, .3); border-radius: 999px; padding: 3px 8px;
-}
-.creatorLink:hover { background: rgba(232, 121, 169, .16); }
-.creatorLink:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
 
 .composer { display: grid; gap: 8px; margin-bottom: 16px; }
 .composer textarea {

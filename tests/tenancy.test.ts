@@ -24,6 +24,8 @@ const alicePersona = "13131313-0000-4000-8000-000000000001";
 const aliceCanon = "14141414-0000-4000-8000-000000000001";
 const aliceRetrieval = "15151515-0000-4000-8000-000000000001";
 const aliceScene = "16161616-0000-4000-8000-000000000001";
+/** An account that has published nothing, which is what "private" now means. */
+const hermit = "55555555-5555-4555-8555-555555555555";
 
 describeTenancy("multi-tenant isolation", () => {
   let pool: Pool;
@@ -32,6 +34,7 @@ describeTenancy("multi-tenant isolation", () => {
     pool = await migratedPool();
     await createAccount(pool, alice, "alice@example.com");
     await createAccount(pool, bob, "bob@example.com");
+    await createAccount(pool, hermit, "hermit@example.com");
 
     await asAccount(pool, alice, async (run) => {
       await run("INSERT INTO characters (id,name,user_id,visibility) VALUES ($1,'Alice Private',$3,'private'),($2,'Alice Public',$3,'public')", [alicePrivateCharacter, alicePublicCharacter, alice]);
@@ -101,17 +104,64 @@ describeTenancy("multi-tenant isolation", () => {
     expect(await visibleCount(pool, bob, "personas", "id=$1", [alicePersona])).toBe(0);
   });
 
-  it("keeps profiles private to their owner", async () => {
-    expect(await visibleCount(pool, bob, "profiles", "id=$1", [alice])).toBe(0);
-    expect(await visibleCount(pool, bob, "profiles", "id=$1", [bob])).toBe(1);
+  it("keeps the profile of an account that has published nothing private", async () => {
+    expect(await visibleCount(pool, bob, "profiles", "id=$1", [hermit])).toBe(0);
+    expect(await visibleCount(pool, hermit, "profiles", "id=$1", [hermit])).toBe(1);
   });
 
-  it("publishes only creator profiles that explicitly choose a username", async () => {
+  /*
+   * Publishing is the opt-in to public attribution.
+   *
+   * This used to be "choosing a username is the opt-in", and that is the whole
+   * of the report that a creation showed its creator to its creator and to
+   * nobody else: publishing had no attribution consequence, so a creator who
+   * never found the username field was anonymous on a page everybody could
+   * read. Now the act of showing work to strangers is what names its author.
+   */
+  it("names a creator the moment they publish, and not before", async () => {
     const creator = "44444444-4444-4444-8444-444444444444";
     await createAccount(pool, creator, "creator@example.com");
     expect(await visibleCount(pool, bob, "profiles", "id=$1", [creator])).toBe(0);
-    await asAccount(pool, creator, (run) => run("UPDATE profiles SET username='public_creator' WHERE id=$1", [creator]));
+
+    await asAccount(pool, creator, (run) => run(
+      "INSERT INTO characters (id,name,user_id,visibility) VALUES (gen_random_uuid(),'Draft',$1,'private')", [creator]));
+    expect(await visibleCount(pool, bob, "profiles", "id=$1", [creator])).toBe(0);
+
+    await asAccount(pool, creator, (run) => run(
+      "INSERT INTO characters (id,name,user_id,visibility,published_at) VALUES (gen_random_uuid(),'Published',$1,'public',now())", [creator]));
     expect(await visibleCount(pool, bob, "profiles", "id=$1", [creator])).toBe(1);
+  });
+
+  /*
+   * A handle is never derived from an email address.
+   *
+   * `handle_new_user` falls back to the email's local part when somebody signs
+   * up without typing a display name, so deriving a public handle from the
+   * stored display name would publish half of their email to the platform. The
+   * placeholder is recognised and replaced instead.
+   */
+  it("never publishes an email fragment as a handle or a name", async () => {
+    const shy = "6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b6b";
+    await createAccount(pool, shy, "verysecret.address@example.com");
+    await asAccount(pool, shy, (run) => run(
+      "INSERT INTO characters (id,name,user_id,visibility,published_at) VALUES (gen_random_uuid(),'Published',$1,'public',now())", [shy]));
+    const profile = await asAccount(pool, shy, (run) => run("SELECT username,display_name FROM profiles WHERE id=$1", [shy]));
+    const { username, display_name: displayName } = profile.rows[0] as { username: string; display_name: string };
+    expect(username).toBeTruthy();
+    expect(username).not.toContain("verysecret");
+    expect(displayName).not.toContain("verysecret");
+    expect(username).toMatch(/^[a-z0-9][a-z0-9_-]{2,29}$/);
+  });
+
+  it("keeps a chosen display name, and derives a readable handle from it", async () => {
+    const named = "7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b7b";
+    await createAccount(pool, named, "n@example.com");
+    await asAccount(pool, named, (run) => run("UPDATE profiles SET display_name='Nocturne Atelier' WHERE id=$1", [named]));
+    await asAccount(pool, named, (run) => run(
+      "INSERT INTO characters (id,name,user_id,visibility,published_at) VALUES (gen_random_uuid(),'Published',$1,'public',now())", [named]));
+    const profile = await asAccount(pool, named, (run) => run("SELECT username,display_name FROM profiles WHERE id=$1", [named]));
+    expect(profile.rows[0].username).toBe("nocturne_atelier");
+    expect(profile.rows[0].display_name).toBe("Nocturne Atelier");
   });
 
   it("isolates favorites while maintaining a public aggregate count", async () => {
@@ -365,9 +415,9 @@ describeTenancy("multi-tenant isolation", () => {
     ))).rejects.toThrow(/profile_follows_not_self/i);
   });
 
-  it("P — refuses to follow an account with no public profile", async () => {
+  it("P — refuses to follow an account that has published nothing", async () => {
     await expect(asAccount(pool, bob, (run) => run(
-      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, alice],
+      "INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2)", [bob, hermit],
     ))).rejects.toThrow(/row-level security/i);
   });
 
@@ -406,11 +456,11 @@ describeTenancy("multi-tenant isolation", () => {
     });
   });
 
-  it("P — hides an achievement belonging to an account with no public profile", async () => {
-    await asAccount(pool, alice, (run) => run(
-      "INSERT INTO profile_achievements (user_id,achievement_id) VALUES ($1,'creations_1') ON CONFLICT DO NOTHING", [alice]));
-    expect(await visibleCount(pool, bob, "profile_achievements", "user_id=$1", [alice])).toBe(0);
-    expect(await visibleCount(pool, alice, "profile_achievements", "user_id=$1", [alice])).toBe(1);
+  it("P — hides an achievement belonging to an account that has published nothing", async () => {
+    await asAccount(pool, hermit, (run) => run(
+      "INSERT INTO profile_achievements (user_id,achievement_id) VALUES ($1,'creations_1') ON CONFLICT DO NOTHING", [hermit]));
+    expect(await visibleCount(pool, bob, "profile_achievements", "user_id=$1", [hermit])).toBe(0);
+    expect(await visibleCount(pool, hermit, "profile_achievements", "user_id=$1", [hermit])).toBe(1);
   });
 
   it("P — keeps activity public-readable, self-writable, and unrepeatable", async () => {

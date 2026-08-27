@@ -2,16 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import {
-  BadgeCheck, CalendarDays, Globe2, MessageCircle,
-  Pencil, Share2, Sparkles, TrendingUp, Users,
-} from "lucide-react";
+import { BadgeCheck, CalendarDays, Globe2, MessageCircle, Pencil, Share2, Sparkles, TrendingUp, Users, X } from "lucide-react";
 import type { AchievementState } from "@/lib/achievements";
 import { profileBorder, type ProfileBorder } from "@/lib/cosmetics";
 import type { CreationSummary, WorldSummary } from "@/lib/types";
 import { creationTitle } from "@/lib/creation";
 import { compactCount, exactCount } from "@/lib/format";
 import { toggleCreationSave } from "@/lib/saves";
+import { toggleCreatorFollow } from "@/lib/follows";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
 import { BackButton } from "@/components/nav";
@@ -158,35 +156,23 @@ export default function CreatorProfile({ username }: { username: string }) {
   const followerCount = followers ?? payload?.stats.followers ?? 0;
 
   /**
-   * Follow, optimistically, and put it back if the write fails.
+   * Follow, through the one primitive.
    *
-   * The same contract saving a creation already uses: flip immediately, settle
-   * on the server's authoritative count, and revert exactly on failure — a
-   * count that never happened must never stay on screen.
+   * This used to be a hand-written optimistic dance, and there was a second
+   * copy of it on the creation page. Two implementations of one control drift:
+   * they disagree about what to do when the write fails, about whether to trust
+   * their own arithmetic, and eventually about what Follow means. There is one
+   * now, in src/lib/follows.ts, and every surface that offers Follow calls it.
    */
   const toggleFollow = useCallback(async () => {
     if (!profile || followPending) return;
-    const wasFollowing = isFollowing;
-    const previousCount = followerCount;
     setFollowPending(true);
-    setFollowing(!wasFollowing);
-    setFollowers(Math.max(0, previousCount + (wasFollowing ? -1 : 1)));
-    try {
-      const response = await fetch(
-        wasFollowing ? `/api/follows?username=${encodeURIComponent(profile.username)}` : "/api/follows",
-        wasFollowing
-          ? { method: "DELETE" }
-          : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: profile.username }) },
-      );
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || "Could not update who you follow");
-      setFollowing(Boolean(body.following));
-      if (typeof body.followers === "number") setFollowers(body.followers);
-    } catch (reason) {
-      setFollowing(wasFollowing);
-      setFollowers(previousCount);
-      setNotice(reason instanceof Error ? reason.message : "Could not update who you follow");
-    } finally { setFollowPending(false); }
+    const failure = await toggleCreatorFollow(
+      { username: profile.username, following: isFollowing, followers: followerCount },
+      (state) => { setFollowing(state.following); setFollowers(state.followers); },
+    );
+    if (failure) setNotice(failure);
+    setFollowPending(false);
   }, [profile, isFollowing, followerCount, followPending]);
 
   const saveCreation = useCallback(async (creation: CreationSummary) => {
@@ -437,7 +423,7 @@ export default function CreatorProfile({ username }: { username: string }) {
       </aside>
     </div>
 
-    {notice && <div className={styles.toast} role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
+    {notice && <div className={styles.toast} role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
   </main>;
 }
 

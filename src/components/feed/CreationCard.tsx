@@ -7,6 +7,7 @@ import { accentVariables, normalizeAccent } from "@/lib/accent";
 import { creationTitle, creationType } from "@/lib/creation";
 import { compactCount, exactCount } from "@/lib/format";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
+import { creatorProfileHref } from "@/lib/follows";
 import type { CreationSummary } from "@/lib/types";
 import styles from "./feed.module.css";
 
@@ -48,6 +49,7 @@ export function CreationCard({ creation, priority = false, onToggleSave }: {
   const tags = creation.tags.slice(0, visibleTags);
   const overflow = creation.tags.length - tags.length;
   const creatorName = creation.creator?.username ? `@${creation.creator.username}` : creation.creator?.displayName || "";
+  const creatorHref = creatorProfileHref(creation.creator?.username);
   const creatorAvatar = creation.creator?.avatarPath ? avatarSource(profileAvatarBucket, creation.creator.avatarPath, "") : "";
   const saved = creation.savedByViewer;
 
@@ -55,9 +57,18 @@ export function CreationCard({ creation, priority = false, onToggleSave }: {
   // edge and the gradient behind its artwork and nothing else — two cards
   // side by side must still read as one grid rather than as two themes.
   return <article className={styles.card} style={{ ...accentVariables(creation.accent), "--accent-card": normalizeAccent(creation.accent) } as React.CSSProperties}>
-    {/* The whole card opens the public creation page. Starting a chat is a
-        decision made there, with the overview, cast and tags in view. */}
-    <Link href={`/characters/${creation.id}`} className={styles.cardLink}>
+    {/*
+      * The card body is not a link.
+      *
+      * It used to be, which meant the byline inside it could not be one either
+      * — an anchor cannot contain an anchor — so the one place a reader meets a
+      * creator most often was the one place their name did nothing. The title's
+      * link now stretches over the whole card through a pseudo-element, and the
+      * byline sits above it in the stacking order as a link of its own. One
+      * link to the creation, one to its creator, and a tap anywhere else still
+      * opens the creation.
+      */}
+    <div className={styles.cardBody}>
       <div className={styles.cover}>
         {showCover
           ? <img
@@ -80,11 +91,18 @@ export function CreationCard({ creation, priority = false, onToggleSave }: {
       </div>
 
       <div className={styles.copy}>
-        {creatorName && <span className={styles.byline}>
-          {creatorAvatar && <img className={styles.bylineAvatar} src={creatorAvatar} alt="" loading="lazy" />}
-          <span className={styles.bylineName}>by {creatorName}</span>
-        </span>}
-        <h3 className={styles.cardTitle}>{title}</h3>
+        {creatorName && (creatorHref
+          ? <Link href={creatorHref} className={`${styles.byline} ${styles.bylineLink}`} aria-label={`Open ${creatorName}'s creator profile`}>
+              {creatorAvatar && <img className={styles.bylineAvatar} src={creatorAvatar} alt="" loading="lazy" />}
+              <span className={styles.bylineName}>by {creatorName}</span>
+            </Link>
+          : <span className={styles.byline}>
+              {creatorAvatar && <img className={styles.bylineAvatar} src={creatorAvatar} alt="" loading="lazy" />}
+              <span className={styles.bylineName}>by {creatorName}</span>
+            </span>)}
+        <h3 className={styles.cardTitle}>
+          <Link href={`/characters/${creation.id}`} className={styles.cardLink}>{title}</Link>
+        </h3>
         {creation.tagline && <p className={styles.tagline}>{creation.tagline}</p>}
         {tags.length > 0 && <ul className={styles.tags}>
           {tags.map((tag) => <li key={tag}>{tag}</li>)}
@@ -103,7 +121,7 @@ export function CreationCard({ creation, priority = false, onToggleSave }: {
           </span>
         </div>
       </div>
-    </Link>
+    </div>
 
     {/* A sibling of the link rather than a child of it: a button inside an
         anchor is invalid, and a tap on it must not also open the page. */}

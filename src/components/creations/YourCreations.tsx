@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Compass, Eye, Link2, Lock, Pencil, PenLine, Plus, Trash2, Users } from "lucide-react";
+import { Compass, Eye, Link2, Lock, PenLine, Pencil, Plus, Trash2, Users, X } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { AppMenuButton } from "@/components/ui";
 import { creationTitle, creationType, creationTypeLabels } from "@/lib/creation";
@@ -179,8 +179,8 @@ export function YourCreations({ onOpenMenu, onCreate, onChanged }: {
               />)}
             </div>}
 
-    {notice && <div className={styles.toast} role="status">{notice}<button type="button" onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
-    {error && creations?.length ? <div className={styles.toast} role="alert">{error}<button type="button" onClick={() => setError("")} aria-label="Dismiss">×</button></div> : null}
+    {notice && <div className={styles.toast} role="status">{notice}<button type="button" onClick={() => setNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
+    {error && creations?.length ? <div className={styles.toast} role="alert">{error}<button type="button" onClick={() => setError("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div> : null}
   </section>;
 }
 

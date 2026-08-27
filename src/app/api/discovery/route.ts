@@ -28,6 +28,14 @@ const orderings: Record<DiscoverySort, string> = {
   popular: "c.like_count DESC, c.chat_count DESC, c.published_at DESC NULLS LAST, c.id DESC",
   chatted: "c.chat_count DESC, c.message_count DESC, c.published_at DESC NULLS LAST, c.id DESC",
   new: "c.published_at DESC NULLS LAST, c.created_at DESC, c.id DESC",
+  /*
+   * Strictly chronological, and that is the product decision rather than a
+   * simplification. Following answers "what have the creators I chose put out",
+   * and any reordering — popularity, a score, a blend of recommended work —
+   * turns an instruction the reader gave into a suggestion the platform made.
+   * The id breaks ties so paging is stable across the boundary.
+   */
+  following: "c.published_at DESC NULLS LAST, c.id DESC",
 };
 
 /** A search term is data, never pattern syntax. */
@@ -41,6 +49,24 @@ export async function GET(request: Request) {
   const query = parseDiscoveryQuery(new URL(request.url).searchParams);
 
   const values: unknown[] = [account.id];
+  /*
+   * The Following feed is a JOIN, not a filter applied afterwards.
+   *
+   * The alternative — read every followed creator id into the browser, fetch
+   * creations, and narrow them there — would download a page of somebody else's
+   * work in order to throw most of it away, and would page incorrectly the
+   * moment it did. `profile_follows_follower_idx` serves the follow side and
+   * `characters_creator_published_idx` serves each creator's own timeline, so
+   * this is an index nested loop over exactly the rows that qualify.
+   *
+   * Row level security on `profile_follows` only ever returns rows naming this
+   * account, so a feed can never be scoped to somebody else's follows even if
+   * this predicate were wrong.
+   */
+  const followingFeed = query.sort === "following";
+  const joins = followingFeed
+    ? "JOIN profile_follows fw ON fw.creator_user_id=c.user_id AND fw.follower_user_id=$1"
+    : "";
   const where: string[] = [
     // Public and nothing else. Eligibility is deliberately this one column
     // plus the viewer's adult setting and their active filters: a creation is
@@ -101,13 +127,14 @@ export async function GET(request: Request) {
   values.push(query.offset);
   const offsetParam = `$${values.length}`;
 
-  const rows = await asUser(account.id, async (client) => {
+  const page = await asUser(account.id, async (client) => {
     const result = await client.query(
       `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
          c.tags,c.hashtags,c.nsfw_enabled,c.message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
          p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
          (mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c
+       ${joins}
        LEFT JOIN profiles p ON p.id=c.user_id AND p.username IS NOT NULL
        LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$1
        WHERE ${where.join(" AND ")}
@@ -115,14 +142,31 @@ export async function GET(request: Request) {
        LIMIT ${limitParam} OFFSET ${offsetParam}`,
       values,
     );
-    return result.rows;
+    /*
+     * How many creators this account follows, when — and only when — the feed
+     * is the Following one.
+     *
+     * It is what separates the two empty states, which are different problems
+     * with different answers: "you do not follow anybody yet" sends somebody to
+     * Discovery, and "nobody you follow has published anything" tells them
+     * nothing is wrong and there is nothing to do. One indexed count over the
+     * viewer's own rows, and not read at all on the other three feeds.
+     */
+    const following = followingFeed
+      ? Number((await client.query(
+        "SELECT count(*)::int count FROM profile_follows WHERE follower_user_id=$1", [account.id],
+      )).rows[0]?.count || 0)
+      : null;
+    return { rows: result.rows, following };
   });
 
-  const hasMore = rows.length > query.limit;
-  const page = hasMore ? rows.slice(0, query.limit) : rows;
+  const hasMore = page.rows.length > query.limit;
+  const rows = hasMore ? page.rows.slice(0, query.limit) : page.rows;
   return Response.json({
-    creations: page.map((row) => creationSummaryFromRow(row, account.id)),
+    creations: rows.map((row) => creationSummaryFromRow(row, account.id)),
     hasMore,
-    nextOffset: query.offset + page.length,
+    nextOffset: query.offset + rows.length,
+    // Null on every feed but Following, where it decides the empty state.
+    followingCreators: page.following,
   });
 }

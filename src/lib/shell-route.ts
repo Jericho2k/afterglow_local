@@ -21,7 +21,7 @@
  * knows what an Afterglow URL can look like.
  */
 
-export const shellViews = ["home", "chats", "worlds", "personas", "profile", "saved", "creations"] as const;
+export const shellViews = ["home", "chats", "worlds", "personas", "profile", "saved", "creations", "notifications", "rankings"] as const;
 export type ShellView = (typeof shellViews)[number];
 export type AppView = ShellView | "chat";
 

@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Crown, Flame, Globe2, Heart, Medal, MessageCircle, Sparkles, Star } from "lucide-react";
+import { Check, Crown, Flame, Globe2, Heart, Medal, MessageCircle, Sparkles, Star } from "lucide-react";
 import type { AchievementState } from "@/lib/achievements";
 import { borderVariables, type ProfileBorder } from "@/lib/cosmetics";
 import { avatarSource, profileAvatarBucket } from "@/lib/storage";
@@ -118,7 +118,7 @@ export function AchievementBadge({ achievement, showLocked = false }: {
   return <li className={`${styles.badge} ${achievement.unlocked ? "" : styles.badgeLocked}`}>
     <span className={styles.badgeMark} aria-hidden>
       <Icon size={22} />
-      {achievement.unlocked && <em className={styles.badgeCheck}>✓</em>}
+      {achievement.unlocked && <em className={styles.badgeCheck}><Check size={11} strokeWidth={3} aria-hidden /></em>}
     </span>
     <strong>{achievement.title}</strong>
     <small>{achievement.description}</small>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Compass, Globe2, Lock, Pencil, Plus, Trash2 } from "lucide-react";
+import { Compass, Globe2, Lock, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { AppMenuButton } from "@/components/ui";
 import { toggleWorldSave } from "@/lib/world-saves";
@@ -168,7 +168,7 @@ export function WorldsHub({ onOpenMenu, onCreate, onEdit, onChanged }: {
           })}
         </div>}
 
-    {notice && <div className={styles.toast} role="status">{notice}<button type="button" onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
-    {error && <div className={styles.toast} role="alert">{error}<button type="button" onClick={() => { setError(""); load(tab); }} aria-label="Dismiss">×</button></div>}
+    {notice && <div className={styles.toast} role="status">{notice}<button type="button" onClick={() => setNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
+    {error && <div className={styles.toast} role="alert">{error}<button type="button" onClick={() => { setError(""); load(tab); }} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
   </section>;
 }

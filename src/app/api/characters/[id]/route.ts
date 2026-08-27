@@ -5,6 +5,8 @@ import { richFieldPayload, textToRich, type RichBlock } from "@/lib/rich-content
 import { currentAccount, unauthorized } from "@/lib/session";
 import { visitorCharacter } from "@/lib/access";
 import { effectiveBorder } from "@/lib/cosmetics";
+import { bestRankBadge } from "@/lib/rankings";
+import { creationRanks } from "@/lib/ranking-store";
 
 
 /**
@@ -189,12 +191,25 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const worldIds = previews.length
       ? previews.map((preview) => preview.id)
       : worlds.rows.map((world) => String(world.id));
-    // Gallery rows are readable wherever the character is, so a visitor sees a
-    // published character's gallery without ever reaching its owner's stories.
-    const gallery = await client.query(
-      "SELECT id,storage_path,external_url,caption,position FROM character_gallery WHERE character_id=$1 ORDER BY position ASC, created_at ASC",
-      [id],
-    );
+    /*
+     * The gallery, and where this creation stands.
+     *
+     * Issued together because they are independent and this is the slowest page
+     * in the product: the standing is a precomputed lookup on
+     * `creation_rankings_creation_idx` returning at most a handful of rows, and
+     * it must not become a second round trip stacked on top of the six this
+     * page already makes.
+     *
+     * Gallery rows are readable wherever the character is, so a visitor sees a
+     * published character's gallery without ever reaching its owner's stories.
+     */
+    const [gallery, ranks] = await Promise.all([
+      client.query(
+        "SELECT id,storage_path,external_url,caption,position FROM character_gallery WHERE character_id=$1 ORDER BY position ASC, created_at ASC",
+        [id],
+      ),
+      creationRanks(client, id),
+    ]);
     /*
      * The creator, as a card.
      *
@@ -209,6 +224,16 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
      * that work to draw three numbers. The standing itself is precomputed —
      * `creator_stats` is refreshed by whoever opens a profile page, not by
      * everybody who opens a creation.
+     *
+     * The card is built whenever the profile row RESOLVED, and no longer
+     * requires a username. That condition is the whole of the "the creator is
+     * invisible to everybody but the creator" report: an account that never
+     * chose a handle had no publicly readable profile, so this join produced
+     * NULL for every visitor and a row for the owner, and the page drew its
+     * whole creator section conditionally on it. 0022 gives every publishing
+     * account a handle, and this stops depending on one — a creation whose
+     * creator somehow has no profile page still says who made it, with the
+     * link and the follow control simply absent.
      */
     const creatorId = row.creator_id ? String(row.creator_id) : "";
     const standing = {
@@ -219,7 +244,11 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       rank: row.creator_rank == null ? null : Number(row.creator_rank),
       rankTotal: Number(row.creator_rank_total || 0),
     };
-    const creatorCard = creatorId && row.creator_username ? {
+    const creatorCard = creatorId ? {
+      id: creatorId,
+      username: String(row.creator_username || ""),
+      displayName: String(row.creator_display_name || ""),
+      avatarPath: String(row.creator_avatar_path || ""),
       followers: standing.followers,
       messages: standing.userMessages,
       creations: standing.publishedCreations,
@@ -254,6 +283,19 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       viewerConversationId: ownStories.rows[0] ? String(ownStories.rows[0].id) : null,
       viewerConversationCount: Number(ownStories.rows[0]?.total || 0),
       creatorCard,
+      /*
+       * One rank, chosen by the rule in src/lib/rankings.ts.
+       *
+       * Chosen HERE rather than in the browser so the page cannot be handed
+       * four ranks and decide for itself which to draw — the badge on a
+       * creation page, the badge on a ranked row and anything that grows one
+       * later all read the same selection.
+       *
+       * Only for a public creation. A private or unlisted one is not on a
+       * board, and a stale row for a creation that has since been unpublished
+       * must not put a position on a page that nobody else can see.
+       */
+      rankBadge: row.visibility === "public" ? bestRankBadge(ranks) : null,
       owner,
     };
   });

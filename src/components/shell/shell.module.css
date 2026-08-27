@@ -44,11 +44,28 @@
 .header {
   display: flex;
   align-items: flex-start;
+  flex-wrap: wrap;
   gap: 12px;
   margin: 0 0 22px;
 }
 
 .headerCopy { flex: 1; min-width: 0; }
+.title { overflow-wrap: anywhere; }
+
+/*
+ * On a phone the controls take their own row.
+ *
+ * Measured, not guessed: with a menu button, a bell and a "Mark all as read"
+ * beside it, the heading was left 126px of a 375px screen for a word that needs
+ * 159, and "Notifications" was cut off. Sharing one row only works while there
+ * is one control on it. The controls keep the top line — they are what a thumb
+ * reaches for — and the title gets the full width underneath.
+ */
+@media (max-width: 620px) {
+  .menuButton { order: 0; }
+  .headerActions { order: 1; margin-left: auto; }
+  .headerCopy { order: 2; flex: 1 0 100%; }
+}
 
 .eyebrow {
   display: block;
@@ -74,7 +91,7 @@
   line-height: 1.55;
 }
 
-.headerActions { display: flex; align-items: center; gap: 8px; flex: none; }
+.headerActions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex: none; }
 
 /* ------------------------------------------------------------- tabs --- */
 
@@ -268,9 +285,6 @@
   font-size: 16px; font-weight: 600; color: #f0d9e7;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
-
-/* Bigger, for a profile header where the avatar is the subject. */
-.avatarLarge { width: 78px; height: 78px; font-size: 24px; }
 
 .personaBody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .personaBody strong { font-size: 14.5px; font-weight: 600; }
@@ -533,12 +547,31 @@
 .profileLink:hover { background: rgba(232, 121, 169, .16); }
 .profileLink:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
 
-.coverField { display: grid; gap: 10px; }
-.coverPreview {
-  position: relative; height: 132px; border-radius: 16px; overflow: hidden;
-  border: 1px solid var(--line); background: #16121a;
+/* ---------------------------------------------------------------------------
+ * The editable profile header
+ *
+ * There used to be two things here: a "preview" showing the banner with the
+ * ringed avatar over it, and — separately, below — a plain circle that was the
+ * control the file picker actually wrote to. One of them wore the cosmetic the
+ * creator had earned and the other did not, and neither was labelled as the
+ * real one.
+ *
+ * This is one object. It has the proportions of the public header, it draws the
+ * same `CreatorAvatar` with the same ring, and both pictures are changed by
+ * tapping the thing they are. Nothing on the page previews anything.
+ * ------------------------------------------------------------------------ */
+.editHeader { display: flex; flex-direction: column; }
+
+.editCover {
+  position: relative;
+  height: 148px;
+  border-radius: 16px 16px 0 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: #16121a;
 }
-.coverPreview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.editCover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .coverEmpty {
   display: block; width: 100%; height: 100%;
   background:
@@ -546,8 +579,78 @@
     radial-gradient(120% 140% at 82% 0%, rgba(138, 92, 246, .26), transparent 58%),
     linear-gradient(180deg, #1a1320, #100b14);
 }
-.coverAvatar { position: absolute; left: 16px; bottom: -10px; }
-.coverActions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+/* Keeps the control legible over a bright photograph without dimming the
+   whole banner. */
+.editCoverScrim {
+  position: absolute; inset: 0;
+  background: linear-gradient(to bottom, rgba(8, 6, 9, .45) 0%, transparent 38%, rgba(8, 6, 9, .55) 100%);
+  pointer-events: none;
+}
+
+.editCoverButton, .editCoverRemove {
+  position: absolute; top: 10px;
+  display: inline-flex; align-items: center; gap: 7px;
+  min-height: 34px; padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 10px;
+  background: rgba(12, 9, 13, .62);
+  backdrop-filter: blur(10px);
+  color: #ece0e8;
+  font-family: var(--font-sans); font-size: 11px; font-weight: 500;
+  cursor: pointer;
+}
+.editCoverButton { right: 10px; }
+.editCoverButton input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.editCoverRemove { right: 10px; top: auto; bottom: 10px; width: 34px; padding: 0; justify-content: center; }
+.editCoverButton:hover, .editCoverRemove:hover { background: rgba(232, 121, 169, .28); border-color: rgba(232, 121, 169, .45); }
+.editCoverButton:focus-within, .editCoverRemove:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+
+.editIdentity {
+  display: flex; align-items: flex-end; gap: 14px;
+  /* The avatar overlaps the banner exactly as it does on the public page. */
+  margin-top: -34px;
+  padding: 0 4px 0 18px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 16px 16px;
+  background: linear-gradient(180deg, rgba(30, 22, 34, .55), transparent 70%);
+  padding-bottom: 16px;
+}
+
+/* The avatar IS the picker. */
+.editAvatar { position: relative; display: inline-flex; cursor: pointer; flex: 0 0 auto; }
+.editAvatar input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.editAvatarBadge {
+  position: absolute; right: -2px; bottom: -2px;
+  display: grid; place-items: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 2px solid #0b080d;
+  background: linear-gradient(135deg, #e879a9, #8a5cf6);
+  color: #1a0f18;
+  pointer-events: none;
+}
+.editAvatar:hover .editAvatarBadge { filter: brightness(1.1); }
+.editAvatar:focus-within { outline: 2px solid #f0a6c6; outline-offset: 4px; border-radius: 50%; }
+
+.editIdentityCopy { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-bottom: 4px; }
+.editIdentityCopy strong {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 21px; line-height: 1.15; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.editIdentityCopy small { font-size: 12px; color: var(--faint); }
+.editIdentityCopy p {
+  margin: 5px 0 0;
+  font-size: 12.5px; line-height: 1.5; color: var(--muted);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden;
+}
+
+@media (max-width: 520px) {
+  .editCover { height: 118px; }
+  .editIdentity { flex-direction: column; align-items: flex-start; gap: 10px; padding-left: 14px; margin-top: -30px; }
+  .editIdentityCopy strong { font-size: 19px; }
+}
 
 .borderRow { display: flex; flex-wrap: wrap; gap: 12px; }
 .borderSwatch {
@@ -587,6 +690,118 @@
 }
 
 @media (max-width: 560px) {
-  .profileStats { gap: 8px; }
-  .coverPreview { height: 108px; }
+  .profileStats { gap: 6px; }
+}
+
+/* Visually hidden, still announced. Used by icon-only and image-only controls. */
+.srOnly {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Notifications
+ *
+ * A list of one repeated thing, so the styling is almost entirely about making
+ * each row a comfortable tap target with a picture worth recognising. The
+ * unread state is a soft tint and a small mark rather than a bold row: these
+ * are good news, not tasks.
+ * ------------------------------------------------------------------------ */
+.bell { position: relative; }
+.bellDot {
+  position: absolute; top: 8px; right: 8px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: linear-gradient(135deg, #ff5fa2, #e879a9);
+  box-shadow: 0 0 0 2px var(--panel, #171319), 0 0 10px rgba(255, 95, 162, .7);
+}
+
+.notificationList { list-style: none; display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; }
+
+.notification {
+  position: relative;
+  display: flex; align-items: stretch; gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .015);
+  transition: background .18s ease, border-color .18s ease;
+}
+.notification:hover { background: rgba(255, 255, 255, .05); border-color: rgba(232, 121, 169, .24); }
+.notificationUnread {
+  border-color: rgba(232, 121, 169, .26);
+  background: linear-gradient(120deg, rgba(232, 121, 169, .09), rgba(138, 92, 246, .05));
+}
+
+.notificationMain {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 13px;
+  padding: 11px 12px;
+  color: inherit; text-decoration: none;
+  border-radius: 13px;
+}
+.notificationMain:focus-visible { outline: 2px solid #f0a6c6; outline-offset: -2px; }
+
+.notificationArt {
+  position: relative; flex: 0 0 auto;
+  display: grid; place-items: center;
+  width: 52px; height: 52px;
+  border-radius: 13px; overflow: visible;
+  background: rgba(232, 121, 169, .12);
+  color: #f0d9e7;
+  font-family: var(--font-serif), Georgia, serif; font-size: 17px;
+}
+.notificationArt img {
+  width: 100%; height: 100%; border-radius: 13px;
+  object-fit: cover; object-position: 50% 25%;
+}
+/* The creator, on the corner of their work: whose release this is, at a
+   glance, without a second row of text saying so. */
+.notificationActor {
+  position: absolute; right: -5px; bottom: -5px;
+  display: grid; place-items: center;
+  width: 24px; height: 24px; border-radius: 50%;
+  overflow: hidden;
+  border: 2px solid var(--panel, #171319);
+  background: rgba(138, 92, 246, .3);
+  font-family: var(--font-sans); font-size: 8.5px; font-weight: 600; color: #f0d9e7;
+}
+.notificationActor img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+
+.notificationCopy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.notificationCopy strong {
+  font-size: 13.5px; font-weight: 560; line-height: 1.35; color: var(--ink);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden;
+}
+.notificationCopy small { font-size: 11px; color: var(--faint); }
+
+.notificationDot {
+  flex: 0 0 auto;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: linear-gradient(135deg, #ff5fa2, #e879a9);
+}
+
+.notificationCreator {
+  flex: 0 0 auto;
+  display: grid; place-items: center;
+  width: 38px;
+  border: 0; border-left: 1px solid var(--line);
+  color: var(--faint); text-decoration: none;
+  border-radius: 0 13px 13px 0;
+}
+.notificationCreator:hover { background: rgba(232, 121, 169, .14); color: #f0a6c6; }
+.notificationCreator:focus-visible { outline: 2px solid #f0a6c6; outline-offset: -2px; }
+
+.emptyPanel {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 9px;
+  border: 1px solid var(--line); border-radius: 16px;
+  background: rgba(255, 255, 255, .015);
+  padding: 26px 22px;
+}
+.emptyPanel svg { color: #f0a6c6; }
+.emptyPanel h2 { margin: 0; font-family: var(--font-serif), Georgia, serif; font-size: 20px; font-weight: 600; }
+.emptyPanel p { margin: 0; max-width: 52ch; font-size: 13px; line-height: 1.6; color: var(--muted); }
+
+@media (max-width: 520px) {
+  .notificationArt { width: 46px; height: 46px; }
+  .notificationCopy strong { font-size: 13px; }
 }

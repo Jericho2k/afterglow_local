@@ -184,7 +184,17 @@
    width of a desktop window. */
 .prose { max-width: 68ch; }
 
-.creatorCard .creator { display: flex; align-items: center; gap: 12px; }
+.creatorCard .creator {
+  display: flex; align-items: center; gap: 12px;
+  color: inherit; text-decoration: none;
+  border-radius: 12px;
+  margin: -6px; padding: 6px;
+}
+a.creator:hover { background: rgba(232, 121, 169, .1); }
+a.creator:hover strong { color: #ffd9ea; }
+a.creator:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+.creatorArrow { margin-left: auto; flex: none; color: var(--faint, #776a73); }
+a.creator:hover .creatorArrow { color: #f0a6c6; }
 .creatorAvatar {
   display: grid; place-items: center;
   width: 44px; height: 44px; flex: none;
