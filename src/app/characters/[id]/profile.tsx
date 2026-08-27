@@ -26,6 +26,8 @@ import { markEditorOpenedFromCreation } from "@/lib/editor-navigation";
 import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
 import { iconButtonClass } from "@/components/ui";
 import { WorldCard } from "@/components/world";
+import { CreatorAvatar, RankMedal, rankSummary } from "@/components/creator";
+import { profileBorder, type ProfileBorder } from "@/lib/cosmetics";
 import styles from "./profile.module.css";
 
 /**
@@ -34,6 +36,24 @@ import styles from "./profile.module.css";
  * hiding it would misrepresent what the creation is — so the card renders with
  * its identity and without its content or its link.
  */
+/**
+ * The creator, as this page needs them.
+ *
+ * Enough to identify a person and to say whether they are worth a second look
+ * — never the profile itself. A creation page that grew a full creator profile
+ * inside it would be two pages arguing about which one the reader is on.
+ */
+type CreatorCard = {
+  followers: number;
+  messages: number;
+  creations: number;
+  rank: number | null;
+  rankTotal: number;
+  border: ProfileBorder;
+  viewerFollows: boolean;
+  owner: boolean;
+};
+
 type Detail = {
   character: Character;
   worlds: AttachedWorld[];
@@ -41,6 +61,7 @@ type Detail = {
   /** The newest story this reader has with this creation, or null for none. */
   viewerConversationId?: string | null;
   viewerConversationCount?: number;
+  creatorCard?: CreatorCard | null;
 };
 
 /**
@@ -80,6 +101,10 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const [posting, setPosting] = useState(false);
   const overviewRef = useRef<HTMLParagraphElement>(null);
   const [overflowing, setOverflowing] = useState(false);
+  /** Optimistic follow state for the creator card. Null means "as loaded". */
+  const [following, setFollowing] = useState<boolean | null>(null);
+  const [followers, setFollowers] = useState<number | null>(null);
+  const [followPending, setFollowPending] = useState(false);
 
   useEffect(() => {
     fetch(`/api/characters/${characterId}`)
@@ -221,6 +246,41 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     if (failure) setError(failure);
   }, [character]);
 
+  /**
+   * Following the creator, from the creation page.
+   *
+   * The same optimistic contract the profile and the save button use: flip
+   * immediately, settle on the server's own count, and put the previous state
+   * back exactly if the write fails. It writes `/api/follows` and nothing else
+   * — a follow is a relation between two accounts and has no bearing on the
+   * creation being read.
+   */
+  const toggleFollow = useCallback(async () => {
+    const handle = detail?.character.creator?.username;
+    if (!handle || followPending) return;
+    const wasFollowing = following ?? detail.creatorCard?.viewerFollows ?? false;
+    const previous = followers ?? detail.creatorCard?.followers ?? 0;
+    setFollowPending(true);
+    setFollowing(!wasFollowing);
+    setFollowers(Math.max(0, previous + (wasFollowing ? -1 : 1)));
+    try {
+      const response = await fetch(
+        wasFollowing ? `/api/follows?username=${encodeURIComponent(handle)}` : "/api/follows",
+        wasFollowing
+          ? { method: "DELETE" }
+          : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: handle }) },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Could not update who you follow");
+      setFollowing(Boolean(body.following));
+      if (typeof body.followers === "number") setFollowers(body.followers);
+    } catch (reason) {
+      setFollowing(wasFollowing);
+      setFollowers(previous);
+      setError(reason instanceof Error ? reason.message : "Could not update who you follow");
+    } finally { setFollowPending(false); }
+  }, [detail, following, followers, followPending]);
+
   const share = useCallback(() => {
     const url = window.location.href;
     if (navigator.share) { void navigator.share({ title: character ? creationTitle(character) : "Afterglow", url }).catch(() => undefined); return; }
@@ -286,6 +346,9 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   // wording. See `chatCta` in src/lib/creation-actions.ts.
   const cta = chatCta(character, detail.viewerConversationId ?? null);
   const storyCount = detail.viewerConversationCount ?? 0;
+  const creatorCard = detail.creatorCard ?? null;
+  const followState = following ?? creatorCard?.viewerFollows ?? false;
+  const followerCount = followers ?? creatorCard?.followers ?? 0;
   // Keep the verified badge glued to the final word of the title.
   const titleWords = title.trim().split(/\s+/);
   const titleLead = titleWords.slice(0, -1).join(" ");
@@ -504,20 +567,51 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           </ul>
         </section>}
 
+        {/* The creator, compactly.
+            This used to be an avatar, a handle and a link that went nowhere —
+            `?view=creator` was not a view the shell had. It is a real identity
+            now: who they are, how their published work is actually doing, and
+            one control that matters. Deliberately NOT a profile: no
+            achievements gallery, no activity feed, no worlds. The profile is
+            one tap away and is where all of that lives. */}
         {character.creator && <section id="creator" className={`${styles.card} ${styles.creatorCard} ${illuminated === "creator" ? styles.illuminate : ""}`}>
           <header><UserRound size={16} /><h2>Creator</h2></header>
           <div className={styles.creator}>
-            <span className={styles.creatorAvatar}>
-              {character.creator.avatarPath
-                ? <img src={avatarSource(profileAvatarBucket, character.creator.avatarPath, "")} alt="" />
-                : initials(character.creator.displayName || character.creator.username)}
-            </span>
-            <div>
-              <strong>{character.creator.username ? `@${character.creator.username}` : character.creator.displayName}</strong>
-              {character.creator.displayName && character.creator.username && <small>{character.creator.displayName}</small>}
+            <CreatorAvatar
+              avatarPath={character.creator.avatarPath}
+              name={character.creator.displayName || character.creator.username}
+              border={creatorCard?.border ?? profileBorder("default")}
+              size={54}
+            />
+            <div className={styles.creatorCopy}>
+              <strong>{character.creator.displayName || `@${character.creator.username}`}</strong>
+              {character.creator.username && <small>@{character.creator.username}</small>}
+              {/* Only the top 100 get the medal here. A badge every creator
+                  carries is a label; one the hundred most-read creators carry
+                  is worth noticing. */}
+              {creatorCard && <RankMedal rank={creatorCard.rank} total={creatorCard.rankTotal} showFrom={100} compact />}
             </div>
+            {creatorCard && !creatorCard.owner && character.creator.username && <button
+              className={`${styles.followButton} ${followState ? styles.followingButton : ""}`}
+              onClick={() => void toggleFollow()}
+              disabled={followPending}
+              aria-pressed={followState}
+              aria-label={followState
+                ? `Stop following ${character.creator.displayName || character.creator.username}`
+                : `Follow ${character.creator.displayName || character.creator.username}`}
+            >{followState ? "Following" : "Follow"}</button>}
           </div>
-          {character.creator.username && <Link className={styles.creatorLink} href={`/?view=creator&creator=${character.creator.username}`}>View creator</Link>}
+
+          {creatorCard && <dl className={styles.creatorStats}>
+            <div><dt>Followers</dt><dd>{compactCount(followerCount)}</dd></div>
+            <div><dt>Messages</dt><dd>{compactCount(creatorCard.messages)}</dd></div>
+            <div><dt>Creations</dt><dd>{compactCount(creatorCard.creations)}</dd></div>
+          </dl>}
+
+          {character.creator.username && <Link className={styles.creatorLink} href={`/creators/${character.creator.username}`}>
+            View creator profile
+            {creatorCard && rankSummary(creatorCard.rank, creatorCard.rankTotal) && <em>{rankSummary(creatorCard.rank, creatorCard.rankTotal)}</em>}
+          </Link>}
         </section>}
 
         {worlds.length > 0 && <section id="world" className={`${styles.card} ${illuminated === "world" ? styles.illuminate : ""}`}>

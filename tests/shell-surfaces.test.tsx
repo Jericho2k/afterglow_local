@@ -102,16 +102,46 @@ describe("Personas", () => {
 });
 
 describe("Profile", () => {
-  it("shows only real account data", () => {
+  /**
+   * This used to assert that the words "Followers" and "Rank" never appeared,
+   * because at the time they would have been fiction. They are real numbers
+   * now — followers is a relation, rank is a stated ordering over published
+   * work — so the assertion moves rather than being dropped: what must never
+   * appear is a metric the product does not compute, and what must never
+   * appear YET is a number whose value has not arrived.
+   */
+  it("shows the editable fields", () => {
     const markup = renderToStaticMarkup(<ProfileView profile={profile} onSaved={() => undefined} />);
     expect(markup).toContain("Display name");
     expect(markup).toContain("Creator username");
     expect(markup).toContain("Bio");
-    // Nothing invented: no followers, no verification badge, no rank, no
-    // analytics the product does not compute.
-    for (const fiction of ["Followers", "Verified", "Rank", "Impressions", "Trending"]) {
-      expect(markup, `${fiction} is not real data`).not.toContain(fiction);
+  });
+
+  it("names no metric the product does not compute", () => {
+    const markup = renderToStaticMarkup(<ProfileView profile={profile} onSaved={() => undefined} />);
+    // "Reach" is deliberately absent from this list: it appears as a verb in
+    // "Reach 100 followers", which is a requirement rather than a metric.
+    for (const fiction of ["Impressions", "Trending", "Engagement", "Views", "Score"]) {
+      expect(markup, `${fiction} is not something Afterglow measures`).not.toContain(fiction);
     }
+  });
+
+  it("draws no standing at all until the real one has arrived", () => {
+    // The stats card renders from a fetched aggregate; before it resolves there
+    // is nothing to show, and a placeholder zero would be a number that is not
+    // true rather than a number that is not there yet.
+    const markup = renderToStaticMarkup(<ProfileView profile={profile} onSaved={() => undefined} />);
+    expect(markup).not.toContain("Followers");
+    expect(markup).not.toContain("Messages");
+  });
+
+  it("offers only the cosmetics this account has actually earned", () => {
+    const markup = renderToStaticMarkup(<ProfileView profile={profile} onSaved={() => undefined} />);
+    // Afterglow's own ring is available to everybody and selected; every other
+    // ring is disabled and says what earns it.
+    expect(markup).toContain('aria-label="Afterglow"');
+    expect(markup).toContain('aria-label="Top 100 — locked. Rank among the 100 most-read creators."');
+    expect(markup).toContain("disabled=\"\"");
   });
 });
 

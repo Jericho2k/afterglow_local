@@ -4,6 +4,7 @@ import { withCastMemberIds } from "@/lib/cast";
 import { richFieldPayload, textToRich, type RichBlock } from "@/lib/rich-content";
 import { currentAccount, unauthorized } from "@/lib/session";
 import { visitorCharacter } from "@/lib/access";
+import { effectiveBorder } from "@/lib/cosmetics";
 
 
 /**
@@ -86,9 +87,16 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const detail = await asUser(account.id, async (client) => {
     const result = await client.query(
       `SELECT ${wantsEditPayload ? "c.*" : "c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,c.nsfw_enabled,c.visibility,c.like_count,c.chat_count,c.message_count,c.published_at,c.created_at,c.updated_at"},p.id creator_id,p.username creator_username,p.display_name creator_display_name,
-         p.avatar_path creator_avatar_path,(mine.character_id IS NOT NULL) saved_by_viewer
+         p.avatar_path creator_avatar_path,p.profile_border creator_border,
+         COALESCE(p.follower_count,0) creator_followers,
+         COALESCE(cs.user_messages,0) creator_messages,COALESCE(cs.published_creations,0) creator_creations,
+         COALESCE(cs.published_worlds,0) creator_worlds,cs.rank creator_rank,COALESCE(cs.rank_total,0) creator_rank_total,
+         (follows.creator_user_id IS NOT NULL) creator_followed,
+         (mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c
        LEFT JOIN profiles p ON p.id=c.user_id AND (p.id=$2 OR p.username IS NOT NULL)
+       LEFT JOIN creator_stats cs ON cs.user_id=c.user_id
+       LEFT JOIN profile_follows follows ON follows.creator_user_id=c.user_id AND follows.follower_user_id=$2
        LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$2
        WHERE c.id=$1 AND (c.user_id=$2 OR c.visibility IN ('public','unlisted'))`,
       [id, account.id],
@@ -187,6 +195,44 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       "SELECT id,storage_path,external_url,caption,position FROM character_gallery WHERE character_id=$1 ORDER BY position ASC, created_at ASC",
       [id],
     );
+    /*
+     * The creator, as a card.
+     *
+     * Three public totals, a ring, a follow control and — only for the top
+     * hundred — a medal. Deliberately a SUMMARY: the profile is one tap away
+     * and is where achievements, activity, worlds and the full standing live.
+     *
+     * Every field comes from the joins on the query above rather than from
+     * queries of its own. That matters on this page in particular: it is the
+     * slowest surface in the product and the last sprint spent its time taking
+     * round trips OUT of it, so a creator card that added four would be undoing
+     * that work to draw three numbers. The standing itself is precomputed —
+     * `creator_stats` is refreshed by whoever opens a profile page, not by
+     * everybody who opens a creation.
+     */
+    const creatorId = row.creator_id ? String(row.creator_id) : "";
+    const standing = {
+      followers: Number(row.creator_followers || 0),
+      userMessages: Number(row.creator_messages || 0),
+      publishedCreations: Number(row.creator_creations || 0),
+      publishedWorlds: Number(row.creator_worlds || 0),
+      rank: row.creator_rank == null ? null : Number(row.creator_rank),
+      rankTotal: Number(row.creator_rank_total || 0),
+    };
+    const creatorCard = creatorId && row.creator_username ? {
+      followers: standing.followers,
+      messages: standing.userMessages,
+      creations: standing.publishedCreations,
+      rank: standing.rank,
+      rankTotal: standing.rankTotal,
+      border: effectiveBorder(String(row.creator_border || "default"), {
+        followers: standing.followers, messages: standing.userMessages,
+        publishedCreations: standing.publishedCreations, publishedWorlds: standing.publishedWorlds,
+        rank: standing.rank,
+      }, standing.rankTotal),
+      viewerFollows: Boolean(row.creator_followed),
+      owner: creatorId === account.id,
+    } : null;
     const character = characterFromRow({ ...row, world_ids: worldIds, gallery: gallery.rows }, account.id);
     return {
       // A visitor receives the public creation, not its prompt engineering.
@@ -207,6 +253,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       // `chatCta` in src/lib/creation-actions.ts.
       viewerConversationId: ownStories.rows[0] ? String(ownStories.rows[0].id) : null,
       viewerConversationCount: Number(ownStories.rows[0]?.total || 0),
+      creatorCard,
       owner,
     };
   });

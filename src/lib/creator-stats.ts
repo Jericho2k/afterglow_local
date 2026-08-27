@@ -73,30 +73,28 @@ export async function refreshCreatorStatsIfStale(client: PoolClient, now = Date.
 
 /** One creator's precomputed standing, or the zero standing when unranked. */
 export async function creatorStanding(client: PoolClient, userId: string): Promise<CreatorStandingRow> {
-  const result = await client.query(
-    `SELECT s.*, (SELECT max(rank_total) FROM creator_stats) AS field
-     FROM creator_stats s WHERE s.user_id=$1`,
-    [userId],
-  );
+  // Deliberately just the row. `rank_total` is already on it, so the size of
+  // the field needs no second read here — only the unranked branch below has
+  // to go looking for it.
+  const result = await client.query("SELECT * FROM creator_stats WHERE user_id=$1", [userId]);
   const row = result.rows[0];
   if (!row) {
     // Not ranked is not an error. A creator with nothing published still has
     // followers and a profile, so the live figures are read directly.
-    const live = await client.query(
-      `SELECT COALESCE(p.follower_count,0) followers,
-              (SELECT count(*) FROM characters c WHERE c.user_id=$1 AND c.visibility='public') creations,
-              (SELECT count(*) FROM worlds w WHERE w.user_id=$1 AND w.visibility='public') worlds,
-              (SELECT COALESCE(max(rank_total),0) FROM creator_stats) field
-       FROM profiles p WHERE p.id=$1`,
-      [userId],
-    );
-    const fallback = live.rows[0];
+    const [profile, creations, worlds, field] = await Promise.all([
+      client.query("SELECT follower_count FROM profiles WHERE id=$1", [userId]),
+      client.query("SELECT count(*)::int count FROM characters WHERE user_id=$1 AND visibility='public'", [userId]),
+      client.query("SELECT count(*)::int count FROM worlds WHERE user_id=$1 AND visibility='public'", [userId]),
+      client.query("SELECT COALESCE(max(rank_total),0)::int total FROM creator_stats"),
+    ]);
     return {
       ...unrankedStanding,
-      followers: Number(fallback?.followers || 0),
-      publishedCreations: Number(fallback?.creations || 0),
-      publishedWorlds: Number(fallback?.worlds || 0),
-      rankTotal: Number(fallback?.field || 0),
+      followers: Number(profile.rows[0]?.follower_count || 0),
+      publishedCreations: Number(creations.rows[0]?.count || 0),
+      publishedWorlds: Number(worlds.rows[0]?.count || 0),
+      // The size of the field, so an unranked creator's page can still say how
+      // many creators there are without claiming a position among them.
+      rankTotal: Number(field.rows[0]?.total || 0),
     };
   }
   return {
@@ -106,7 +104,7 @@ export async function creatorStanding(client: PoolClient, userId: string): Promi
     saves: Number(row.saves || 0),
     followers: Number(row.followers || 0),
     rank: row.rank == null ? null : Number(row.rank),
-    rankTotal: Number(row.rank_total || row.field || 0),
+    rankTotal: Number(row.rank_total || 0),
     computedAt: new Date(String(row.computed_at)).toISOString(),
   };
 }

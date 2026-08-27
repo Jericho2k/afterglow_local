@@ -441,24 +441,62 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
    list that holds them belongs to this page. */
 .worldList { display: grid; gap: 10px; }
 
+/*
+ * The creator, compactly.
+ *
+ * One row of identity, one row of numbers, one link out. It has to stay
+ * SMALLER than the creation it sits beside — a creator's achievements, worlds
+ * and history belong on their own page, and putting a second profile inside
+ * this one would leave the reader unsure which page they are on.
+ */
 .creator { display: flex; align-items: center; gap: 12px; }
-.creatorAvatar {
-  display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 auto;
-  border-radius: 50%; overflow: hidden;
-  border: 1px solid rgba(232, 121, 169, .3);
-  background: rgba(232, 121, 169, .12); color: var(--accent); font-size: 14px; font-weight: 600;
+.creatorCopy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.creator strong { display: block; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.creator small { display: block; font-size: 11.5px; color: var(--faint); }
+.creatorCopy > span { align-self: flex-start; margin-top: 2px; }
+
+.followButton {
+  flex: 0 0 auto; min-height: 38px; min-width: 88px;
+  border: 0; border-radius: 11px;
+  background: linear-gradient(135deg, #e879a9, #8a5cf6);
+  color: #1a0f18; padding: 0 14px;
+  font-family: var(--font-sans); font-size: 11.5px; font-weight: 600;
+  cursor: pointer;
 }
-.creatorAvatar img { width: 100%; height: 100%; object-fit: cover; }
-.creator strong { display: block; font-size: 13.5px; }
-.creator small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--faint); }
+.followButton:hover:not(:disabled) { filter: brightness(1.06); }
+.followButton:disabled { opacity: .6; cursor: progress; }
+.followButton:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+/* Following is a state rather than a second call to action, so it recedes. */
+.followingButton {
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--edge, rgba(255, 255, 255, .12));
+  color: var(--ink);
+}
+.followingButton:hover:not(:disabled) { border-color: rgba(238, 104, 137, .4); color: #f0a6c6; filter: none; }
+
+.creatorStats {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px; margin: 14px 0 0;
+  border-radius: 12px; overflow: hidden; background: var(--line);
+}
+.creatorStats > div { display: flex; flex-direction: column; gap: 3px; background: #16121a; padding: 10px 11px; }
+.creatorStats dt { font-family: var(--font-sans); font-size: 8.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--faint); }
+.creatorStats dd { margin: 0; font-family: var(--font-serif), Georgia, serif; font-size: 17px; color: var(--ink); }
+
 .creatorLink {
-  display: block; margin-top: 14px; text-align: center; text-decoration: none;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; margin-top: 12px; text-decoration: none;
   border: 1px solid rgba(232, 121, 169, .26); border-radius: 12px;
-  background: rgba(232, 121, 169, .08); padding: 11px;
+  background: rgba(232, 121, 169, .08); padding: 0 12px;
   font-size: 12.5px; font-weight: 560; color: #f2dcea;
   transition: background .18s;
 }
+.creatorLink em {
+  font-style: normal; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: #f0a6c6; border: 1px solid rgba(232, 121, 169, .3); border-radius: 999px; padding: 3px 8px;
+}
 .creatorLink:hover { background: rgba(232, 121, 169, .16); }
+.creatorLink:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
 
 .composer { display: grid; gap: 8px; margin-bottom: 16px; }
 .composer textarea {
