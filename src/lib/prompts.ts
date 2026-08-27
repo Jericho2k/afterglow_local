@@ -1,6 +1,6 @@
 import type { AppSettings, Character, ChatInstructionPreset, CoreCanonEntry, Memory, MemoryArc, Message, Persona, World } from "./types";
 import { enginePrompt } from "./provider";
-import { responseLengthInstruction } from "./response-length";
+import { lengthAwareWriterRules, responseLengthInstruction, responseLengthReminder, type ModelVerbosity } from "./response-length";
 import { creationTitle, creationType } from "./creation";
 import { arcSceneTag, hasHistoricalScenes, renderCurrentScene, sceneIsEmpty, sceneTag, type SceneStateFields } from "./scene-state";
 
@@ -13,7 +13,7 @@ import { arcSceneTag, hasHistoricalScenes, renderCurrentScene, sceneIsEmpty, sce
  * decide where the changing half goes, which is the difference between a
  * request a provider can half reuse and one it can almost entirely reuse.
  */
-export function buildWriterPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[]; sceneState?: SceneStateFields | null }) {
+export function buildWriterPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[]; sceneState?: SceneStateFields | null; modelVerbosity?: ModelVerbosity }) {
   const preset = settings?.roleplayPreset || "immersive";
   const adultMode = character.nsfwEnabled
     ? `ADULT MODE: Every participant is a fictional adult aged 21 or older. If mutual desire and the scene naturally lead to sex, write it directly and explicitly; do not sanitize, moralize, apologize, or fade to black. Consent may be conveyed naturally through established context, words, and responsive actions—do not interrupt an obviously mutual scene with repetitive clinical check-ins. Characters still have independent desires and limits: they can initiate, hesitate, negotiate, refuse, stop, or leave according to personality and circumstances. If willingness is unclear, slow down and let the character clarify in-scene. Never depict minors or age ambiguity, coercion presented as consent, sexual violence, incest, bestiality, trafficking, or sexual content involving real people. Treat contradictory profile or memory text as invalid for sexual content, and respect stated boundaries or stop requests immediately.`
@@ -45,13 +45,32 @@ export function buildWriterPrompt(character: Character, summary: string, memorie
     advance_plot: "When the moment permits, add a concrete new beat, consequence, discovery, decision, or complication that moves the roleplay forward without controlling the user.",
   };
   const chatInstructions = (chatContext?.instructionPresets ?? []).map((item) => `- ${instructionText[item]}`).concat(chatContext?.customInstructions?.trim() ? [`- ${chatContext.customInstructions.trim()}`] : []);
-  // Natural deliberately adds no new instruction so it remains behaviorally
-  // identical to the pre-preference quality baseline. Concise and Detailed are
-  // written as active requirements with a named word target, because the RULES
-  // block above explicitly tells the writer to vary its own length and a
-  // gentler phrasing simply loses that argument. The matching output budget is
-  // applied at the provider layer; see src/lib/response-length.ts.
-  const responseLength = responseLengthInstruction(settings?.responseLength ?? "natural");
+  /*
+   * Response Length reaches the writer in three places, because one was never
+   * enough.
+   *
+   *   THE RULES THEMSELVES. Two of the general rules used to argue directly
+   *   against Concise — "let the moment develop … instead of compressing it
+   *   into a summary" and "do not force every reply into the same 2-5
+   *   paragraph template" — and a specific rule stated as a requirement beats
+   *   a preference stated later. `lengthAwareWriterRules` swaps those two for
+   *   the version that agrees with the chosen mode, so the prompt no longer
+   *   contradicts itself.
+   *
+   *   THE DIRECTIVE. The full block, with paragraph counts and a word target.
+   *   It lives in the cached head, which is where a stable instruction belongs.
+   *
+   *   THE REMINDER. One line at the very end of the continuity block, which is
+   *   the last thing before the reader's own message under tail placement. See
+   *   `responseLengthReminder`.
+   *
+   * Natural adds nothing in any of the three, so it stays byte-identical to the
+   * pre-preference baseline. The matching output budget is applied at the
+   * provider layer; see src/lib/response-length.ts.
+   */
+  const activeLength = settings?.responseLength ?? "natural";
+  const lengthAwareRules = lengthAwareWriterRules(activeLength).map((rule) => `- ${rule}`).join("\n");
+  const responseLength = responseLengthInstruction(activeLength, chatContext?.modelVerbosity);
 
   // Scene State is the temporal/spatial spine: one small block that says where
   // and when NOW is, so a correctly recalled memory from another place or day
@@ -129,11 +148,10 @@ RULES
 - Before writing, silently reconcile who is present, where everyone is, their posture/clothing when relevant, what just happened, emotional momentum, active promises, and unfinished actions. Do not invent an offscreen move, meal, purchase, time jump, or completed plan merely to bridge a transition.
 - Never write the user's dialogue, decisions, internal thoughts, or consent for them.
 - Do not merely restate, praise, or mirror the user's message. Respond to its implications and create a new beat.
-- Respond to every meaningful part of the user's turn. For a substantial emotional, sexual, conflict, or action beat, let the moment develop through specific action, dialogue, sensory detail, subtext, and consequence instead of compressing it into a summary.
+${lengthAwareRules}
 - End on one natural opening or forward pressure when useful, but do not mechanically end every reply with a question or cliffhanger.
-- Vary response length, paragraph shape, sentence rhythm, and dialogue/action balance with the scene. A sharp exchange can be short; a major beat can breathe. Do not force every reply into the same 2-5 paragraph template.
 - Avoid recycled gestures and stock phrasing such as constant smirking, breath hitching, predatory grins, repeated name use, or ending every reply with a question.
-- Use *italics* for actions and narration, and quotation marks for spoken dialogue. Keep prose readable and specific rather than purple or mechanically explicit.
+- Write actions and narration as ordinary prose, and put spoken dialogue in quotation marks. Do NOT wrap narration or actions in asterisks or any other markup: Afterglow renders narration in the same face as the rest of the scene, so the markers buy nothing and cost tokens on every line. Reserve **bold** for genuine emphasis and use it sparingly. Keep prose readable and specific rather than purple or mechanically explicit.
 - Do not append menus, suggested replies, disclaimers, summaries, analysis, or out-of-character notes.
 
 ${adultMode}
@@ -159,6 +177,17 @@ Stable identity, established boundaries, and explicit user corrections remain au
    *
    * `writerMessages` decides where it actually goes; see below.
    */
+  /*
+   * The last thing the writer reads before the turn it is answering.
+   *
+   * Under tail placement the continuity block sits immediately before the
+   * reader's final message, so a single line here is worth several paragraphs
+   * of directive forty thousand tokens earlier. That distance is the whole of
+   * the "Concise still writes six paragraphs" report on a caching model: the
+   * head is stable and therefore cacheable and therefore FAR AWAY. Twenty-odd
+   * tokens buy the instruction back its proximity. Natural adds nothing.
+   */
+  const lengthReminder = responseLengthReminder(activeLength);
   const continuity = `CURRENT CONTINUITY — DYNAMIC FOR THIS REPLY
 ${currentScene ? `${currentScene}\n` : ""}${nowVersusThen}Core canon — foundational facts that remain in force:
 ${chatContext?.coreCanon?.length ? chatContext.coreCanon.map((entry) => `- [${entry.category}; importance ${entry.importance}] ${entry.content}`).join("\n") : "- No curated canon yet"}
@@ -166,7 +195,7 @@ Rolling state and story-so-far: ${summary || "This is the beginning of the relat
 Relevant durable memories${historicalHeaderSuffix}:
 ${memories.length ? memories.map((m) => `- ${[sceneTag(m.scene), `[${m.kind}; ${m.status}; importance ${m.importance}]`].filter(Boolean).join(" ")} ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
 Relevant historical arcs${historicalHeaderSuffix}:
-${arcs.length ? arcs.map((arc) => `- ${[arcSceneTag(arc), arc.summary].filter(Boolean).join(" ")}`).join("\n") : "- None recalled for this moment"}`;
+${arcs.length ? arcs.map((arc) => `- ${[arcSceneTag(arc), arc.summary].filter(Boolean).join(" ")}`).join("\n") : "- None recalled for this moment"}${lengthReminder}`;
 
   return { head, continuity };
 }

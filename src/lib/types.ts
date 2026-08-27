@@ -427,6 +427,59 @@ export type SceneLocation = {
   confidence: SceneLocationConfidence;
 };
 
+/**
+ * Where one character's body actually is.
+ *
+ * Every field may be empty, and empty means UNKNOWN rather than "not
+ * touching" or "at rest". That distinction is the whole design: models twist
+ * characters into impossible configurations during intimacy, fights,
+ * grappling, dancing, carrying and bed scenes, and the fix for that is to
+ * carry forward what the story has ESTABLISHED — never to invent a plausible
+ * value for a limb nobody has mentioned. A scene that never said where Maya's
+ * left hand was must not acquire an answer here.
+ *
+ * Left and right are separate fields for the same reason: "her hand" is what a
+ * model writes when it has lost track, and a ledger that also says "her hand"
+ * cannot correct it.
+ */
+export type PhysicalActor = {
+  /** Who this describes. Matched case-insensitively against the scene's cast. */
+  name: string;
+  /** seated, standing, lying, kneeling, straddling, carried, pinned… */
+  posture: string;
+  /** What they are turned toward: "the user", "the window", "away". */
+  facing: string;
+  /** Where they are in relation to somebody else: "directly in front of Maya". */
+  relativeTo: string;
+  /** What is bearing their weight: "the couch", "the floor", "Maya's arms". */
+  support: string;
+  leftArm: string;
+  rightArm: string;
+  leftHand: string;
+  rightHand: string;
+  leftLeg: string;
+  rightLeg: string;
+  leftFoot: string;
+  rightFoot: string;
+  /** Objects in hand. Empty means nothing established, not empty hands. */
+  held: string[];
+};
+
+/**
+ * The physical geometry of the current moment.
+ *
+ * Deliberately not prose. A paragraph describing the arrangement is what the
+ * rolling summary already is, and it is precisely what a writer skims; a short
+ * list of established facts is what it reads.
+ */
+export type ScenePhysical = {
+  actors: PhysicalActor[];
+  /** Points of contact: "Maya's hand on the user's chest". Empty = unknown. */
+  contacts: string[];
+  /** What the space imposes: "coffee table between them", "she is pinned". */
+  constraints: string[];
+};
+
 export type SceneState = {
   id: string;
   conversationId: string;
@@ -455,6 +508,15 @@ export type SceneState = {
   presentCharacters: string[];
   /** A few immediate unresolved beats. Never a second rolling summary. */
   activeSituation: string[];
+  /**
+   * Body positions, contact and environmental constraints.
+   *
+   * Absent on every row written before this existed, which reads as "nothing
+   * established" and is exactly right: an old scene genuinely never recorded
+   * where anybody's hands were, and inventing an arrangement for it would be
+   * the failure this field exists to prevent.
+   */
+  physical: ScenePhysical;
   /** Which fields the last update actually changed. Diagnostics only. */
   changedFields: string[];
   extractionModel: string;

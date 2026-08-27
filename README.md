@@ -31,7 +31,10 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 - Character visibility model (private / unlisted / public) ready for a creator marketplace, with chats and memories that stay private even when the character is published
 - Public creation pages that render only the sections a creator actually authored, and never expose the hidden prompt fields that steer the model
 - Discovery feed with search, platform-tag filtering, three honest orderings and a private per-user saved library
-- Opt-in creator profiles and a moderation-report queue
+- Creator profiles with followers, real creator statistics, a documented creator rank, achievements earned from real milestones, unlockable profile borders, a public activity history and a Top Characters panel
+- Worlds scoped to a STORY: a conversation snapshots its creation's readable defaults when it begins and then owns its own set, so attaching lore to one story never edits the creation
+- Physical continuity inside Scene State: posture, support, each limb separately, held objects, contact points and environmental constraints, carried only where the story established them
+- A moderation-report queue
 - Supabase Storage for profile and character images, scoped to the owning account
 - Complete JSON export/import for profiles, chats, memories, and settings
 - Request throttling, server-only API key, PostgreSQL persistence, local token-usage ledger, and Railway health check
@@ -70,6 +73,14 @@ psql "$DATABASE_URL" -f supabase/migrations/0010_world_covers_storage.sql
 psql "$DATABASE_URL" -f supabase/migrations/0011_creation_model.sql
 psql "$DATABASE_URL" -f supabase/migrations/0012_discovery_feed.sql
 psql "$DATABASE_URL" -f supabase/migrations/0013_scene_state.sql
+psql "$DATABASE_URL" -f supabase/migrations/0014_worlds_v2.sql
+psql "$DATABASE_URL" -f supabase/migrations/0015_rich_content.sql
+psql "$DATABASE_URL" -f supabase/migrations/0016_discovery_preferences.sql
+psql "$DATABASE_URL" -f supabase/migrations/0017_linked_world_previews.sql
+psql "$DATABASE_URL" -f supabase/migrations/0018_memory_feedback.sql
+psql "$DATABASE_URL" -f supabase/migrations/0019_conversation_worlds.sql
+psql "$DATABASE_URL" -f supabase/migrations/0020_scene_physical_state.sql
+psql "$DATABASE_URL" -f supabase/migrations/0021_creator_profile_v2.sql
 ```
 
 Every file is idempotent, so re-running them is safe. `0002_storage.sql` touches the `storage` schema and only applies to Supabase.
@@ -178,6 +189,27 @@ as one cacheable ~730-token prefix, leaving roughly 300 varying input tokens
 and ~150 output tokens per turn. Its cost is recorded separately in
 `usage_events` as `scene_state` and works out to roughly $0.011 per 100 user
 messages on DeepSeek V4 Flash with prefix caching, or about $0.019 without it.
+
+**Physical arrangement.** The ledger also carries where the bodies are, because
+that is the continuity models break most reliably: during intimacy, fights,
+grappling, dancing, carrying and anything on a bed or a couch, a character who
+was seated is suddenly standing, a hand is in two places, or something put down
+four replies ago is being held again. Per character it can hold posture, what
+they are facing, where they are relative to somebody else, what bears their
+weight, each arm, hand, leg and foot separately, and what they are holding;
+alongside them it holds the points of contact and what the space imposes.
+
+Everything in it is optional, and the same two rules govern it as govern the
+rest. Unknown stays unknown — a limb the story never mentioned has no value and
+never acquires one, and the block tells the writer that an omission means
+unknown rather than "nothing there". And an established position persists only
+until something invalidates it: standing up drops the placements that posture
+cannot hold, leaving the scene drops the body, and moving to another place or
+skipping a day clears the arrangement entirely rather than describing somewhere
+the story has left. Two people walking down a street get a posture at most.
+
+It costs nothing in a scene that never establishes a position, which is most of
+them, and about 100 tokens in a fully described two-person close-contact scene.
 
 Scene rows are keyed by the same integer message position that memories use, so
 a branch inherits only what was true at its branch point and an edit or rewind
@@ -344,6 +376,92 @@ Deleting a world never deletes the creations built on it. The
 `character_worlds` rows cascade and those creations simply stop having a world
 attached; the count is reported before the fact so the confirmation can say it.
 
+### A creation's worlds and a story's worlds
+
+There are two world relations, and keeping them apart is the point.
+
+`character_worlds` is the creator's **defaults** — edited in the studio, shown
+on the creation page, and copied into a story when that story begins.
+`conversation_worlds` is what one **story** is actually written with: private to
+the conversation's owner, independent of the creation from the moment the story
+starts, and the only thing the writer prompt reads.
+
+They were one relation, and that was a real semantic bug: the chat's world
+picker had nowhere to write except the creation, so a reader attaching "Night
+City" to their own story attached it to the creation, to the creator's published
+canon, and to every other reader's prompt.
+
+A new conversation receives a copy of the creation's defaults, filtered to the
+worlds that account may actually read — its own, plus anything published. From
+that line onward the two are independent: a creator adding or removing a world
+next month changes what NEW stories start with and changes nothing about one
+already in progress, which is the difference between authoring a template and
+editing somebody's ongoing fiction underneath them. A branch inherits the set of
+the story it came from rather than re-reading the creation, for the same reason
+it inherits that story's memories.
+
+Readability is re-checked on every read, not only at attach time, so a world
+whose creator makes it private stops feeding the prompt immediately even though
+the link survives. `conversations.worlds_initialized` is what distinguishes "this
+story deliberately has no worlds" from "this story predates the relation": the
+migration backfills every existing conversation with exactly the set the chat
+route was already loading for it — worlds the conversation's owner owns, on a
+creation that owner also owns — so no running story changes what it is written
+with, no story gains lore it was never given, and every story stops inheriting
+from here on.
+
+## Creator profiles
+
+A creator profile is a page of its own at `/creators/{username}`, and a username
+remains the single explicit opt-in that makes a profile public at all.
+
+**Every figure on it is real or it is absent.** That constraint decides the
+design more than anything else:
+
+- **Followers** is `profile_follows`, with the refusals in the database rather
+  than in whichever route writes the row: no self-follow, no following as
+  somebody else, no following an account with no public profile, and a repeated
+  tap is idempotent. The follower COUNT is public; the follower LIST is not —
+  a creator learning exactly which accounts read their work is a different
+  product with different consent.
+- **Messages** means messages people SENT: a canonical user event that reached
+  the writer, counted once even after the story is branched. That is not
+  `characters.message_count`, which counts every row — replies, the opening
+  greeting and each regenerated alternative — and is roughly double.
+  `characters.user_message_count` is its own counter with its own trigger and
+  an exact backfill.
+- **Rank** is a stated rule, not a score: total user messages received across
+  published creations, tie-broken by followers, then saves, then published
+  creations, then user id so the order is total. Only creators with a public
+  username and at least one published creation are ranked. It is precomputed
+  into `creator_stats` and rebuilt at most once every ten minutes behind a
+  single atomic claim, because answering it per page view means ranking the
+  whole platform per page view.
+- **Achievements** are thresholds on those same numbers, defined in
+  `src/lib/achievements.ts` and evaluated against real metrics. What is stored
+  is only what code cannot derive — when a threshold was first OBSERVED — so a
+  creator who passed ten thousand messages last year holds the badge without
+  the product inventing a date for it, and future crossings become real history.
+- **Activity** derives publish and update events from `published_at` and
+  `updated_at`, which already exist and are exact. That is what gives an
+  existing profile a genuine history on the day this ships rather than an empty
+  feed or an invented one. Milestones and achievements, which have no timestamp
+  of their own, are logged when first observed; one recorded before anything was
+  watching is stamped with the epoch and excluded from the feed, because "we do
+  not know when this happened" is not an entry.
+- **Borders** are six cosmetics unlocked by real milestones, never bought.
+  `unlockedBorders` is the only authority: the profile endpoint checks
+  entitlement again on save, so a client that offers a locked ring cannot equip
+  it, and the check runs on READ too, so a ring earned and then lost stops being
+  drawn without anything having to notice.
+
+On a creation page the creator is a compact card — avatar with its ring, name,
+handle, three totals and a Follow — and the rank medal appears only for the top
+100. A badge every creator carries is a label; one the hundred most-read
+creators carry is worth noticing. Every field it draws comes from joins on the
+query the page already ran, so the slowest surface in the product gained no
+round trips to show it.
+
 ## Cast members
 
 A cast member has an optional portrait and a lightweight page of its own at
@@ -448,6 +566,31 @@ that was just completed; the arrival replaces it, claims root depth and carries
 a `created=1` marker, and Back goes to Discovery. Editing is not a publish and
 does not use it.
 
+**Saving an edit** is the other place history had to be reasoned about rather
+than assumed. Saving used to push the creation page, which stacked a second
+creation entry on top of the editor's — so Back from a save returned into the
+editor, and only the Back after that behaved. Where the creation IS the entry
+underneath (Edit was pressed on its own page, which the marker in
+`src/lib/editor-navigation.ts` records), the save walks BACK to it, leaving the
+stack exactly as it would have been had the editor never been opened. Where it
+is not — the sidebar, an `?editCharacter=` link, a typed URL — the editor's
+entry is replaced. Neither path can leave a duplicate behind.
+
+**The shell knows its route on its first render.** It used to start on Home,
+apply the route in an effect that could not run until the session request had
+resolved, and fall through to the studio's empty state whenever a chat's
+creation had not arrived — so tapping Chat on a creation page painted
+Discovery, then "Create someone worth remembering", and only then the story.
+`src/app/page.tsx` gives the shell a Suspense boundary so it may read the query
+string on the client's first render; a URL that names a chat boots straight into
+a chat-shaped skeleton, and the studio's empty state is unreachable while a chat
+is pending.
+
+**The main Chat button resumes.** With a story in hand it opens the most recent
+one and writes nothing; only a creation this reader has never opened takes the
+create path, guarded by a ref rather than by state so two taps inside one frame
+produce one conversation. Beginning again is its own control beside it.
+
 ## Saving
 
 Save is the product's only affinity action, and it is one persistence model:
@@ -461,6 +604,29 @@ nobody can enumerate who saved what.
 Every surface goes through `toggleCreationSave` in `src/lib/saves.ts`, which
 applies the change optimistically, settles on the server's authoritative total,
 and reverts on failure. Likes are no longer a public metric anywhere in the UI.
+
+## Message markup
+
+Afterglow parses the little markup its prose actually uses rather than deleting
+it: a marker is markup only when it PAIRS, so `**emphasis**` renders bold, an
+unmatched `**` shows as the characters it is, `2 ** 8` keeps its operator, and
+`\*` escapes an asterisk that must never be read as markup at all. It produces
+data — a list of runs with flags — and the components render ordinary React
+elements, so there is no path from a creation's description or a model's reply
+to injected HTML.
+
+The one place what is WRITTEN and what is DRAWN differ is the single asterisk.
+In a roleplay `*she sets the glass down*` is the convention for narration, and
+narration is most of the prose in a reply — so rendering it as `<em>` put the
+majority of every message in italics. `displaySegments` resolves the markers
+away and draws the text in the ordinary face; bold is untouched, because a
+writer reaching for double asterisks meant emphasis and there is no competing
+convention for it. The parser still reports the markup faithfully, so this stays
+a rendering decision rather than a parsing one.
+
+The writer prompt no longer asks for `*italics*` either. Producing markup the UI
+deliberately renders as plain text costs tokens on every line of every reply and
+buys nothing visible.
 
 ## Adult-content boundaries
 
@@ -477,6 +643,9 @@ Adult mode permits consensual explicit fictional roleplay between adults. The sy
 - Ownership is enforced twice: every statement carries an explicit `user_id` predicate, and PostgreSQL policies decide independently. A mistake in one layer is caught by the other.
 - Avatar buckets are public-read so published characters render for other accounts; writes are restricted to `users/{account_id}/…` by storage policy. Nothing confidential belongs in an avatar.
 - Conversations, messages, memories, and arcs are private without exception, including when the character they use is public.
+- A story's world set is as private as the story. `conversation_worlds` can only ever name a world its owner may read — the check is on the way IN as a policy predicate, not only on the way out — so private lore cannot be linked into a prompt at all.
+- A follow row is visible to the two accounts it names and to nobody else. The follower count is public; the follower list is not.
+- Creator standings, achievements and activity are public aggregates over public work. None of them can be written by another account, and the ranking table can be written by nothing except the ranking function, which runs as its definer.
 
 ## Verification
 
@@ -493,7 +662,25 @@ createdb afterglow_test
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/afterglow_test npm test
 ```
 
-Without `TEST_DATABASE_URL` those tests skip and everything else still runs. CI provides a PostgreSQL service so they always run there.
+Without `TEST_DATABASE_URL` those tests skip and everything else still runs. CI provides a PostgreSQL service so they always run there. The suite needs `pgvector` for the retrieval schema; on a local PostgreSQL that is `postgresql-16-pgvector` and `CREATE EXTENSION vector`.
+
+Two things a test suite cannot answer, and how they are answered instead:
+
+- **Layout.** Responsive behaviour was measured in Chromium against the real
+  components and the real stylesheets at 375, 390, 430, 768, 1280 and 1440,
+  checking for horizontal overflow, hit-area size and focus rings. That is
+  where the profile's two layout defects were found; neither was visible in the
+  source. The decisions those measurements depend on are held by
+  `tests/creator-page.test.ts` so a later edit that reintroduces one fails.
+- **Model behaviour.** Whether Concise actually produces a concise reply is a
+  claim about what a model DOES, and it needs a paid endpoint. The offline half
+  — that no rule in the prompt argues against the active mode, that the
+  directive is restated at the generation point, and that the envelope does not
+  quietly permit the reply the mode exists to prevent — is in
+  `tests/response-length.test.ts` and runs on every commit. The live half is
+  `scripts/response-length-benchmark.mjs`, which sends the same representative
+  turns to two or more models at all three lengths and prints paragraph counts,
+  word counts and completion tokens side by side.
 
 ## Architecture
 

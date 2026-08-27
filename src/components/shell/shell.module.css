@@ -507,3 +507,86 @@
 .rangeChipActive { border-color: rgba(232, 121, 169, .38); background: rgba(232, 121, 169, .1); color: var(--ink); }
 .rangeCustom { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; }
 .rangeCustom label { display: flex; flex: 1 1 150px; flex-direction: column; gap: 5px; }
+
+/*
+ * Profile — the creator's own view.
+ *
+ * The page is a form, so the new pieces stay form-shaped: a banner previewed
+ * at the size it will occupy, a row of swatches, a row of chips. Nothing here
+ * competes with the public profile; this is where a creator DECIDES what that
+ * page shows.
+ */
+.profileStats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.profileRank {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  margin: 16px 0 0; color: var(--muted); font-family: var(--font-sans); font-size: 11px;
+}
+.profileRank strong { font-family: var(--font-serif), Georgia, serif; font-size: 20px; color: var(--ink); }
+.profileRank svg { color: #f0a6c6; align-self: center; }
+.profileLink {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-height: 42px; margin-top: 14px;
+  border: 1px solid rgba(232, 121, 169, .26); border-radius: 12px;
+  background: rgba(232, 121, 169, .08); color: #f2dcea; text-decoration: none;
+  padding: 0 15px; font-size: 12px;
+}
+.profileLink:hover { background: rgba(232, 121, 169, .16); }
+.profileLink:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+
+.coverField { display: grid; gap: 10px; }
+.coverPreview {
+  position: relative; height: 132px; border-radius: 16px; overflow: hidden;
+  border: 1px solid var(--line); background: #16121a;
+}
+.coverPreview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.coverEmpty {
+  display: block; width: 100%; height: 100%;
+  background:
+    radial-gradient(120% 140% at 18% 10%, rgba(232, 121, 169, .28), transparent 55%),
+    radial-gradient(120% 140% at 82% 0%, rgba(138, 92, 246, .26), transparent 58%),
+    linear-gradient(180deg, #1a1320, #100b14);
+}
+.coverAvatar { position: absolute; left: 16px; bottom: -10px; }
+.coverActions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+
+.borderRow { display: flex; flex-wrap: wrap; gap: 12px; }
+.borderSwatch {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  min-width: 62px; min-height: 44px;
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+  padding: 4px;
+  font-family: var(--font-sans); font-size: 9px;
+}
+.borderSwatch:disabled { opacity: .35; cursor: not-allowed; }
+.borderSwatch:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; border-radius: 10px; }
+.borderRing {
+  display: block; width: 34px; height: 34px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--border-from), var(--border-to));
+  box-shadow: 0 0 0 1px rgba(10, 8, 11, .8), 0 4px 14px var(--border-glow);
+}
+.borderRing::after {
+  content: ""; display: block; margin: 4px; width: 26px; height: 26px;
+  border-radius: 50%; background: #16121a;
+}
+.borderSwatchActive { color: var(--ink); }
+.borderSwatchActive .borderRing { box-shadow: 0 0 0 2px var(--ink), 0 4px 16px var(--border-glow); }
+
+.featureGrid { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
+.feature, .featureChosen {
+  min-height: 36px; border-radius: 999px; padding: 0 13px;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, .03);
+  color: var(--muted); font-family: var(--font-sans); font-size: 10.5px; cursor: pointer;
+}
+.feature:disabled { opacity: .4; cursor: not-allowed; }
+.featureChosen { border-color: rgba(232, 121, 169, .45); background: rgba(232, 121, 169, .12); color: #f6c5da; }
+.feature:focus-visible, .featureChosen:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+
+.profileBadges {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 18px 10px; margin: 12px 0 0; padding: 0; list-style: none;
+}
+
+@media (max-width: 560px) {
+  .profileStats { gap: 8px; }
+  .coverPreview { height: 108px; }
+}

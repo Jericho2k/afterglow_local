@@ -71,3 +71,30 @@ export function styleMessage(content: string, options: MarkupOptions = {}): Styl
   return tokenizeCharacterMessage(content).flatMap((segment) =>
     parseInlineMarkup(segment.text, options).map((piece) => ({ ...piece, kind: segment.kind })));
 }
+
+/**
+ * The same segments, as the chat actually draws them.
+ *
+ * `styleMessage` answers what the WRITER wrote; this answers what the READER
+ * sees, and in Afterglow those differ in exactly one way.
+ *
+ * A single asterisk pair is not typographic emphasis in a roleplay — it is the
+ * convention for an action or a line of narration, and it is used for most of
+ * the prose in a story. Rendering it as `<em>` put the majority of every reply
+ * in italics, which is the complaint: the previous fix stopped the markers
+ * being VISIBLE and, in doing so, made the text they wrapped look different
+ * from the text around it.
+ *
+ * So narration markup is resolved and then styled as nothing. The markers
+ * still do not print, the text still ends up in the paragraph it belongs to,
+ * and it reads in the same face as the rest of the scene. `**bold**` is
+ * untouched, because a writer reaching for double asterisks meant emphasis and
+ * there is no competing convention for it.
+ *
+ * This is a RENDERING decision, not a parsing one. `parseInlineMarkup` still
+ * reports `italic` faithfully, so nothing that needs to know what the markup
+ * said — a future export, a diagnostic — loses that information.
+ */
+export function displaySegments(content: string, options: MarkupOptions = {}): StyledSegment[] {
+  return styleMessage(content, options).map((segment) => segment.italic ? { ...segment, italic: false } : segment);
+}

@@ -171,9 +171,10 @@ export async function copySceneStatesForBranch(
       `INSERT INTO conversation_scene_states
        (id,conversation_id,user_id,through_message_count,through_message_id,through_message_fingerprint,provisional,status,
         story_day,date_kind,date_text,time_of_day,time_text,location_place,location_sub,location_confidence,
-        present_characters,active_situation,changed_fields,extraction_model,extraction_provider,extraction_latency_ms,
+        present_characters,active_situation,physical_actors,physical_contacts,physical_constraints,
+        changed_fields,extraction_model,extraction_provider,extraction_latency_ms,
         failure_reason,token_count,version,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,false,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+       VALUES ($1,$2,$3,$4,$5,$6,false,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$27::jsonb,$28,$29,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
       [
         randomUUID(), input.conversationId, input.userId, state.throughMessageCount, mappedId, mappedId ? state.throughMessageFingerprint : "",
         state.status, state.storyDay, state.dateKind, state.dateText, state.timeOfDay, state.timeText,
@@ -181,6 +182,10 @@ export async function copySceneStatesForBranch(
         state.presentCharacters, state.activeSituation, state.changedFields,
         state.extractionModel, state.extractionProvider, state.extractionLatencyMs, state.failureReason,
         state.tokenCount, state.version, row.created_at, row.updated_at,
+        // The branch inherits the arrangement as it stood at the branch point,
+        // for the same reason it inherits the location: a position established
+        // in the abandoned future is not true in this one.
+        JSON.stringify(state.physical.actors), state.physical.contacts, state.physical.constraints,
       ],
     );
   }
@@ -196,15 +201,18 @@ async function writeSceneRow(userId: string, input: {
       `INSERT INTO conversation_scene_states
        (id,conversation_id,user_id,through_message_count,through_message_id,through_message_fingerprint,provisional,status,
         story_day,date_kind,date_text,time_of_day,time_text,location_place,location_sub,location_confidence,
-        present_characters,active_situation,changed_fields,extraction_model,extraction_provider,extraction_latency_ms,
+        present_characters,active_situation,physical_actors,physical_contacts,physical_constraints,
+        changed_fields,extraction_model,extraction_provider,extraction_latency_ms,
         failure_reason,token_count,version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'ok',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'',$22,$23)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'ok',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$24::jsonb,$25,$26,$18,$19,$20,$21,'',$22,$23)
        ON CONFLICT (conversation_id,through_message_count) DO UPDATE SET
          through_message_id=EXCLUDED.through_message_id,through_message_fingerprint=EXCLUDED.through_message_fingerprint,
          provisional=EXCLUDED.provisional,status='ok',story_day=EXCLUDED.story_day,date_kind=EXCLUDED.date_kind,
          date_text=EXCLUDED.date_text,time_of_day=EXCLUDED.time_of_day,time_text=EXCLUDED.time_text,
          location_place=EXCLUDED.location_place,location_sub=EXCLUDED.location_sub,location_confidence=EXCLUDED.location_confidence,
          present_characters=EXCLUDED.present_characters,active_situation=EXCLUDED.active_situation,
+         physical_actors=EXCLUDED.physical_actors,physical_contacts=EXCLUDED.physical_contacts,
+         physical_constraints=EXCLUDED.physical_constraints,
          changed_fields=EXCLUDED.changed_fields,extraction_model=EXCLUDED.extraction_model,
          extraction_provider=EXCLUDED.extraction_provider,extraction_latency_ms=EXCLUDED.extraction_latency_ms,
          failure_reason='',token_count=EXCLUDED.token_count,version=EXCLUDED.version,updated_at=now()`,
@@ -214,6 +222,7 @@ async function writeSceneRow(userId: string, input: {
         input.fields.location.place, input.fields.location.sub, input.fields.location.confidence,
         input.fields.presentCharacters, input.fields.activeSituation, input.changed,
         input.model, input.provider, input.latencyMs, tokens, input.version,
+        JSON.stringify(input.fields.physical.actors), input.fields.physical.contacts, input.fields.physical.constraints,
       ],
     );
     // One small row per accepted turn is cheap, but it is not free forever.

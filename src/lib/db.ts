@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { maxLoreBlockText, normalizeBlocks } from "./rich-content";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type SceneStamp, type SceneState, type World, type WorldSummary } from "./types";
+import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type ScenePhysical, type SceneStamp, type SceneState, type World, type WorldSummary } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -174,6 +174,9 @@ async function schema() {
       location_confidence text NOT NULL DEFAULT 'unknown',
       present_characters text[] NOT NULL DEFAULT ARRAY[]::text[],
       active_situation text[] NOT NULL DEFAULT ARRAY[]::text[],
+      physical_actors jsonb NOT NULL DEFAULT '[]'::jsonb,
+      physical_contacts text[] NOT NULL DEFAULT ARRAY[]::text[],
+      physical_constraints text[] NOT NULL DEFAULT ARRAY[]::text[],
       changed_fields text[] NOT NULL DEFAULT ARRAY[]::text[],
       extraction_model text NOT NULL DEFAULT '',
       extraction_provider text NOT NULL DEFAULT '',
@@ -254,6 +257,49 @@ async function schema() {
       character_id uuid NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
       PRIMARY KEY (character_id, world_id)
+    );
+    CREATE TABLE IF NOT EXISTS profile_follows (
+      follower_user_id uuid NOT NULL,
+      creator_user_id uuid NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (follower_user_id, creator_user_id)
+    );
+    CREATE TABLE IF NOT EXISTS creator_stats (
+      user_id uuid PRIMARY KEY,
+      published_creations integer NOT NULL DEFAULT 0,
+      published_worlds integer NOT NULL DEFAULT 0,
+      user_messages bigint NOT NULL DEFAULT 0,
+      saves bigint NOT NULL DEFAULT 0,
+      followers integer NOT NULL DEFAULT 0,
+      rank integer,
+      rank_total integer NOT NULL DEFAULT 0,
+      computed_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS creator_stats_refresh (
+      id boolean PRIMARY KEY DEFAULT true,
+      refreshed_at timestamptz NOT NULL DEFAULT '1970-01-01T00:00:00Z'
+    );
+    CREATE TABLE IF NOT EXISTS profile_achievements (
+      user_id uuid NOT NULL,
+      achievement_id text NOT NULL,
+      unlocked_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, achievement_id)
+    );
+    CREATE TABLE IF NOT EXISTS profile_activity (
+      id uuid PRIMARY KEY,
+      user_id uuid NOT NULL,
+      kind text NOT NULL,
+      key text NOT NULL DEFAULT '',
+      title text NOT NULL,
+      subject text NOT NULL DEFAULT '',
+      occurred_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS conversation_worlds (
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      world_id uuid NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (conversation_id, world_id)
     );
     CREATE TABLE IF NOT EXISTS character_likes (
       user_id uuid NOT NULL,
@@ -478,6 +524,31 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS core_canon_user_idx ON core_canon_entries (user_id, conversation_id, status)");
   await pool().query("CREATE INDEX IF NOT EXISTS memory_retrieval_runs_user_idx ON memory_retrieval_runs (user_id, conversation_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS conversation_scene_states_current_idx ON conversation_scene_states (user_id, conversation_id, through_message_count DESC)");
+  // Physical continuity. Additive, empty by default, and empty means unknown;
+  // the constraints and the reasoning live in 0020_scene_physical_state.sql.
+  await pool().query("ALTER TABLE conversation_scene_states ADD COLUMN IF NOT EXISTS physical_actors jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE conversation_scene_states ADD COLUMN IF NOT EXISTS physical_contacts text[] NOT NULL DEFAULT ARRAY[]::text[]");
+  await pool().query("ALTER TABLE conversation_scene_states ADD COLUMN IF NOT EXISTS physical_constraints text[] NOT NULL DEFAULT ARRAY[]::text[]");
+  /*
+   * Creator Profile V2.
+   *
+   * The counters, triggers, policies and the ranking function live in
+   * 0021_creator_profile_v2.sql. What is repeated here is only the shape a
+   * plain PostgreSQL database needs to run the same code paths: the columns
+   * the queries name, and the two relations they read. A deployment on
+   * Supabase has all of this from the migration and these statements are
+   * no-ops.
+   */
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS cover_path text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_border text NOT NULL DEFAULT 'default'");
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS featured_achievements text[] NOT NULL DEFAULT ARRAY[]::text[]");
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS follower_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS following_count integer NOT NULL DEFAULT 0");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS user_message_count integer NOT NULL DEFAULT 0");
+  await pool().query("CREATE INDEX IF NOT EXISTS characters_creator_popular_idx ON characters (user_id, user_message_count DESC, id DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS profile_follows_creator_idx ON profile_follows (creator_user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS profile_follows_follower_idx ON profile_follows (follower_user_id, created_at DESC)");
+  await pool().query("CREATE INDEX IF NOT EXISTS profile_activity_user_idx ON profile_activity (user_id, occurred_at DESC)");
   // Worlds V2: saves, comments and the rich-content columns. Mirrors
   // migrations 0014-0016 so the in-memory test database matches production.
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS save_count integer NOT NULL DEFAULT 0");
@@ -509,6 +580,13 @@ async function schema() {
     );
   `);
   await pool().query("CREATE INDEX IF NOT EXISTS world_comments_world_idx ON world_comments (world_id, created_at DESC)");
+  // A story's own world set. The full constraints, policies and the backfill
+  // live in 0019_conversation_worlds.sql; this keeps a plain PostgreSQL
+  // database — the one the tests and the legacy deployment use — able to run
+  // the same code paths.
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS worlds_initialized boolean NOT NULL DEFAULT false");
+  await pool().query("CREATE INDEX IF NOT EXISTS conversation_worlds_conversation_idx ON conversation_worlds (user_id, conversation_id)");
+  await pool().query("CREATE INDEX IF NOT EXISTS conversation_worlds_world_idx ON conversation_worlds (world_id)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_user_idx ON character_likes (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS character_likes_character_idx ON character_likes (character_id)");
   // One index per discovery ordering, matching the feed's ORDER BY so a page
@@ -952,6 +1030,40 @@ export function memoryArcFromRow(row: Record<string, unknown>): MemoryArc {
   };
 }
 
+/**
+ * The physical arrangement stored on a scene row.
+ *
+ * Written defensively because it is the one part of a scene that arrives as
+ * free-form JSON. A row from before 0020 has no column at all, a row written by
+ * a future version may have fields this one has never heard of, and neither may
+ * produce anything other than a well-formed arrangement here — a broken shape
+ * must read as "nothing established", which is the safe answer and also the
+ * true one.
+ */
+function physicalFromRow(row: Record<string, unknown>): ScenePhysical {
+  const raw = row.physical_actors;
+  const parsed = typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : raw;
+  const actors = Array.isArray(parsed) ? parsed : [];
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  return {
+    actors: actors
+      .filter((actor): actor is Record<string, unknown> => Boolean(actor) && typeof actor === "object")
+      .map((actor) => ({
+        name: text(actor.name),
+        posture: text(actor.posture), facing: text(actor.facing),
+        relativeTo: text(actor.relativeTo), support: text(actor.support),
+        leftArm: text(actor.leftArm), rightArm: text(actor.rightArm),
+        leftHand: text(actor.leftHand), rightHand: text(actor.rightHand),
+        leftLeg: text(actor.leftLeg), rightLeg: text(actor.rightLeg),
+        leftFoot: text(actor.leftFoot), rightFoot: text(actor.rightFoot),
+        held: Array.isArray(actor.held) ? actor.held.filter((item): item is string => typeof item === "string") : [],
+      }))
+      .filter((actor) => actor.name),
+    contacts: textArrayFromRow(row.physical_contacts),
+    constraints: textArrayFromRow(row.physical_constraints),
+  };
+}
+
 /** A persisted Scene State row. Unknown stays unknown: no field is defaulted. */
 export function sceneStateFromRow(row: Record<string, unknown>): SceneState {
   const dateKind = String(row.date_kind || "unknown");
@@ -974,6 +1086,7 @@ export function sceneStateFromRow(row: Record<string, unknown>): SceneState {
     },
     presentCharacters: textArrayFromRow(row.present_characters),
     activeSituation: textArrayFromRow(row.active_situation),
+    physical: physicalFromRow(row),
     changedFields: textArrayFromRow(row.changed_fields),
     extractionModel: String(row.extraction_model || ""), extractionProvider: String(row.extraction_provider || ""),
     extractionLatencyMs: Number(row.extraction_latency_ms || 0), failureReason: String(row.failure_reason || ""),

@@ -5,25 +5,29 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images, Link2,
-  MessageCircle, Pencil, Share2, Sparkles, Tag, Trash2, UserRound, Users,
+  MessageCircle, Pencil, Plus, Share2, Sparkles, Tag, Trash2, UserRound, Users,
 } from "lucide-react";
 import type { AttachedWorld, Character, CharacterComment } from "@/lib/types";
 import {
-  castSectionLabel, creationCtaDescription, creationCtaLabel, creationOverview, creationSubject,
+  castSectionLabel, creationOverview, creationSubject,
   creationTitle, creationType, inlineTitle, publicCastMembers,
 } from "@/lib/creation";
 import { accentVariables } from "@/lib/accent";
 import { castMemberKey } from "@/lib/cast";
 import { imageCount } from "@/lib/rich-content";
 import { RichContent } from "@/components/rich";
-import { creationActions, creationEditHref } from "@/lib/creation-actions";
+import { chatCta, chatCtaDescription, creationActions, creationEditHref, newStoryLabel } from "@/lib/creation-actions";
+import { chatHref } from "@/lib/shell-route";
 import { compactCount } from "@/lib/format";
 import { toggleCreationSave } from "@/lib/saves";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
+import { markEditorOpenedFromCreation } from "@/lib/editor-navigation";
 import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
 import { iconButtonClass } from "@/components/ui";
 import { WorldCard } from "@/components/world";
+import { CreatorAvatar, RankMedal, rankSummary } from "@/components/creator";
+import { profileBorder, type ProfileBorder } from "@/lib/cosmetics";
 import styles from "./profile.module.css";
 
 /**
@@ -32,7 +36,33 @@ import styles from "./profile.module.css";
  * hiding it would misrepresent what the creation is — so the card renders with
  * its identity and without its content or its link.
  */
-type Detail = { character: Character; worlds: AttachedWorld[]; owner: boolean };
+/**
+ * The creator, as this page needs them.
+ *
+ * Enough to identify a person and to say whether they are worth a second look
+ * — never the profile itself. A creation page that grew a full creator profile
+ * inside it would be two pages arguing about which one the reader is on.
+ */
+type CreatorCard = {
+  followers: number;
+  messages: number;
+  creations: number;
+  rank: number | null;
+  rankTotal: number;
+  border: ProfileBorder;
+  viewerFollows: boolean;
+  owner: boolean;
+};
+
+type Detail = {
+  character: Character;
+  worlds: AttachedWorld[];
+  owner: boolean;
+  /** The newest story this reader has with this creation, or null for none. */
+  viewerConversationId?: string | null;
+  viewerConversationCount?: number;
+  creatorCard?: CreatorCard | null;
+};
 
 /**
  * Public creation page.
@@ -71,6 +101,10 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const [posting, setPosting] = useState(false);
   const overviewRef = useRef<HTMLParagraphElement>(null);
   const [overflowing, setOverflowing] = useState(false);
+  /** Optimistic follow state for the creator card. Null means "as loaded". */
+  const [following, setFollowing] = useState<boolean | null>(null);
+  const [followers, setFollowers] = useState<number | null>(null);
+  const [followPending, setFollowPending] = useState(false);
 
   useEffect(() => {
     fetch(`/api/characters/${characterId}`)
@@ -142,20 +176,52 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     window.setTimeout(() => setIlluminated((current) => (current === id ? "" : current)), 1200);
   }, []);
 
-  const start = useCallback(async () => {
+  /**
+   * Creating a story, and only when there is genuinely no story to open.
+   *
+   * `startingRef` rather than the state flag alone: React batches a state
+   * update, so two taps inside one frame both saw `starting === false` and
+   * both posted. A ref changes on the first line of the first tap, which is
+   * what actually makes a double tap produce one conversation instead of two.
+   */
+  const startingRef = useRef(false);
+  const createStory = useCallback(async (announce: string) => {
+    if (startingRef.current) return;
+    startingRef.current = true;
     setStarting(true);
+    setError("");
     try {
       const response = await fetch("/api/conversations", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ characterId }),
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || "Could not start chat");
-      router.push(`/?character=${characterId}&conversation=${body.conversation.id}`);
+      if (!response.ok) throw new Error(body.error || announce);
+      // The shell's own address for a chat, so the entry left behind names the
+      // exact story rather than "some chat with this creation".
+      router.push(chatHref(characterId, body.conversation.id));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not start chat");
+      startingRef.current = false;
+      setError(reason instanceof Error ? reason.message : announce);
       setStarting(false);
     }
   }, [characterId, router]);
+
+  /**
+   * The main button.
+   *
+   * Resuming is a navigation and nothing more: the story exists, so pressing
+   * this writes nothing and creates nothing. Only a creation this reader has
+   * never opened takes the create path. See `chatCta`.
+   */
+  const openChat = useCallback((conversationId: string | null) => {
+    if (startingRef.current) return;
+    if (conversationId) {
+      setStarting(true);
+      router.push(chatHref(characterId, conversationId));
+      return;
+    }
+    void createStory("Could not start chat");
+  }, [characterId, createStory, router]);
 
   /**
    * Saving, through the same `/api/saves` relation the feed writes. The state
@@ -179,6 +245,41 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     );
     if (failure) setError(failure);
   }, [character]);
+
+  /**
+   * Following the creator, from the creation page.
+   *
+   * The same optimistic contract the profile and the save button use: flip
+   * immediately, settle on the server's own count, and put the previous state
+   * back exactly if the write fails. It writes `/api/follows` and nothing else
+   * — a follow is a relation between two accounts and has no bearing on the
+   * creation being read.
+   */
+  const toggleFollow = useCallback(async () => {
+    const handle = detail?.character.creator?.username;
+    if (!handle || followPending) return;
+    const wasFollowing = following ?? detail.creatorCard?.viewerFollows ?? false;
+    const previous = followers ?? detail.creatorCard?.followers ?? 0;
+    setFollowPending(true);
+    setFollowing(!wasFollowing);
+    setFollowers(Math.max(0, previous + (wasFollowing ? -1 : 1)));
+    try {
+      const response = await fetch(
+        wasFollowing ? `/api/follows?username=${encodeURIComponent(handle)}` : "/api/follows",
+        wasFollowing
+          ? { method: "DELETE" }
+          : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: handle }) },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Could not update who you follow");
+      setFollowing(Boolean(body.following));
+      if (typeof body.followers === "number") setFollowers(body.followers);
+    } catch (reason) {
+      setFollowing(wasFollowing);
+      setFollowers(previous);
+      setError(reason instanceof Error ? reason.message : "Could not update who you follow");
+    } finally { setFollowPending(false); }
+  }, [detail, following, followers, followPending]);
 
   const share = useCallback(() => {
     const url = window.location.href;
@@ -241,6 +342,13 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   // name: "The Final War" and "Your New Roommate" are both valid titles.
   const title = creationTitle(character);
   const kind = creationType(character);
+  // Resume or start, decided from real data rather than from the button's own
+  // wording. See `chatCta` in src/lib/creation-actions.ts.
+  const cta = chatCta(character, detail.viewerConversationId ?? null);
+  const storyCount = detail.viewerConversationCount ?? 0;
+  const creatorCard = detail.creatorCard ?? null;
+  const followState = following ?? creatorCard?.viewerFollows ?? false;
+  const followerCount = followers ?? creatorCard?.followers ?? 0;
   // Keep the verified badge glued to the final word of the title.
   const titleWords = title.trim().split(/\s+/);
   const titleLead = titleWords.slice(0, -1).join(" ");
@@ -262,9 +370,19 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   // other surface that grows one cannot disagree about what ownership allows.
   const menuIcons = { edit: <Pencil size={16} aria-hidden />, copy_link: <Link2 size={16} aria-hidden />, delete: <Trash2 size={16} aria-hidden /> };
   const menuHandlers = {
-    // Straight to the edit route, which is now a real page rather than a
-    // redirect through the home shell.
-    edit: () => router.push(creationEditHref(character.id)),
+    /*
+     * Straight to the edit route, which is a real page rather than a redirect
+     * through the home shell.
+     *
+     * The marker says that THIS page is the entry underneath the editor, which
+     * is what lets a save walk back to it instead of pushing a duplicate on
+     * top — the fix for the "Back returns me to the editor" report. See
+     * src/lib/editor-navigation.ts.
+     */
+    edit: () => {
+      markEditorOpenedFromCreation(window.sessionStorage, character.id);
+      router.push(creationEditHref(character.id));
+    },
     copy_link: copyLink,
     delete: () => void removeCreation(),
   };
@@ -318,16 +436,31 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         <div className={styles.ctaRow}>
           {/* Stable copy inside the control, the creation's own name outside
               it. The full title is the heading directly above, and the
-              accessible name spells it out for anybody who cannot see that. */}
+              accessible name spells it out for anybody who cannot see that.
+
+              The button RESUMES when there is something to resume. It used to
+              create a story on every press, which is how a reader ended up
+              with a dozen one-message conversations and none of the one they
+              were actually in. Beginning again is the separate control beside
+              it, and it says so. */}
           <button
             className={styles.primaryCta}
-            onClick={() => void start()}
+            onClick={() => openChat(cta.conversationId)}
             disabled={starting}
-            aria-label={creationCtaDescription(character)}
-            title={creationCtaDescription(character)}
+            aria-label={chatCtaDescription(character, cta)}
+            title={chatCtaDescription(character, cta)}
           >
-            <Sparkles size={18} /><span>{starting ? "Opening story…" : creationCtaLabel(character)}</span>
+            <Sparkles size={18} /><span>{starting ? "Opening story…" : cta.label}</span>
           </button>
+          {cta.kind === "resume" && <button
+            className={`${styles.ghostButton} ${styles.ghostWide}`}
+            onClick={() => void createStory("Could not start a new story")}
+            disabled={starting}
+            aria-label={`Start a new story with ${title}, keeping the ${storyCount === 1 ? "one you already have" : `${storyCount} you already have`}`}
+            title={newStoryLabel}
+          >
+            <Plus size={18} /><span className={styles.ghostLabel}>{newStoryLabel}</span>
+          </button>}
           <button className={styles.ghostButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
             <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
           </button>
@@ -434,20 +567,51 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           </ul>
         </section>}
 
+        {/* The creator, compactly.
+            This used to be an avatar, a handle and a link that went nowhere —
+            `?view=creator` was not a view the shell had. It is a real identity
+            now: who they are, how their published work is actually doing, and
+            one control that matters. Deliberately NOT a profile: no
+            achievements gallery, no activity feed, no worlds. The profile is
+            one tap away and is where all of that lives. */}
         {character.creator && <section id="creator" className={`${styles.card} ${styles.creatorCard} ${illuminated === "creator" ? styles.illuminate : ""}`}>
           <header><UserRound size={16} /><h2>Creator</h2></header>
           <div className={styles.creator}>
-            <span className={styles.creatorAvatar}>
-              {character.creator.avatarPath
-                ? <img src={avatarSource(profileAvatarBucket, character.creator.avatarPath, "")} alt="" />
-                : initials(character.creator.displayName || character.creator.username)}
-            </span>
-            <div>
-              <strong>{character.creator.username ? `@${character.creator.username}` : character.creator.displayName}</strong>
-              {character.creator.displayName && character.creator.username && <small>{character.creator.displayName}</small>}
+            <CreatorAvatar
+              avatarPath={character.creator.avatarPath}
+              name={character.creator.displayName || character.creator.username}
+              border={creatorCard?.border ?? profileBorder("default")}
+              size={54}
+            />
+            <div className={styles.creatorCopy}>
+              <strong>{character.creator.displayName || `@${character.creator.username}`}</strong>
+              {character.creator.username && <small>@{character.creator.username}</small>}
+              {/* Only the top 100 get the medal here. A badge every creator
+                  carries is a label; one the hundred most-read creators carry
+                  is worth noticing. */}
+              {creatorCard && <RankMedal rank={creatorCard.rank} total={creatorCard.rankTotal} showFrom={100} compact />}
             </div>
+            {creatorCard && !creatorCard.owner && character.creator.username && <button
+              className={`${styles.followButton} ${followState ? styles.followingButton : ""}`}
+              onClick={() => void toggleFollow()}
+              disabled={followPending}
+              aria-pressed={followState}
+              aria-label={followState
+                ? `Stop following ${character.creator.displayName || character.creator.username}`
+                : `Follow ${character.creator.displayName || character.creator.username}`}
+            >{followState ? "Following" : "Follow"}</button>}
           </div>
-          {character.creator.username && <Link className={styles.creatorLink} href={`/?view=creator&creator=${character.creator.username}`}>View creator</Link>}
+
+          {creatorCard && <dl className={styles.creatorStats}>
+            <div><dt>Followers</dt><dd>{compactCount(followerCount)}</dd></div>
+            <div><dt>Messages</dt><dd>{compactCount(creatorCard.messages)}</dd></div>
+            <div><dt>Creations</dt><dd>{compactCount(creatorCard.creations)}</dd></div>
+          </dl>}
+
+          {character.creator.username && <Link className={styles.creatorLink} href={`/creators/${character.creator.username}`}>
+            View creator profile
+            {creatorCard && rankSummary(creatorCard.rank, creatorCard.rankTotal) && <em>{rankSummary(creatorCard.rank, creatorCard.rankTotal)}</em>}
+          </Link>}
         </section>}
 
         {worlds.length > 0 && <section id="world" className={`${styles.card} ${illuminated === "world" ? styles.illuminate : ""}`}>

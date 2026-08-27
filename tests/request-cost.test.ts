@@ -76,7 +76,12 @@ beforeEach(async () => {
   vi.stubEnv("DEEPSEEK_API_KEY", "test-key");
   vi.stubEnv("SCENE_STATE_ENABLED", "false");
   await query("INSERT INTO characters (id,user_id,name) VALUES ($1,$2,'Maya')", [characterId, owner]);
-  await query("INSERT INTO conversations (id,user_id,character_id,title,message_count) VALUES ($1,$2,$3,'Story',1)", [conversationId, owner, characterId]);
+  // `worlds_initialized` is what every conversation looks like after
+  // 0019_conversation_worlds.sql: the migration backfills each existing story's
+  // world set once and marks it. Measuring an unmigrated row here would be
+  // measuring a one-off, not the steady state these budgets exist to protect.
+  // The one-off itself is asserted in tests/conversation-worlds.test.ts.
+  await query("INSERT INTO conversations (id,user_id,character_id,title,message_count,worlds_initialized) VALUES ($1,$2,$3,'Story',1,true)", [conversationId, owner, characterId]);
   await query("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'assistant','*Maya waits.*')", [crypto.randomUUID(), conversationId, owner]);
   // One warm-up transaction, so the pool's one-off row-level-security probe is
   // not billed to the first interaction measured.

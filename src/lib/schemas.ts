@@ -339,6 +339,22 @@ export const profileSchema = z.object({
   displayName: text(80, 1),
   bio: text(2000).default(""),
   avatarPath: storagePath,
+  /**
+   * The banner behind the avatar. Same storage rules as the avatar: an object
+   * path this account owns, never a URL of its own choosing.
+   */
+  coverPath: storagePath.optional().default(""),
+  /**
+   * The chosen cosmetic ring.
+   *
+   * The shape is checked here and the ENTITLEMENT is checked on the server
+   * against real metrics — see the profile route. A schema cannot know whether
+   * this account has reached the top 100, and a client's claim that it has is
+   * exactly what must not be believed.
+   */
+  profileBorder: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{1,32}$/).optional().default("default"),
+  /** Achievement ids to lead with. Validated against what is actually unlocked. */
+  featuredAchievements: z.array(z.string().trim().regex(/^[a-z0-9_]{1,48}$/)).max(3).optional().default([]),
 });
 
 export const characterLikeSchema = z.object({ characterId: z.string().uuid() });
