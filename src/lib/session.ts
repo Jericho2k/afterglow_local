@@ -66,6 +66,16 @@ export function isAdminAccount(account: Account) {
   return configuredAdminIds().has(account.id.toLowerCase());
 }
 
+/** Moderation never inherits experimental feature allowlists. */
+export function isModerationAdminAccount(account: Account) {
+  const configured=process.env.AFTERGLOW_ADMIN_USER_IDS?.trim() || "";
+  return new Set(configured.split(",").map((value)=>value.trim().toLowerCase()).filter(Boolean)).has(account.id.toLowerCase());
+}
+
+export function moderationAdminRequired(account:Account){
+  return isModerationAdminAccount(account)?null:forbidden("Creation moderation is available only to an Afterglow moderator");
+}
+
 export function adminRequired(account: Account) {
   return isAdminAccount(account) ? null : forbidden("Memory diagnostics are available only to an Afterglow administrator");
 }

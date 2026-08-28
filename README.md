@@ -83,6 +83,9 @@ psql "$DATABASE_URL" -f supabase/migrations/0018_memory_feedback.sql
 psql "$DATABASE_URL" -f supabase/migrations/0019_conversation_worlds.sql
 psql "$DATABASE_URL" -f supabase/migrations/0020_scene_physical_state.sql
 psql "$DATABASE_URL" -f supabase/migrations/0021_creator_profile_v2.sql
+psql "$DATABASE_URL" -f supabase/migrations/0022_social_discovery.sql
+psql "$DATABASE_URL" -f supabase/migrations/0023_branch_copy_indexes.sql
+psql "$DATABASE_URL" -f supabase/migrations/0024_byok_creation_moderation.sql
 ```
 
 Every file is idempotent, so re-running them is safe. `0002_storage.sql` touches the `storage` schema and only applies to Supabase.

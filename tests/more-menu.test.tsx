@@ -93,7 +93,7 @@ describe("creation menu actions", () => {
 
   it("gives everybody else no way to edit or delete somebody's creation", () => {
     const actions = creationActions({ owner: false });
-    expect(actions.map((action) => action.id)).toEqual(["copy_link"]);
+    expect(actions.map((action) => action.id)).toEqual(["copy_link","report"]);
     expect(actions.some((action) => action.id === "edit")).toBe(false);
     expect(actions.some((action) => action.id === "delete")).toBe(false);
   });

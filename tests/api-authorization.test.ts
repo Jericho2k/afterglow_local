@@ -45,6 +45,12 @@ const memoryFeedback = await import("@/app/api/memory-feedback/route");
 const conversationWorlds = await import("@/app/api/conversations/[id]/worlds/route");
 const follows = await import("@/app/api/follows/route");
 const creators = await import("@/app/api/creators/[username]/route");
+const reports = await import("@/app/api/reports/route");
+const adminReports = await import("@/app/api/admin/reports/route");
+const adminReportAction = await import("@/app/api/admin/reports/[id]/route");
+const byokRoute = await import("@/app/api/byok/route");
+const {canUseByok}=await import("@/lib/byok");
+const {recordUsageEvent}=await import("@/lib/usage");
 
 const aliceCharacter = "aaaaaaaa-0000-4000-8000-000000000001";
 const alicePublic = "aaaaaaaa-0000-4000-8000-000000000002";
@@ -58,6 +64,8 @@ function post(url: string, body: unknown) {
 
 beforeEach(async () => {
   process.env.AFTERGLOW_ADMIN_USER_IDS=alice;
+  process.env.ENABLE_BYOK="true";
+  process.env.BYOK_ENCRYPTION_KEY=Buffer.alloc(32,9).toString("base64");
   const memoryDb = newDb({ autoCreateForeignKeyIndices: true });
   // The usage ledger buckets by day; pg-mem ships very few native functions.
   memoryDb.public.registerFunction({
@@ -114,6 +122,98 @@ describe("unauthenticated access", () => {
 });
 
 describe("cross-account access", () => {
+  it("validates, encrypts, toggles and removes only the caller's provider key",async()=>{
+    account={id:alice,email:"alice@example.com"};
+    const providerFetch=vi.fn().mockResolvedValue(new Response(JSON.stringify({data:{label:"test"}}),{status:200}));
+    vi.stubGlobal("fetch",providerFetch);
+    const connected=await byokRoute.POST(post("http://test/api/byok",{apiKey:"sk-or-v1-personal-secret",enabled:true}));
+    expect(connected.status).toBe(200);
+    expect(await connected.json()).toMatchObject({connected:true,enabled:true,suffix:"cret"});
+    const stored=(await query("SELECT ciphertext,key_suffix FROM user_provider_credentials WHERE user_id=$1",[alice])).rows[0];
+    expect(stored.key_suffix).toBe("cret");
+    expect(Buffer.from(stored.ciphertext).toString("utf8")).not.toContain("personal-secret");
+    const metadata=await (await byokRoute.GET()).json();
+    expect(metadata).toMatchObject({connected:true,enabled:true,suffix:"cret"});
+    expect(JSON.stringify(metadata)).not.toContain("personal-secret");
+    expect((await byokRoute.POST(post("http://test/api/byok",{enabled:false}))).status).toBe(200);
+    expect(await (await byokRoute.GET()).json()).toMatchObject({enabled:false});
+    expect((await byokRoute.DELETE()).status).toBe(200);
+    expect(Number((await query("SELECT COUNT(*) count FROM user_provider_credentials WHERE user_id=$1",[alice])).rows[0].count)).toBe(0);
+    vi.unstubAllGlobals();
+  });
+
+  it("never stores a key OpenRouter rejects",async()=>{
+    account={id:bob,email:null};vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(null,{status:401})));
+    expect((await byokRoute.POST(post("http://test/api/byok",{apiKey:"sk-or-invalid-key"}))).status).toBe(400);
+    expect(Number((await query("SELECT COUNT(*) count FROM user_provider_credentials WHERE user_id=$1",[bob])).rows[0].count)).toBe(0);
+    vi.unstubAllGlobals();
+  });
+
+  it("funds only RP generation with the request-scoped personal key and labels its usage",async()=>{
+    account={id:alice,email:null};
+    const previousEnable=process.env.ENABLE_OPENROUTER;const previousAllowed=process.env.ALLOWED_MODELS;const previousRoute=process.env.RP_MODEL_ROUTE;
+    process.env.ENABLE_OPENROUTER="true";process.env.ALLOWED_MODELS="deepseek-v4-flash,deepseek-v4-pro,mimo-v2.5";process.env.RP_MODEL_ROUTE="conversation";
+    const sse=[
+      `data: ${JSON.stringify({id:"byok-request",model:"xiaomi/mimo-v2.5",provider:"Xiaomi",choices:[{delta:{content:"Personal-key reply"}}]})}\n`,
+      `data: ${JSON.stringify({usage:{prompt_tokens:10,completion_tokens:4,cost:0.0004},choices:[]})}\n`,
+      "data: [DONE]\n",
+    ].join("");
+    const providerFetch=vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({data:{label:"test"}}),{status:200}))
+      .mockResolvedValueOnce(new Response(sse,{status:200,headers:{"Content-Type":"text/event-stream"}}));
+    vi.stubGlobal("fetch",providerFetch);
+    try{
+      expect((await byokRoute.POST(post("http://test/api/byok",{apiKey:"sk-or-personal-writer-key"}))).status).toBe(200);
+      await query("UPDATE conversations SET provider_id='openrouter',model_id='mimo-v2.5' WHERE id=$1",[aliceConversation]);
+      await query("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'assistant','Old reply')",[crypto.randomUUID(),aliceConversation,alice]);
+      const response=await chat.POST(post("http://test/api/chat",{conversationId:aliceConversation,content:"",action:"regenerate"}));
+      const responseBody=await response.text();
+      expect({status:response.status,body:responseBody}).toEqual({status:200,body:expect.any(String)});
+      expect(providerFetch.mock.calls[1][1].headers.Authorization).toBe("Bearer sk-or-personal-writer-key");
+      const funding=await canUseByok(alice,"rp_generation",{providerId:"openrouter",modelId:"mimo-v2.5"});
+      expect(funding.fundingSource).toBe("byok");
+      await expect(canUseByok(alice,"memory_curation",{providerId:"openrouter",modelId:"mimo-v2.5"})).resolves.toEqual({fundingSource:"afterglow"});
+      await expect(canUseByok(alice,"rp_generation",{providerId:"deepseek",modelId:"deepseek-v4-flash"})).rejects.toThrow(/choose an OpenRouter model/i);
+      await recordUsageEvent({userId:alice,conversationId:aliceConversation,providerId:"openrouter",model:"mimo-v2.5",fundingSource:funding.fundingSource,kind:"regenerate",taskRoute:"rp_generation",usage:{prompt_tokens:10,completion_tokens:4,cost:0.0004}});
+      const ledger=await query("SELECT funding_source,task_route FROM usage_events WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1",[aliceConversation]);
+      expect(ledger.rows[0]).toMatchObject({funding_source:"byok",task_route:"rp_generation"});
+    }finally{
+      vi.unstubAllGlobals();
+      if(previousEnable===undefined)delete process.env.ENABLE_OPENROUTER;else process.env.ENABLE_OPENROUTER=previousEnable;
+      if(previousAllowed===undefined)delete process.env.ALLOWED_MODELS;else process.env.ALLOWED_MODELS=previousAllowed;
+      if(previousRoute===undefined)delete process.env.RP_MODEL_ROUTE;else process.env.RP_MODEL_ROUTE=previousRoute;
+    }
+  });
+
+  it("captures private moderation evidence once and lets an explicit moderator remove and restore",async()=>{
+    account={id:bob,email:"bob@example.com"};
+    const submitted=await reports.POST(post("http://test/api/reports",{characterId:alicePublic,reason:"underage",details:"Safety concern"}));
+    expect(submitted.status).toBe(201);
+    const reportId=String((await submitted.json()).reportId);
+    expect((await reports.POST(post("http://test/api/reports",{characterId:alicePublic,reason:"other",details:"duplicate"}))).status).toBe(409);
+    const evidence=await query("SELECT snapshot FROM character_report_evidence WHERE report_id=$1",[reportId]);
+    expect(evidence.rowCount).toBe(1);
+    expect(evidence.rows[0].snapshot).not.toHaveProperty("sourceMaterial");
+
+    expect((await adminReports.GET(new Request("http://test/api/admin/reports"))).status).toBe(403);
+    account={id:alice,email:"alice@example.com"};
+    const queue=await (await adminReports.GET(new Request("http://test/api/admin/reports"))).json();
+    expect(queue.groups[0].priority).toBe(true);
+    expect(queue.groups[0].reportCount).toBe(1);
+
+    const remove=await adminReportAction.POST(post(`http://test/api/admin/reports/${reportId}`,{action:"remove_creation",reason:"Safety review"}),{params:Promise.resolve({id:reportId})});
+    expect(remove.status).toBe(200);
+    let creation=(await query("SELECT visibility,moderation_status,published_at FROM characters WHERE id=$1",[alicePublic])).rows[0];
+    expect(creation.visibility).toBe("private");expect(creation.moderation_status).toBe("removed");
+
+    const restore=await adminReportAction.POST(post(`http://test/api/admin/reports/${reportId}`,{action:"restore_creation"}),{params:Promise.resolve({id:reportId})});
+    expect(restore.status).toBe(200);
+    creation=(await query("SELECT visibility,moderation_status FROM characters WHERE id=$1",[alicePublic])).rows[0];
+    expect(creation.visibility).toBe("public");expect(creation.moderation_status).toBe("active");
+    expect(Number((await query("SELECT COUNT(*) count FROM moderation_actions WHERE report_id=$1",[reportId])).rows[0].count)).toBe(2);
+    account={id:bob,email:null};
+    expect((await reports.POST(post("http://test/api/reports",{characterId:alicePublic,reason:"other",details:"A new concern after resolution"}))).status).toBe(201);
+  });
   it("creates an isolated conversation branch through the selected message", async () => {
     account = { id: alice, email: null };
     const sourceMessage = await query("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id LIMIT 1",[aliceConversation]);

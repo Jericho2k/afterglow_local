@@ -20,6 +20,7 @@ import { responseLengthPlan } from "@/lib/response-length";
 import { contextExceededMessage, fitConversation } from "@/lib/context-budget";
 import { inferenceSessionId } from "@/lib/inference-session";
 import { ProviderError, classifyProviderFailure, logProviderDiagnostic, publicErrorMessage, publicErrorStatus } from "@/lib/provider-errors";
+import { canUseByok } from "@/lib/byok";
 
 /** An error a provider delivered inside the stream rather than as a status. */
 type StreamFailure = { message: string; code?: number } | null;
@@ -276,6 +277,12 @@ export async function POST(request: Request) {
     }));
   }
   const completionMessages = writerMessages(writerPrompt, fitted.messages, placement);
+  let writerCredential;
+  try {
+    writerCredential=await canUseByok(account.id,"rp_generation",selection);
+  } catch(error) {
+    return Response.json({error:error instanceof Error?error.message:"Your personal provider key could not be used."},{status:409});
+  }
   // Response Length owns the output envelope as well as the directive. The
   // account's `maxTokens` is the Natural baseline the other two scale from, so
   // Concise has a genuinely lower ceiling than Detailed without any mode ever
@@ -296,6 +303,7 @@ export async function POST(request: Request) {
     // ask for the same upstream host, which is what lets its prompt cache stay
     // warm; a different story is a different session and shares nothing.
     sessionId: inferenceSessionId("rp_generation", conversationId),
+    apiKey:writerCredential.apiKey,
   };
   let upstream: ReadableStream<Uint8Array>;
   const requestStartedAt = Date.now();
@@ -309,7 +317,8 @@ export async function POST(request: Request) {
     logProviderDiagnostic("rp generation failed before streaming", error instanceof ProviderError
       ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId })
       : error);
-    return Response.json({ error: publicErrorMessage(error) }, { status: publicErrorStatus(error) });
+    const personalKeyFailure=writerCredential.fundingSource==="byok"&&error instanceof ProviderError&&(error.category==="auth"||error.category==="billing");
+    return Response.json({ error: personalKeyFailure?"OpenRouter rejected your personal key or its balance. Check it in Settings; Afterglow did not retry on the platform key.":publicErrorMessage(error) }, { status: personalKeyFailure?402:publicErrorStatus(error) });
   }
   if (userMessageId) {
     await asUser(account.id, (client) => client.query(
@@ -362,7 +371,7 @@ export async function POST(request: Request) {
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       const recordAttemptUsage = async () => {
         if (!usage) return;
-        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
+        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, fundingSource:writerCredential.fundingSource, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
       };
       const consume = async (stream: ReadableStream<Uint8Array>,startedAt: number) => {
         const reader = stream.getReader();
@@ -523,7 +532,8 @@ export async function POST(request: Request) {
         logProviderDiagnostic("rp generation failed mid-stream", error instanceof ProviderError
           ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, upstreamProvider })
           : error);
-        send({ type: "error", error: publicErrorMessage(error) });
+        const personalKeyFailure=writerCredential.fundingSource==="byok"&&error instanceof ProviderError&&(error.category==="auth"||error.category==="billing");
+        send({ type: "error", error: personalKeyFailure?"OpenRouter rejected your personal key or its balance. Check it in Settings; Afterglow did not retry on the platform key.":publicErrorMessage(error) });
         controller.close();
       }
     },

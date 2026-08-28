@@ -172,11 +172,46 @@ describeTenancy("multi-tenant isolation", () => {
     expect(count).toBe(1);
   });
 
-  it("keeps moderation reports visible only to the reporter", async () => {
+  it("accepts reports without exposing the queue or report details to normal accounts", async () => {
     const report = "45454545-4545-4545-8545-454545454545";
-    await asAccount(pool, bob, (run) => run("INSERT INTO character_reports (id,user_id,character_id,reason,character_name) VALUES ($1,$2,$3,'other','Alice Public')",[report,bob,alicePublicCharacter]));
-    expect(await visibleCount(pool, bob, "character_reports", "id=$1",[report])).toBe(1);
-    expect(await visibleCount(pool, alice, "character_reports", "id=$1",[report])).toBe(0);
+    await expect(asAccount(pool,bob,(run)=>run("INSERT INTO character_reports (id,user_id,character_id,reason,character_name) VALUES ($1,$2,$3,'other','Alice Public')",[report,bob,alicePublicCharacter]))).rejects.toThrow(/permission denied/i);
+    // The authenticated server route is the only writer; seed as the database
+    // owner here because this suite tests policies rather than HTTP auth.
+    await pool.query("INSERT INTO character_reports (id,user_id,character_id,reason,character_name) VALUES ($1,$2,$3,'other','Alice Public')",[report,bob,alicePublicCharacter]);
+    expect(Number((await pool.query("SELECT COUNT(*) count FROM character_reports WHERE id=$1",[report])).rows[0].count)).toBe(1);
+    await expect(asAccount(pool,bob,(run)=>run("SELECT * FROM character_reports WHERE id=$1",[report]))).rejects.toThrow(/permission denied/i);
+    await expect(asAccount(pool,alice,(run)=>run("SELECT * FROM character_reports"))).rejects.toThrow(/permission denied/i);
+  });
+
+  it("keeps credentials, evidence and immutable moderation logs outside normal RLS sessions",async()=>{
+    const report="45454545-4545-4545-8545-454545454545";
+    await pool.query("INSERT INTO character_report_evidence (report_id,character_id,creator_user_id,snapshot) VALUES ($1,$2,$3,'{}')",[report,alicePublicCharacter,alice]);
+    const action="46464646-4646-4646-8646-464646464646";
+    await pool.query("INSERT INTO moderation_actions (id,character_id,report_id,moderator_user_id,action) VALUES ($1,$2,$3,$4,'mark_reviewing')",[action,alicePublicCharacter,report,alice]);
+    for(const table of ["user_provider_credentials","character_report_evidence","moderation_actions"]){
+      await expect(asAccount(pool,bob,(run)=>run(`SELECT * FROM ${table}`))).rejects.toThrow(/permission denied/i);
+    }
+    await expect(pool.query("UPDATE moderation_actions SET reason='rewritten' WHERE id=$1",[action])).rejects.toThrow(/immutable/i);
+    await expect(pool.query("DELETE FROM moderation_actions WHERE id=$1",[action])).rejects.toThrow(/immutable/i);
+  });
+
+  it("locks a removed creation against its owner and hides it from everyone else",async()=>{
+    await expect(asAccount(pool,alice,(run)=>run("UPDATE characters SET moderation_status='removed' WHERE id=$1",[alicePublicCharacter]))).rejects.toThrow(/row-level security/i);
+    await pool.query("UPDATE characters SET pre_moderation_visibility=visibility,visibility='private',moderation_status='removed',moderated_at=now(),moderated_by=$2 WHERE id=$1",[alicePublicCharacter,alice]);
+    expect(await visibleCount(pool,bob,"characters","id=$1",[alicePublicCharacter])).toBe(0);
+    expect(await visibleCount(pool,alice,"characters","id=$1",[alicePublicCharacter])).toBe(1);
+    const attempted=await asAccount(pool,alice,(run)=>run("UPDATE characters SET visibility='public' WHERE id=$1",[alicePublicCharacter]));
+    expect(attempted.rowCount).toBe(0);
+    await asAccount(pool,bob,(run)=>run("INSERT INTO profile_follows (follower_user_id,creator_user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",[bob,alice]));
+    const client=await pool.connect();
+    try{
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('afterglow.suppress_publish_notification','on',true)");
+      await client.query("UPDATE characters SET visibility='public',moderation_status='active',moderated_at=NULL,moderated_by=NULL,pre_moderation_visibility=NULL WHERE id=$1",[alicePublicCharacter]);
+      await client.query("COMMIT");
+    }finally{client.release();}
+    expect(Number((await pool.query("SELECT COUNT(*) count FROM notifications WHERE user_id=$1 AND character_id=$2",[bob,alicePublicCharacter])).rows[0].count)).toBe(0);
+    await asAccount(pool,bob,(run)=>run("DELETE FROM profile_follows WHERE follower_user_id=$1 AND creator_user_id=$2",[bob,alice]));
   });
 
   it("keeps a gallery readable where its character is and writable only by its owner", async () => {

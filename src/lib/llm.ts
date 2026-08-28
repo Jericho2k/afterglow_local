@@ -46,6 +46,8 @@ export type CompletionOptions = {
    * change a reader's chosen writer without anybody saying so.
    */
   excludeProviders?: string[];
+  /** Request-scoped provider credential. Never copied into process.env. */
+  apiKey?: string;
 };
 
 /** The adapter contract future OpenRouter or self-hosted runtimes implement. */

@@ -13,7 +13,7 @@ import { RichMessage, StyledMessage, openingBlocksFor } from "@/components/rich"
 import {
   ArrowDown, ArrowUp, Bell, BookMarked, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight,
   Compass, Eraser, FileText, GitBranch, Globe2, LoaderCircle, LogOut, MessagesSquare, MoreHorizontal,
-  Gauge, Pencil, Play, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Sparkles, Star, Trash2,
+  Flag, Gauge, Pencil, Play, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Sparkles, Star, Trash2,
   TriangleAlert, Trophy, UserRound, Users, X,
 } from "lucide-react";
 import { ChatsView } from "./ChatsView";
@@ -26,6 +26,7 @@ import { ProfileView } from "./ProfileView";
 import { SettingsSheet } from "./SettingsSheet";
 import { ShellNavProvider } from "./ShellNav";
 import { RankingsView } from "@/components/rankings";
+import { AdminReports } from "@/components/admin/AdminReports";
 import { unreadLabel } from "@/lib/notifications";
 import { clearUnreadNotifications, useUnreadNotifications } from "@/lib/notification-state";
 import { activeInstructionCount, instructionSummary } from "@/lib/chat-instructions";
@@ -80,6 +81,7 @@ export default function AppShell() {
   const [bootRoute] = useState(() => routeFromSearch(searchParams.toString()));
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isModerator,setIsModerator]=useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [ageAccepted, setAgeAccepted] = useState<boolean | null>(null);
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -303,7 +305,8 @@ export default function AppShell() {
         { id: "settings", label: "Settings", icon: Settings, match: () => false, open: () => { setSettingsOpen(true); setSidebarOpen(false); } },
       ],
     },
-  ], [goToView, openOwnProfile]);
+    ...(isModerator?[{id:"moderation",label:"Admin",items:[{id:"reports",label:"Reports",icon:Flag,match:(view:AppView)=>view==="reports",open:()=>goToView("reports")}]}]:[]),
+  ], [goToView, openOwnProfile,isModerator]);
 
   /** What a component deep inside a surface uses to navigate; see ShellNav.tsx. */
   const shellNav = useMemo(() => ({ openView: (view: ShellView) => goToView(view) }), [goToView]);
@@ -449,9 +452,9 @@ export default function AppShell() {
   useEffect(() => {
     setAgeAccepted(localStorage.getItem("afterglow_age_verified") === "yes");
     if (!supabaseBrowserConfigured()) { setAuthenticated(false); return; }
-    const loadSession = () => api<{ authenticated: boolean; profile: Profile | null; isAdmin?: boolean }>("/api/session")
-      .then((data) => { setAuthenticated(data.authenticated); setProfile(data.profile); setIsAdmin(Boolean(data.isAdmin)); })
-      .catch(() => { setAuthenticated(false); setProfile(null); setIsAdmin(false); });
+    const loadSession = () => api<{ authenticated: boolean; profile: Profile | null; isAdmin?: boolean;isModerator?:boolean }>("/api/session")
+      .then((data) => { setAuthenticated(data.authenticated); setProfile(data.profile); setIsAdmin(Boolean(data.isAdmin));setIsModerator(Boolean(data.isModerator)); })
+      .catch(() => { setAuthenticated(false); setProfile(null); setIsAdmin(false);setIsModerator(false); });
     void loadSession();
     // Sign-in and sign-out happen in the browser client, so mirror its state.
     // INITIAL_SESSION fires the moment the listener is attached and says only
@@ -974,6 +977,7 @@ export default function AppShell() {
         onChanged={() => { void loadCharacters(); void loadChatIndex().catch(() => undefined); }}
       /> : activeView === "notifications" ? <NotificationsView onOpenMenu={() => setSidebarOpen(true)} />
         : activeView === "rankings" ? <RankingsView onOpenMenu={() => setSidebarOpen(true)} />
+        : activeView === "reports" ? (isModerator?<AdminReports onOpenMenu={()=>setSidebarOpen(true)}/>:<DiscoveryFeed onOpenMenu={()=>setSidebarOpen(true)}/>)
         : selected ? (
         <section className="chat-panel">
           <header className="chat-header">

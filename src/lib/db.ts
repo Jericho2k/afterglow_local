@@ -318,6 +318,37 @@ async function schema() {
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS user_provider_credentials (
+      user_id uuid NOT NULL,
+      provider text NOT NULL,
+      ciphertext bytea NOT NULL,
+      iv bytea NOT NULL,
+      auth_tag bytea NOT NULL,
+      key_version integer NOT NULL DEFAULT 1,
+      key_suffix text NOT NULL,
+      enabled boolean NOT NULL DEFAULT true,
+      validated_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id,provider)
+    );
+    CREATE TABLE IF NOT EXISTS character_report_evidence (
+      report_id uuid PRIMARY KEY REFERENCES character_reports(id) ON DELETE CASCADE,
+      character_id uuid,
+      creator_user_id uuid NOT NULL,
+      snapshot jsonb NOT NULL,
+      captured_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS moderation_actions (
+      id uuid PRIMARY KEY,
+      character_id uuid,
+      report_id uuid REFERENCES character_reports(id) ON DELETE SET NULL,
+      moderator_user_id uuid NOT NULL,
+      action text NOT NULL,
+      reason text NOT NULL DEFAULT '',
+      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
   `);
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS profile_type text NOT NULL DEFAULT 'single'");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS cast_members jsonb NOT NULL DEFAULT '[]'::jsonb");
@@ -341,6 +372,13 @@ async function schema() {
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_arc_ids uuid[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'event'");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'active'");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS moderated_at timestamptz");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS moderated_by uuid");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS moderation_reason text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS pre_moderation_visibility text");
+  await pool().query("ALTER TABLE character_reports ADD COLUMN IF NOT EXISTS reviewed_at timestamptz");
+  await pool().query("ALTER TABLE character_reports ADD COLUMN IF NOT EXISTS reviewed_by uuid");
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'");
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS resolution text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS resolved_at timestamptz");
@@ -642,6 +680,8 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS characters_discovery_popular_idx ON characters (like_count DESC, chat_count DESC, id DESC) WHERE visibility = 'public'");
   await pool().query("CREATE INDEX IF NOT EXISTS characters_discovery_chatted_idx ON characters (chat_count DESC, message_count DESC, id DESC) WHERE visibility = 'public'");
   await pool().query("CREATE INDEX IF NOT EXISTS character_reports_user_idx ON character_reports (user_id, created_at DESC)");
+  await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS character_reports_one_active_idx ON character_reports (user_id,character_id) WHERE status IN ('pending','reviewing') AND character_id IS NOT NULL");
+  await pool().query("CREATE INDEX IF NOT EXISTS character_reports_queue_idx ON character_reports (created_at DESC) WHERE status IN ('pending','reviewing')");
   // Branch-prefix reads: see migration 0023 and `branchConversation`.
   await pool().query("CREATE INDEX IF NOT EXISTS messages_branch_prefix_idx ON messages (conversation_id, created_at, id)");
   await pool().query("CREATE INDEX IF NOT EXISTS memories_branch_prefix_idx ON memories (conversation_id, source_message_count, created_at, id)");
@@ -882,6 +922,8 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
       rankCategory: row.rank_category == null ? null : String(row.rank_category),
     },
     visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as Character["visibility"],
+    moderationStatus:row.moderation_status==="removed"?"removed":"active",
+    moderationReason:ownedByViewer?String(row.moderation_reason||""):"",
     nsfwEnabled: Boolean(row.nsfw_enabled),
     saveCount: Number(row.like_count || 0), savedByViewer: Boolean(row.saved_by_viewer),
     creator: row.creator_id ? { id: String(row.creator_id), username: String(row.creator_username || ""), displayName: String(row.creator_display_name || ""), avatarPath: String(row.creator_avatar_path || "") } : null,

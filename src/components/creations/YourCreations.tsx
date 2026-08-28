@@ -206,7 +206,7 @@ function OwnedCard({ creation, busy, onEdit, onDelete }: {
   // decision yields the owner's actions. Copy link is dropped here: the card
   // itself is the link, and a management grid is not where somebody is
   // sharing one.
-  const handlers = { edit: onEdit, copy_link: onEdit, delete: onDelete };
+  const handlers = { edit: onEdit, copy_link: onEdit, report:onEdit, delete: onDelete };
   const items: MoreMenuItem[] = creationActions({ owner: true })
     .filter((action) => action.id !== "copy_link")
     .map((action) => ({

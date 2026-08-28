@@ -4,15 +4,15 @@ import { providerPolicyFor } from "./provider";
 
 const baseUrl = () => (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
 
-function apiKey() {
-  const key = process.env.OPENROUTER_API_KEY?.trim();
+function apiKey(requestKey?: string) {
+  const key = requestKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
   if (!key) throw new ProviderError("auth", { provider: "openrouter", detail: "OPENROUTER_API_KEY is not configured" });
   return key;
 }
 
-function headers() {
+function headers(requestKey?: string) {
   const result: Record<string,string> = {
-    Authorization: `Bearer ${apiKey()}`,
+    Authorization: `Bearer ${apiKey(requestKey)}`,
     "Content-Type": "application/json",
     "X-Title": process.env.OPENROUTER_APP_NAME?.trim() || "Afterglow",
   };
@@ -91,7 +91,7 @@ async function request(body: Record<string,unknown>, options: CompletionOptions 
     try {
       response = await fetch(`${baseUrl()}/chat/completions`, {
         method: "POST",
-        headers: headers(),
+        headers: headers(options.apiKey),
         body: JSON.stringify(payload),
         signal,
       });

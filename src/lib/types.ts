@@ -109,6 +109,8 @@ export type Character = {
   /** Public totals across every account, not the viewer's own activity. */
   publicStats: CharacterPublicStats;
   visibility: CharacterVisibility;
+  moderationStatus?: "active" | "removed";
+  moderationReason?: string;
   nsfwEnabled: boolean;
   /** Global saves. Same number as `publicStats.saves`, kept for card code. */
   saveCount?: number;
@@ -610,6 +612,10 @@ export type UsageSummary = {
   avgTtftMs: number | null;
   requests: number;
   estimatedCostUsd: number;
+  /** Spend paid by the platform; BYOK is deliberately excluded. */
+  afterglowCostUsd: number;
+  /** Provider-reported value for calls paid with the account's own key. */
+  byokCostUsd: number;
 };
 
 export type UsageBreakdown = UsageSummary & { key: string };
