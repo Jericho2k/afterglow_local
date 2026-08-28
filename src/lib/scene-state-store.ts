@@ -13,6 +13,7 @@ import {
 import { recordUsageEvent } from "./usage";
 import { estimateTokens } from "./context";
 import type { Message, SceneStamp } from "./types";
+import { insertValueRows } from "./sql-values";
 
 /**
  * Persistence and maintenance for Scene State.
@@ -161,34 +162,36 @@ export async function copySceneStatesForBranch(
      ORDER BY through_message_count DESC LIMIT 40`,
     [input.sourceConversationId, input.userId, Math.max(0, input.position)],
   );
+  const rows: unknown[][] = [];
   for (const row of result.rows.reverse()) {
     const state = sceneStateFromRow(row);
     const mappedId = state.throughMessageId ? input.messageMap.get(state.throughMessageId) ?? null : null;
     // A row whose message did not travel into the branch keeps its values but
     // loses its fingerprint anchor, so it stays usable without pretending to
     // describe a message this branch does not have.
-    await client.query(
-      `INSERT INTO conversation_scene_states
-       (id,conversation_id,user_id,through_message_count,through_message_id,through_message_fingerprint,provisional,status,
-        story_day,date_kind,date_text,time_of_day,time_text,location_place,location_sub,location_confidence,
-        present_characters,active_situation,physical_actors,physical_contacts,physical_constraints,
-        changed_fields,extraction_model,extraction_provider,extraction_latency_ms,
-        failure_reason,token_count,version,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,false,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$27::jsonb,$28,$29,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
-      [
-        randomUUID(), input.conversationId, input.userId, state.throughMessageCount, mappedId, mappedId ? state.throughMessageFingerprint : "",
-        state.status, state.storyDay, state.dateKind, state.dateText, state.timeOfDay, state.timeText,
-        state.location.place, state.location.sub, state.location.confidence,
-        state.presentCharacters, state.activeSituation, state.changedFields,
-        state.extractionModel, state.extractionProvider, state.extractionLatencyMs, state.failureReason,
-        state.tokenCount, state.version, row.created_at, row.updated_at,
-        // The branch inherits the arrangement as it stood at the branch point,
-        // for the same reason it inherits the location: a position established
-        // in the abandoned future is not true in this one.
-        JSON.stringify(state.physical.actors), state.physical.contacts, state.physical.constraints,
-      ],
-    );
+    rows.push([
+      randomUUID(), input.conversationId, input.userId, state.throughMessageCount, mappedId,
+      mappedId ? state.throughMessageFingerprint : "", false, state.status, state.storyDay,
+      state.dateKind, state.dateText, state.timeOfDay, state.timeText, state.location.place,
+      state.location.sub, state.location.confidence, state.presentCharacters, state.activeSituation,
+      // The branch inherits the arrangement as it stood at the branch point,
+      // for the same reason it inherits the location: a position established
+      // in the abandoned future is not true in this one.
+      JSON.stringify(state.physical.actors), state.physical.contacts, state.physical.constraints,
+      state.changedFields, state.extractionModel, state.extractionProvider, state.extractionLatencyMs,
+      state.failureReason, state.tokenCount, state.version, row.created_at, row.updated_at,
+    ]);
   }
+  await insertValueRows(client,
+    `INSERT INTO conversation_scene_states
+     (id,conversation_id,user_id,through_message_count,through_message_id,through_message_fingerprint,provisional,status,
+      story_day,date_kind,date_text,time_of_day,time_text,location_place,location_sub,location_confidence,
+      present_characters,active_situation,physical_actors,physical_contacts,physical_constraints,
+      changed_fields,extraction_model,extraction_provider,extraction_latency_ms,
+      failure_reason,token_count,version,created_at,updated_at) VALUES `,
+    rows,
+    { casts: { 18: "::jsonb" } },
+  );
 }
 
 async function writeSceneRow(userId: string, input: {

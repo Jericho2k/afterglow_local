@@ -642,6 +642,12 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS characters_discovery_popular_idx ON characters (like_count DESC, chat_count DESC, id DESC) WHERE visibility = 'public'");
   await pool().query("CREATE INDEX IF NOT EXISTS characters_discovery_chatted_idx ON characters (chat_count DESC, message_count DESC, id DESC) WHERE visibility = 'public'");
   await pool().query("CREATE INDEX IF NOT EXISTS character_reports_user_idx ON character_reports (user_id, created_at DESC)");
+  // Branch-prefix reads: see migration 0023 and `branchConversation`.
+  await pool().query("CREATE INDEX IF NOT EXISTS messages_branch_prefix_idx ON messages (conversation_id, created_at, id)");
+  await pool().query("CREATE INDEX IF NOT EXISTS memories_branch_prefix_idx ON memories (conversation_id, source_message_count, created_at, id)");
+  await pool().query("CREATE INDEX IF NOT EXISTS memory_arcs_branch_prefix_idx ON memory_arcs (conversation_id, end_message_count, created_at, id)");
+  await pool().query("CREATE INDEX IF NOT EXISTS core_canon_branch_prefix_idx ON core_canon_entries (conversation_id, source_message_count, created_at, id)");
+  await pool().query("CREATE INDEX IF NOT EXISTS scene_states_branch_prefix_idx ON conversation_scene_states (conversation_id, through_message_count DESC, created_at DESC)");
 
   const legacyLorebooks = await pool().query("SELECT id,name,lorebook,user_id FROM characters WHERE lorebook<>''");
   for (const character of legacyLorebooks.rows) {

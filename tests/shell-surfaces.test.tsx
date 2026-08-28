@@ -143,6 +143,13 @@ describe("Profile", () => {
     expect(markup).toContain('aria-label="Top 100 — locked. Rank among the 100 most-read creators."');
     expect(markup).toContain("disabled=\"\"");
   });
+
+  it("returns to the public creator page after a successful save", () => {
+    const editor = readFileSync("src/components/shell/ProfileView.tsx", "utf8");
+    const shell = readFileSync("src/components/shell/AppShell.tsx", "utf8");
+    expect(editor).toContain("onReturnToPublic?.(data.profile.username)");
+    expect(shell).toContain("onReturnToPublic={(username) => router.push(`/creators/${encodeURIComponent(username)}`)}");
+  });
 });
 
 describe("button geometry", () => {

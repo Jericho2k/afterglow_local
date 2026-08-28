@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 const page = readFileSync(new URL("../src/app/creators/[username]/profile.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/app/creators/[username]/profile.module.css", import.meta.url), "utf8");
 const identityCss = readFileSync(new URL("../src/components/creator/creator.module.css", import.meta.url), "utf8");
+const uiCss = readFileSync(new URL("../src/components/ui/ui.module.css", import.meta.url), "utf8");
 const route = readFileSync(new URL("../src/app/api/creators/[username]/route.ts", import.meta.url), "utf8");
 const library = readFileSync(new URL("../src/lib/creator-profile.ts", import.meta.url), "utf8");
 
@@ -69,9 +70,11 @@ describe("keyboard and assistive use", () => {
   });
 
   it("gives every interactive control a visible focus ring", () => {
-    for (const control of [".primaryAction", ".sectionLink", ".chip", ".sortField select", ".tabs button"]) {
+    for (const control of [".primaryAction", ".sectionLink", ".chip", ".tabs button"]) {
       expect(css, `${control} has a focus ring`).toContain(`${control}:focus-visible`);
     }
+    expect(page).toContain("<SelectField");
+    expect(uiCss).toContain(".selectTrigger:focus-visible");
   });
 
   it("honours a reader who has asked for less motion", () => {

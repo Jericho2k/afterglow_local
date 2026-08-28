@@ -116,8 +116,8 @@ export function AchievementBadge({ achievement, showLocked = false }: {
   if (!achievement.unlocked && !showLocked) return null;
   const Icon = achievementIcons[achievement.icon] ?? Sparkles;
   return <li className={`${styles.badge} ${achievement.unlocked ? "" : styles.badgeLocked}`}>
-    <span className={styles.badgeMark} aria-hidden>
-      <Icon size={22} />
+    <span className={styles.badgeArtwork} aria-hidden>
+      <span className={styles.badgeMark}><Icon size={22} /></span>
       {achievement.unlocked && <em className={styles.badgeCheck}><Check size={11} strokeWidth={3} aria-hidden /></em>}
     </span>
     <strong>{achievement.title}</strong>

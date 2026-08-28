@@ -53,9 +53,10 @@ type Standing = {
   unlockedBorders: string[];
 };
 
-export function ProfileView({ profile, onSaved, onOpenMenu }: {
+export function ProfileView({ profile, onSaved, onReturnToPublic, onOpenMenu }: {
   profile: Profile | null;
   onSaved: (profile: Profile) => void;
+  onReturnToPublic?: (username: string) => void;
   onOpenMenu?: () => void;
 }) {
   const [displayName, setDisplayName] = useState(profile?.displayName ?? "");
@@ -112,10 +113,11 @@ export function ProfileView({ profile, onSaved, onOpenMenu }: {
       setBorder(data.profile.profileBorder || "default");
       setFeatured(data.profile.featuredAchievements ?? []);
       setNotice("Profile saved.");
+      if (data.profile.username) onReturnToPublic?.(data.profile.username);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not save your profile");
     } finally { setBusy(false); }
-  }, [username, displayName, bio, avatarPath, coverPath, border, featured, onSaved]);
+  }, [username, displayName, bio, avatarPath, coverPath, border, featured, onSaved, onReturnToPublic]);
 
   async function pickImage(file: File | undefined, apply: (path: string) => void) {
     if (!file) return;

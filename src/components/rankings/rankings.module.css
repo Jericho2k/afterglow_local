@@ -36,16 +36,7 @@
 }
 .board:focus-visible, .boardActive:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
 
-.categoryField { display: flex; min-width: 0; }
-.categoryField select {
-  min-height: 42px; min-width: 160px;
-  border: 1px solid var(--line); border-radius: 12px;
-  background: #120f13; color: var(--ink);
-  padding: 0 12px;
-  font-family: var(--font-sans); font-size: 12.5px;
-  cursor: pointer;
-}
-.categoryField select:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+.categoryField { min-width: 160px; }
 
 .fieldNote {
   display: flex; align-items: center; gap: 7px;
@@ -254,7 +245,6 @@ a.rowCreator:focus-visible { outline: 2px solid #f0a6c6; outline-offset: -2px; }
   .rowArrow { display: none; }
   .controls { gap: 8px; }
   .categoryField { flex: 1; }
-  .categoryField select { width: 100%; }
 }
 
 @media (max-width: 420px) {

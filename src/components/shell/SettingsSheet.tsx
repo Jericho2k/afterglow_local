@@ -7,7 +7,7 @@ import type { UsageRangeId } from "@/lib/usage-range";
 import { api } from "@/lib/api-client";
 import { responseLengthBudget } from "@/lib/response-length";
 import { responseLengths } from "@/lib/types";
-import { uiStyles } from "@/components/ui";
+import { SelectField, uiStyles } from "@/components/ui";
 import { Sheet } from "./Sheet";
 import styles from "./shell.module.css";
 
@@ -130,49 +130,39 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
       <div className={styles.cardHeader}><Sparkles size={16} aria-hidden /><h2>Defaults for new stories</h2></div>
       <div className={styles.stack}>
         <div className={styles.field}>
-          <label className={styles.fieldLabel} htmlFor="settings-provider">Provider</label>
-          <select
-            id="settings-provider"
-            className={styles.select}
+          <SelectField
+            label="Provider"
             value={form.providerId}
-            onChange={(event) => {
-              const providerId = event.target.value;
+            onChange={(providerId) => {
               const first = catalog.models.find((model) => model.providerId === providerId);
               setForm({ ...form, providerId, model: first?.id || form.model });
             }}
-          >
-            {catalog.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
-          </select>
+            options={catalog.providers.map((provider) => ({ value: provider.id, label: provider.label }))}
+          />
         </div>
 
         <div className={styles.field}>
-          <label className={styles.fieldLabel} htmlFor="settings-model">Writer</label>
           {/* Product names only. The upstream slug behind each one is a
               deployment detail and stays out of ordinary UI. */}
-          <select
-            id="settings-model"
-            className={styles.select}
+          <SelectField
+            label="Writer"
             value={form.model}
-            onChange={(event) => {
-              const model = catalog.models.find((item) => item.id === event.target.value);
-              setForm({ ...form, providerId: model?.providerId || form.providerId, model: event.target.value });
+            onChange={(value) => {
+              const model = catalog.models.find((item) => item.id === value);
+              setForm({ ...form, providerId: model?.providerId || form.providerId, model: value });
             }}
-          >
-            {providerModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
-          </select>
+            options={providerModels.map((model) => ({ value: model.id, label: model.label, description: model.description }))}
+          />
           <span className={styles.fieldHint}>{providerModels.find((model) => model.id === form.model)?.description}</span>
         </div>
 
         <div className={styles.field}>
-          <label className={styles.fieldLabel} htmlFor="settings-engine">Roleplay engine</label>
-          <select
-            id="settings-engine"
-            className={styles.select}
+          <SelectField
+            label="Roleplay engine"
             value={form.roleplayPreset}
-            onChange={(event) => setForm({ ...form, roleplayPreset: event.target.value as AppSettings["roleplayPreset"] })}
-          >
-            {catalog.engines.map((engine) => <option key={engine.id} value={engine.id}>{engine.label}</option>)}
-          </select>
+            onChange={(value) => setForm({ ...form, roleplayPreset: value as AppSettings["roleplayPreset"] })}
+            options={catalog.engines.map((engine) => ({ value: engine.id, label: engine.label, description: engine.description }))}
+          />
           <span className={styles.fieldHint}>{catalog.engines.find((engine) => engine.id === form.roleplayPreset)?.description}</span>
         </div>
 
