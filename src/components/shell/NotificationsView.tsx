@@ -89,12 +89,15 @@ export function NotificationsView({ onOpenMenu }: { onOpenMenu?: () => void }) {
    */
   const markOne = useCallback((id: string) => {
     setItems((current) => current?.map((item) => item.id === id ? { ...item, read: true } : item) ?? current);
-    setUnread((current) => Math.max(0, current - 1));
-    setUnreadNotifications(Math.max(0, unread - 1));
+    setUnread((current) => {
+      const next = Math.max(0, current - 1);
+      setUnreadNotifications(next);
+      return next;
+    });
     void api<{ unread: number }>("/api/notifications", { method: "PATCH", body: JSON.stringify({ ids: [id] }) })
       .then((data) => setUnreadNotifications(data.unread))
       .catch(() => void refreshUnreadNotifications());
-  }, [unread]);
+  }, []);
 
   const markAll = useCallback(async () => {
     setItems((current) => current?.map((item) => ({ ...item, read: true })) ?? current);

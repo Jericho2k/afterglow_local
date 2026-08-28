@@ -164,6 +164,21 @@ describe("the creations board", () => {
     expect(second.creations?.[0].creation.id).toBe(kaelen);
     expect(second.hasMore).toBe(false);
   });
+
+  it("returns a real empty board when a successful board is simply empty", async () => {
+    await query("DELETE FROM creation_rankings");
+    await query("UPDATE creation_rankings_refresh SET refreshed_at=now() WHERE id=true");
+    const page = await board();
+    expect(page.status).toBe(200);
+    expect(page.creations).toEqual([]);
+  });
+
+  it("distinguishes an unavailable refresh from a real empty board", async () => {
+    await query("DELETE FROM creation_rankings");
+    const page = await board();
+    expect(page.status).toBe(503);
+    expect(page).toMatchObject({ error: "Creation rankings are temporarily unavailable" });
+  });
 });
 
 /*

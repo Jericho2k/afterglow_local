@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { asUser } from "./db";
 import { rankingBoardSize, rankingCategories, type CreationRank } from "./rankings";
+import type { RefreshStatus } from "./creator-stats";
 
 /**
  * Rankings: the database side.
@@ -24,7 +25,7 @@ const maxAgeMs = Number(process.env.CREATION_RANKINGS_MAX_AGE_MS || 10 * 60_000)
  * Rebuilds the boards when they have gone stale, at most once per window.
  *
  * The same single atomic UPDATE `refreshCreatorStatsIfStale` uses: whichever
- * request wins it does the work, every other concurrent reader gets `false` and
+ * request wins it does the work, every other concurrent reader gets `fresh` and
  * serves the boards that are already there. No lock, no queue, no worker.
  *
  * Runs in a TRANSACTION OF ITS OWN, and never throws. PostgreSQL aborts a
@@ -34,19 +35,19 @@ const maxAgeMs = Number(process.env.CREATION_RANKINGS_MAX_AGE_MS || 10 * 60_000)
  * empty board. Isolating it is what makes "never throws" true rather than
  * merely intended.
  */
-export async function refreshCreationRankingsIfStale(userId: string, now = Date.now()) {
+export async function refreshCreationRankingsIfStale(userId: string, now = Date.now()): Promise<RefreshStatus> {
   try {
     return await asUser(userId, async (client) => {
       const claimed = await client.query(
         "UPDATE creation_rankings_refresh SET refreshed_at=now() WHERE id=true AND refreshed_at < $1 RETURNING refreshed_at",
         [new Date(now - maxAgeMs).toISOString()],
       );
-      if (!claimed.rowCount) return false;
+      if (!claimed.rowCount) return "fresh";
       await client.query("SELECT public.refresh_creation_rankings($1::text[],$2)", [rankingCategories, rankingBoardSize]);
-      return true;
+      return "refreshed";
     });
   } catch {
-    return false;
+    return "failed";
   }
 }
 

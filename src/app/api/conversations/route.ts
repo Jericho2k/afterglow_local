@@ -5,6 +5,7 @@ import { asUser, characterFromRow, conversationFromRow, coreCanonFromRow, getUse
 import { copySceneStatesForBranch } from "@/lib/scene-state-store";
 import { copyConversationWorldsForBranch, ensureConversationWorlds, initializeConversationWorlds } from "@/lib/conversation-worlds";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
+import { insertValueRows } from "@/lib/sql-values";
 
 /**
  * Starts a chat.
@@ -99,50 +100,56 @@ async function branchConversation(client:PoolClient,userId:string,sourceConversa
     "SELECT * FROM memories WHERE conversation_id=$1 AND user_id=$2 AND source_message_count<=$3 ORDER BY created_at ASC,id ASC",
     [sourceConversationId,userId,position],
   );
+  const memoryRows: unknown[][]=[];
   for (const memory of sourceMemories.rows) {
     const parsed=memoryFromRow(memory);
     const memoryId=randomUUID(); memoryMap.set(String(memory.id),memoryId);
-    await client.query(
-      `INSERT INTO memories
-       (id,character_id,conversation_id,user_id,content,kind,importance,keywords,pinned,status,resolution,resolved_at,last_recalled_at,recall_count,source_message_count,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-      [memoryId,memory.character_id,id,userId,memory.content,memory.kind,memory.importance,parsed.keywords,memory.pinned,memory.status,memory.resolution,memory.resolved_at,memory.last_recalled_at,memory.recall_count,memory.source_message_count,memory.created_at,memory.updated_at],
-    );
+    memoryRows.push([memoryId,memory.character_id,id,userId,memory.content,memory.kind,memory.importance,parsed.keywords,memory.pinned,memory.status,memory.resolution,memory.resolved_at,memory.last_recalled_at,memory.recall_count,memory.source_message_count,memory.created_at,memory.updated_at]);
   }
+  await insertValueRows(client,
+    `INSERT INTO memories
+     (id,character_id,conversation_id,user_id,content,kind,importance,keywords,pinned,status,resolution,resolved_at,last_recalled_at,recall_count,source_message_count,created_at,updated_at) VALUES `,
+    memoryRows,
+  );
 
   const arcMap=new Map<string,string>();
   const sourceArcs=await client.query("SELECT * FROM memory_arcs WHERE conversation_id=$1 AND user_id=$2 AND end_message_count<=$3 ORDER BY created_at ASC,id ASC",[sourceConversationId,userId,position]);
+  const arcRows: unknown[][]=[];
   for (const arc of sourceArcs.rows) {
     const parsed=memoryArcFromRow(arc);
     const arcId=randomUUID(); arcMap.set(String(arc.id),arcId);
-    await client.query(
-      "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [arcId,id,userId,arc.summary,parsed.keywords,arc.start_message_count,arc.end_message_count,arc.created_at],
-    );
+    arcRows.push([arcId,id,userId,arc.summary,parsed.keywords,arc.start_message_count,arc.end_message_count,arc.created_at]);
   }
+  await insertValueRows(client,
+    "INSERT INTO memory_arcs (id,conversation_id,user_id,summary,keywords,start_message_count,end_message_count,created_at) VALUES ",
+    arcRows,
+  );
 
   const sourceCanon=await client.query("SELECT * FROM core_canon_entries WHERE conversation_id=$1 AND user_id=$2 AND source_message_count<=$3 ORDER BY created_at ASC,id ASC",[sourceConversationId,userId,position]);
+  const canonRows: unknown[][]=[];
   for (const canon of sourceCanon.rows) {
     const parsed=coreCanonFromRow(canon);
-    await client.query(
-    `INSERT INTO core_canon_entries
-     (id,conversation_id,character_id,user_id,content,category,importance,status,source_memory_ids,source_arc_ids,source_message_count,token_count,curation_version,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [randomUUID(),id,canon.character_id,userId,canon.content,canon.category,canon.importance,canon.status,parsed.sourceMemoryIds.map((value)=>memoryMap.get(value)||value),parsed.sourceArcIds.map((value)=>arcMap.get(value)||value),canon.source_message_count,canon.token_count,canon.curation_version,canon.created_at,canon.updated_at],
-    );
+    canonRows.push([randomUUID(),id,canon.character_id,userId,canon.content,canon.category,canon.importance,canon.status,parsed.sourceMemoryIds.map((value)=>memoryMap.get(value)||value),parsed.sourceArcIds.map((value)=>arcMap.get(value)||value),canon.source_message_count,canon.token_count,canon.curation_version,canon.created_at,canon.updated_at]);
   }
+  await insertValueRows(client,
+    `INSERT INTO core_canon_entries
+     (id,conversation_id,character_id,user_id,content,category,importance,status,source_memory_ids,source_arc_ids,source_message_count,token_count,curation_version,created_at,updated_at) VALUES `,
+    canonRows,
+  );
 
   const messageMap=new Map<string,string>();
   const sourceMessages=await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC,id ASC LIMIT $3",[sourceConversationId,userId,position]);
+  const messageRows: unknown[][]=[];
   for (const message of sourceMessages.rows) {
     const parsed=messageFromRow(message);
     const messageId=randomUUID(); messageMap.set(String(message.id),messageId);
-    await client.query(
-    `INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids,authored_event_id,generation_started_at,created_at)
-     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8::uuid[],$9::uuid[],$10,$11,$12)`,
-    [messageId,id,userId,message.role,message.content,JSON.stringify(parsed.variants),parsed.selectedVariant,parsed.memoryIds.map((value)=>memoryMap.get(value)||value),parsed.arcIds.map((value)=>arcMap.get(value)||value),message.role==="user"?message.authored_event_id??message.id:null,message.role==="user"?message.generation_started_at:null,message.created_at],
-    );
+    messageRows.push([messageId,id,userId,message.role,message.content,JSON.stringify(parsed.variants),parsed.selectedVariant,parsed.memoryIds.map((value)=>memoryMap.get(value)||value),parsed.arcIds.map((value)=>arcMap.get(value)||value),message.role==="user"?message.authored_event_id??message.id:null,message.role==="user"?message.generation_started_at:null,message.created_at]);
   }
+  await insertValueRows(client,
+    "INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids,authored_event_id,generation_started_at,created_at) VALUES ",
+    messageRows,
+    { casts: { 5: "::jsonb", 7: "::uuid[]", 8: "::uuid[]" } },
+  );
 
   // Scene State follows the same rule as every other derived layer: the branch
   // inherits only what was true at the branch point. A location, day, or cast

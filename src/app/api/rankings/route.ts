@@ -46,8 +46,11 @@ export async function GET(request: Request) {
   const offset = Math.min(Math.max(0, Number.parseInt(params.get("offset") ?? "0", 10) || 0), rankingBoardSize);
 
   if (board === "creators") {
-    await refreshCreatorStatsIfStale(account.id);
+    const refresh = await refreshCreatorStatsIfStale(account.id);
     const rows = await asUser(account.id, (client) => rankedCreators(client, account.id, { limit: limit + 1, offset }));
+    if (!rows.length && offset === 0 && refresh === "failed") {
+      return Response.json({ error: "Creator rankings are temporarily unavailable" }, { status: 503 });
+    }
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     return Response.json({
@@ -81,7 +84,7 @@ export async function GET(request: Request) {
     });
   }
 
-  await refreshCreationRankingsIfStale(account.id);
+  const refresh = await refreshCreationRankingsIfStale(account.id);
   const payload = await asUser(account.id, async (client) => {
     /*
      * One board, read through `creation_rankings_board_idx`.
@@ -107,6 +110,9 @@ export async function GET(request: Request) {
 
   const hasMore = payload.length > limit;
   const rows = hasMore ? payload.slice(0, limit) : payload;
+  if (!rows.length && offset === 0 && refresh === "failed") {
+    return Response.json({ error: "Creation rankings are temporarily unavailable" }, { status: 503 });
+  }
   return Response.json({
     board: "creations",
     category,

@@ -89,6 +89,15 @@ describe("achievements", () => {
   it("says 'Locked' rather than relying on the dimming", () => {
     expect(renderToStaticMarkup(<AchievementBadge achievement={locked} showLocked />)).toContain("Locked");
   });
+
+  it("keeps the earned check outside the clipped hexagon", () => {
+    const source = readFileSync(new URL("../src/components/creator/CreatorIdentity.tsx", import.meta.url), "utf8");
+    const css = readFileSync(new URL("../src/components/creator/creator.module.css", import.meta.url), "utf8");
+    expect(source).toContain("styles.badgeArtwork");
+    expect(source.indexOf("styles.badgeMark")).toBeLessThan(source.indexOf("styles.badgeCheck"));
+    const artwork = css.slice(css.indexOf(".badgeArtwork"), css.indexOf("}", css.indexOf(".badgeArtwork")));
+    expect(artwork).toContain("overflow: visible");
+  });
 });
 
 describe("the avatar and its ring", () => {

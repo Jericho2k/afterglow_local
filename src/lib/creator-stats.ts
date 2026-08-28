@@ -15,7 +15,7 @@ import { unlockedBorders } from "./cosmetics";
  *
  * The refresh is guarded by a single atomic UPDATE against a one-row table.
  * Whichever request wins that UPDATE does the work; every other concurrent
- * reader gets `false` and serves the numbers that are already there. That is
+ * reader gets `fresh` and serves the numbers that are already there. That is
  * what keeps a burst of traffic from running the same aggregate twenty times,
  * and it needs no lock, no queue and no background worker.
  */
@@ -62,10 +62,12 @@ export const unrankedStanding: CreatorStandingRow = {
  * Never throws either way. A profile that cannot refresh a ranking shows a
  * slightly stale rank, which is a far better product than one that fails.
  *
- * Returns whether this caller actually did the work, which is only interesting
- * to a test — the read happens afterwards regardless.
+ * Returns a status so Rankings can distinguish a legitimate empty board from
+ * a board that could not be built. Profile callers still serve stale values.
  */
-export async function refreshCreatorStatsIfStale(userId: string, now = Date.now()) {
+export type RefreshStatus = "refreshed" | "fresh" | "failed";
+
+export async function refreshCreatorStatsIfStale(userId: string, now = Date.now()): Promise<RefreshStatus> {
   try {
     return await asUser(userId, async (client) => {
       // Whoever wins this single atomic UPDATE does the work; every other
@@ -75,12 +77,12 @@ export async function refreshCreatorStatsIfStale(userId: string, now = Date.now(
         "UPDATE creator_stats_refresh SET refreshed_at=now() WHERE id=true AND refreshed_at < $1 RETURNING refreshed_at",
         [new Date(now - maxAgeMs).toISOString()],
       );
-      if (!claimed.rowCount) return false;
+      if (!claimed.rowCount) return "fresh";
       await client.query("SELECT public.refresh_creator_stats()");
-      return true;
+      return "refreshed";
     });
   } catch {
-    return false;
+    return "failed";
   }
 }
 

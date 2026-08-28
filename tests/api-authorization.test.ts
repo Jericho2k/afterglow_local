@@ -30,6 +30,7 @@ vi.mock("@/lib/deepseek", () => ({
 }));
 
 const { ensureSchema, pool, query, setPoolForTesting } = await import("@/lib/db");
+const { insertValueRows } = await import("@/lib/sql-values");
 const chat = await import("@/app/api/chat/route");
 const characters = await import("@/app/api/characters/route");
 const characterDetail = await import("@/app/api/characters/[id]/route");
@@ -127,6 +128,36 @@ describe("cross-account access", () => {
     expect(body.messages.map((message:{content:string})=>message.content)).toEqual(["Private words"]);
     expect(Number((await query("SELECT COUNT(*) count FROM messages WHERE conversation_id=$1",[aliceConversation])).rows[0].count)).toBe(1);
   });
+
+  it("copies a 500-message history in order without changing its source", async () => {
+    account = { id: alice, email: null };
+    await query("DELETE FROM messages WHERE conversation_id=$1", [aliceConversation]);
+    const ids = Array.from({ length: 500 }, () => crypto.randomUUID());
+    const client = await pool().connect();
+    try {
+      await insertValueRows(client,
+        "INSERT INTO messages (id,conversation_id,user_id,role,content,authored_event_id,generation_started_at,created_at) VALUES ",
+        ids.map((id, index) => [
+          id, aliceConversation, alice, index % 2 ? "assistant" : "user", `turn-${index + 1}`,
+          index % 2 ? null : id, index % 2 ? null : new Date(1_700_000_000_000 + index * 1000),
+          new Date(1_700_000_000_000 + index * 1000),
+        ]),
+      );
+    } finally { client.release(); }
+    await query("UPDATE conversations SET message_count=500 WHERE id=$1", [aliceConversation]);
+
+    const response = await conversations.POST(post("http://test/api/conversations", {
+      branchFromConversationId: aliceConversation,
+      branchFromMessageId: ids[499],
+      branchRequestId: crypto.randomUUID(),
+    }));
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.messages).toHaveLength(500);
+    expect(body.messages[0].content).toBe("turn-1");
+    expect(body.messages[499].content).toBe("turn-500");
+    expect(Number((await query("SELECT COUNT(*) count FROM messages WHERE conversation_id=$1", [aliceConversation])).rows[0].count)).toBe(500);
+  }, 15_000);
 
   it("makes a retried branch request idempotent", async () => {
     account = { id: alice, email: null };
@@ -319,6 +350,9 @@ describe("public characters", () => {
     expect(body.character).toMatchObject({id:alicePublic,ownedByViewer:false,sourceMaterial:""});
     expect(body.viewerMessageCount).toBe(0);
     expect(body).not.toHaveProperty("conversations");
+    // Creator identity comes from the creation owner even when a legacy
+    // account has no profile row to satisfy the optional join.
+    expect(body.creatorCard).toMatchObject({ id: alice, displayName: "Afterglow creator", owner: false });
 
     // A public creation built on a private world still shows that it is: the
     // association is part of what the creation is, and hiding it would

@@ -14,6 +14,7 @@ import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import type { CreationSummary } from "@/lib/types";
 import { CreatorAvatar } from "@/components/creator";
 import { PageHeader, shellStyles } from "@/components/shell";
+import { SelectField } from "@/components/ui";
 import styles from "./rankings.module.css";
 
 /**
@@ -149,17 +150,22 @@ export function RankingsView({ onOpenMenu }: { onOpenMenu?: () => void }) {
           * Categories are a picker, not a row of tabs.
           *
           * The controlled taxonomy has fifteen genres in it, and fifteen tabs
-          * is a horizontal scroller nobody reaches the end of. A select is one
-          * control, is keyboard-operable for free, and is the same on a phone
-          * as on a desktop.
+          * is a horizontal scroller nobody reaches the end of. The shared
+          * picker keeps that taxonomy in one keyboard-operable control and
+          * portals the menu clear of narrow-page clipping.
           */}
-        {board === "creations" && <label className={styles.categoryField}>
-          <span className={shellStyles.srOnly}>Ranking category</span>
-          <select value={category} onChange={(event) => setCategory(event.target.value)}>
-            <option value="">{overallBoardLabel}</option>
-            {categories.map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
-        </label>}
+        {board === "creations" && <SelectField
+          className={styles.categoryField}
+          label="Ranking category"
+          hideLabel
+          compact
+          value={category}
+          onChange={setCategory}
+          options={[
+            { value: "", label: overallBoardLabel },
+            ...categories.map((value) => ({ value, label: value })),
+          ]}
+        />}
       </div>
 
       {page.total > 0 && !loading && <p className={styles.fieldNote}>

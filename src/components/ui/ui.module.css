@@ -157,7 +157,182 @@
   color: #f7c9de;
 }
 
+/* ------------------------------------------------------------ select ---- */
+
+.selectField { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
+.selectLabel {
+  color: var(--muted, #a99cab);
+  font-size: 10px;
+  font-weight: 600;
+}
+.selectTrigger {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .1));
+  border-radius: var(--ui-radius-control);
+  background: rgba(18, 15, 19, .96);
+  color: var(--ink, #f6eff4);
+  text-align: left;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease;
+}
+.selectTrigger:hover, .selectTrigger[aria-expanded="true"] {
+  border-color: rgba(232, 121, 169, .35);
+  background: rgba(31, 24, 31, .98);
+}
+.selectTrigger:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+.selectTrigger:disabled { opacity: .5; cursor: not-allowed; }
+.selectTrigger > span { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.selectTrigger strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.selectTrigger small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint, #776a73); font-size: 9px; }
+.selectChevron, .selectChevronOpen { flex: none; color: #c49aad; transition: transform .18s ease; }
+.selectChevronOpen { transform: rotate(180deg); }
+
+.selectCompact { width: auto; }
+.selectCompact .selectTrigger { min-height: 38px; padding: 7px 10px; }
+
+.selectRow { width: 100%; gap: 0; }
+.selectRow .selectTrigger {
+  min-height: 66px;
+  padding: 11px 13px;
+  background: rgba(255, 255, 255, .025);
+}
+.selectRowIcon {
+  display: grid !important;
+  place-items: center;
+  flex: 0 0 34px !important;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(232, 121, 169, .1);
+  color: #f0a6c6;
+}
+.selectRowCopy { gap: 3px !important; }
+.selectRowCopy em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint, #776a73);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.selectRowCopy strong { font-size: 11.5px; }
+
+.selectMenu {
+  position: fixed;
+  z-index: 120;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 14px;
+  background: rgba(25, 20, 26, .98);
+  box-shadow: 0 22px 64px rgba(0, 0, 0, .55);
+  backdrop-filter: blur(18px);
+}
+.selectOption {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink, #f6eff4);
+  text-align: left;
+  cursor: pointer;
+}
+.selectOption > span { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
+.selectOption strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.selectOption small { color: var(--muted, #a99cab); font-size: 9px; line-height: 1.4; }
+.selectOption > svg { flex: none; color: #f0a6c6; }
+.selectOption:hover, .selectOptionActive {
+  border-color: rgba(232, 121, 169, .2);
+  background: rgba(232, 121, 169, .1);
+}
+.selectOption:focus-visible { outline: 2px solid #f0a6c6; outline-offset: -1px; }
+
+/* ---------------------------------------------------- settings choice ---- */
+
+.settingsChoiceRow {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-width: 0;
+  min-height: 66px;
+  padding: 11px 13px;
+  border: 1px solid var(--edge, rgba(255, 255, 255, .1));
+  border-radius: var(--ui-radius-control);
+  background: rgba(255, 255, 255, .025);
+  color: var(--ink, #f6eff4);
+  text-align: left;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease;
+}
+.settingsChoiceRow:hover {
+  border-color: rgba(232, 121, 169, .35);
+  background: rgba(232, 121, 169, .08);
+}
+.settingsChoiceRow:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+.settingsChoiceRow > svg { flex: none; color: var(--faint, #776a73); }
+.settingsChoiceIcon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(232, 121, 169, .1);
+  color: #f0a6c6;
+}
+.settingsChoiceCopy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.settingsChoiceCopy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint, #776a73);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.settingsChoiceCopy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink, #f6eff4);
+  font-size: 11.5px;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .iconButton, .button, .chip { transition: none; }
+  .iconButton, .button, .chip, .selectTrigger, .selectChevron, .selectChevronOpen, .settingsChoiceRow { transition: none; }
   .iconButton:active, .button:active { transform: none; }
 }

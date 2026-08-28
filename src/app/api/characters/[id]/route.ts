@@ -235,7 +235,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
      * creator somehow has no profile page still says who made it, with the
      * link and the follow control simply absent.
      */
-    const creatorId = row.creator_id ? String(row.creator_id) : "";
+    // A creation always has an owner, even if an old account somehow missed
+    // the profile backfill.  Identity must therefore come from the creation's
+    // non-null owner column, not from the optional public-profile join.
+    const creatorId = String(row.user_id || "");
     const standing = {
       followers: Number(row.creator_followers || 0),
       userMessages: Number(row.creator_messages || 0),
@@ -247,7 +250,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const creatorCard = creatorId ? {
       id: creatorId,
       username: String(row.creator_username || ""),
-      displayName: String(row.creator_display_name || ""),
+      displayName: String(row.creator_display_name || "Afterglow creator"),
       avatarPath: String(row.creator_avatar_path || ""),
       followers: standing.followers,
       messages: standing.userMessages,

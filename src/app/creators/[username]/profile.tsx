@@ -13,7 +13,7 @@ import { toggleCreatorFollow } from "@/lib/follows";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
 import { BackButton } from "@/components/nav";
-import { iconButtonClass } from "@/components/ui";
+import { iconButtonClass, SelectField } from "@/components/ui";
 import { CreationGrid, CreationGridSkeleton } from "@/components/feed";
 import { WorldCard } from "@/components/world";
 import { AchievementBadge, CreatorAvatar, CreatorStat, RankMedal, rankSummary } from "@/components/creator";
@@ -71,7 +71,7 @@ type Payload = {
   activity: ActivityEvent[];
 };
 
-type Tab = "creations" | "worlds" | "about" | "activity";
+type Tab = "creations" | "worlds" | "about";
 type Sort = "popular" | "newest";
 type Filter = "all" | "character" | "cast" | "scenario";
 
@@ -79,7 +79,6 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "creations", label: "Creations" },
   { id: "worlds", label: "Worlds" },
   { id: "about", label: "About" },
-  { id: "activity", label: "Activity" },
 ];
 
 const filters: { id: Filter; label: string }[] = [
@@ -319,13 +318,18 @@ export default function CreatorProfile({ username }: { username: string }) {
                 onClick={() => setFilter(item.id)}
               >{item.label}</button>)}
             </div>
-            <label className={styles.sortField}>
-              <span className={styles.srOnly}>Sort creations</span>
-              <select value={sort} onChange={(event) => setSort(event.target.value as Sort)}>
-                <option value="popular">Most popular</option>
-                <option value="newest">Newest</option>
-              </select>
-            </label>
+            <SelectField
+              className={styles.sortField}
+              label="Sort creations"
+              hideLabel
+              compact
+              value={sort}
+              onChange={(value) => setSort(value as Sort)}
+              options={[
+                { value: "popular", label: "Most popular" },
+                { value: "newest", label: "Newest" },
+              ]}
+            />
           </div>
           {gridLoading
             ? <CreationGridSkeleton count={6} />
@@ -365,10 +369,6 @@ export default function CreatorProfile({ username }: { username: string }) {
           </div>
         </section>}
 
-        {tab === "activity" && <section id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" className={styles.card}>
-          <h2>Activity</h2>
-          <ActivityList events={payload.activity} limit={24} />
-        </section>}
       </div>
 
       <aside className={styles.side} aria-label="Creator standing">
@@ -391,9 +391,8 @@ export default function CreatorProfile({ username }: { username: string }) {
         {payload.activity.length > 0 && <section className={styles.card}>
           <header className={styles.sectionHead}>
             <h2>Recent activity</h2>
-            <button className={styles.sectionLink} onClick={() => setTab("activity")}>View all</button>
           </header>
-          <ActivityList events={payload.activity} limit={6} />
+          <ActivityList events={payload.activity} limit={5} />
         </section>}
 
         {payload.topCharacters.length > 0 && <section className={styles.card}>
