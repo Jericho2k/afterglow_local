@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Database, Download, Gauge, Sparkles, Upload } from "lucide-react";
+import { Database, Download, Gauge, KeyRound, ShieldCheck, Sparkles, Trash2, Upload } from "lucide-react";
 import type { AppSettings, ModelCatalog, UsageResponse } from "@/lib/types";
 import type { UsageRangeId } from "@/lib/usage-range";
 import { api } from "@/lib/api-client";
@@ -56,6 +56,8 @@ const lengthCopy: Record<string, string> = {
   detailed: "Fuller action, dialogue, subtext and consequence when the scene supports it.",
 };
 
+type ByokState={connected:boolean;enabled:boolean;provider:"openrouter";suffix:string;validatedAt:string|null;available:boolean};
+
 export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onSaved, onImported }: {
   isAdmin: boolean;
   settings: AppSettings;
@@ -74,6 +76,35 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [byok,setByok]=useState<ByokState|null>(null);
+  const [providerKey,setProviderKey]=useState("");
+  const [byokBusy,setByokBusy]=useState(false);
+
+  useEffect(()=>{ let live=true; api<ByokState>("/api/byok").then((value)=>{if(live)setByok(value);}).catch(()=>undefined); return()=>{live=false;}; },[]);
+
+  async function connectByok(){
+    setByokBusy(true);setError("");setNotice("");
+    try{
+      const value=await api<ByokState>("/api/byok",{method:"POST",body:JSON.stringify({apiKey:providerKey,enabled:true})});
+      setByok(value);setProviderKey("");setNotice("OpenRouter key connected and ready for roleplay writing.");
+    }catch(reason){setError(reason instanceof Error?reason.message:"Could not connect that key");}
+    finally{setByokBusy(false);}
+  }
+
+  async function toggleByok(enabled:boolean){
+    setByokBusy(true);setError("");
+    try{setByok(await api<ByokState>("/api/byok",{method:"POST",body:JSON.stringify({enabled})}));}
+    catch(reason){setError(reason instanceof Error?reason.message:"Could not update BYOK");}
+    finally{setByokBusy(false);}
+  }
+
+  async function removeByok(){
+    if(!window.confirm("Remove your saved OpenRouter key from Afterglow?"))return;
+    setByokBusy(true);setError("");
+    try{setByok(await api<ByokState>("/api/byok",{method:"DELETE"}));setNotice("OpenRouter key removed.");}
+    catch(reason){setError(reason instanceof Error?reason.message:"Could not remove that key");}
+    finally{setByokBusy(false);}
+  }
 
   /*
    * The ledger for one window.
@@ -203,6 +234,30 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
       </div>
     </section>
 
+    <section className={styles.card}>
+      <div className={styles.cardHeader}><KeyRound size={16} aria-hidden /><h2>Your OpenRouter key</h2>{byok?.connected&&<em>•••• {byok.suffix}</em>}</div>
+      <p className={styles.fieldHint} style={{margin:"0 0 12px"}}>
+        Fund normal replies, Regenerate, and Continue with your own OpenRouter balance. Creation tools, memories, embeddings, and scene updates always remain Afterglow-funded. Your model choice is separate.
+      </p>
+      {!byok?.available&&<p className={styles.fieldHint}>Personal keys are currently disabled by Afterglow.</p>}
+      {byok?.connected?<>
+        <label className={styles.toggleRow} data-active={byok.enabled}>
+          <span><strong>{byok.enabled?"Use my key for writing":"Key paused"}</strong><small>{byok.validatedAt?`Validated ${new Date(byok.validatedAt).toLocaleString()}`:"Validated by OpenRouter"}</small></span>
+          <input type="checkbox" checked={byok.enabled} disabled={byokBusy||!byok.available} onChange={(event)=>void toggleByok(event.target.checked)} />
+        </label>
+        {byok.enabled&&form.providerId!=="openrouter"&&<p className={styles.error} style={{marginTop:10}}>Your default writer is not on OpenRouter. Choose an OpenRouter provider/model above, or pause BYOK; Afterglow will not silently substitute a model.</p>}
+        <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) auto",gap:8,marginTop:12}}>
+          <input className={styles.input} type="password" autoComplete="off" spellCheck={false} value={providerKey} onChange={(event)=>setProviderKey(event.target.value)} placeholder="Paste a replacement OpenRouter key" aria-label="Replacement OpenRouter API key" />
+          <button className={`${uiStyles.button} ${uiStyles.secondary}`} disabled={!providerKey.trim()||byokBusy||!byok.available} onClick={()=>void connectByok()}>Replace</button>
+        </div>
+        <button className={`${uiStyles.button} ${uiStyles.secondary}`} style={{marginTop:9}} disabled={byokBusy} onClick={()=>void removeByok()}><Trash2 size={14} aria-hidden />Remove key</button>
+      </>:<div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) auto",gap:8}}>
+        <input className={styles.input} type="password" autoComplete="off" spellCheck={false} value={providerKey} onChange={(event)=>setProviderKey(event.target.value)} placeholder="OpenRouter API key" aria-label="OpenRouter API key" />
+        <button className={`${uiStyles.button} ${uiStyles.primary}`} disabled={!providerKey.trim()||byokBusy||!byok?.available} onClick={()=>void connectByok()}>{byokBusy?"Validating…":"Connect"}</button>
+      </div>}
+      <p className={styles.fieldHint} style={{marginTop:10,display:"flex",gap:6,alignItems:"center"}}><ShieldCheck size={14} aria-hidden />Encrypted at rest. Afterglow never displays or exports the key.</p>
+    </section>
+
     {isAdmin && <section className={styles.card}>
       <div className={styles.cardHeader}><Gauge size={16} aria-hidden /><h2>Memory &amp; context</h2></div>
       <div className={styles.stack}>
@@ -268,10 +323,11 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
           <dd>{number(usage.usage.cacheWriteTokens ?? 0)}</dd>
         </div>
         <div className={styles.metric}>
-          <dt>Total cost</dt>
-          <dd>{usd(usage.usage.estimatedCostUsd)}</dd>
+          <dt>Afterglow cost</dt>
+          <dd>{usd(usage.usage.afterglowCostUsd)}</dd>
           <small>{usd(usage.costPer100UserMessages || 0)} / 100 messages</small>
         </div>
+        {usage.usage.byokCostUsd>0&&<div className={styles.metric}><dt>BYOK usage value</dt><dd>{usd(usage.usage.byokCostUsd)}</dd><small>Paid by users</small></div>}
         {usage.usage.avgLatencyMs != null && <div className={styles.metric}>
           <dt>Latency</dt>
           <dd>{usage.usage.avgLatencyMs.toLocaleString()}<small> ms</small></dd>

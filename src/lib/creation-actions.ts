@@ -15,7 +15,7 @@ import { creationCtaDescription, creationCtaLabel, creationTitle, creationType }
  *     short rather than padded out with actions that go nowhere.
  */
 
-export type CreationActionId = "edit" | "copy_link" | "delete";
+export type CreationActionId = "edit" | "copy_link" | "report" | "delete";
 
 export type CreationAction = {
   id: CreationActionId;
@@ -30,6 +30,7 @@ export function creationActions({ owner }: { owner: boolean }): CreationAction[]
     ...(owner ? [{ id: "edit" as const, label: "Edit creation" }] : []),
     // The one action that needs nothing of anybody: a public page has a URL.
     { id: "copy_link" as const, label: "Copy link" },
+    ...(!owner ? [{ id:"report" as const,label:"Report creation" }] : []),
     ...(owner ? [{ id: "delete" as const, label: "Delete creation", danger: true, confirms: true }] : []),
   ];
 }

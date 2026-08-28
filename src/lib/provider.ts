@@ -256,7 +256,11 @@ function safeId(value: string) {
 }
 
 export function openRouterEnabled() {
-  return process.env.ENABLE_OPENROUTER === "true" && Boolean(process.env.OPENROUTER_API_KEY?.trim());
+  // The platform rollout plus its key enables every OpenRouter route. A configured BYOK rollout
+  // also exposes OpenRouter writers, while background tasks still receive no
+  // request credential and therefore continue to require the platform key.
+  const personalWriterAvailable=process.env.ENABLE_BYOK==="true"&&Boolean(process.env.BYOK_ENCRYPTION_KEY?.trim());
+  return (process.env.ENABLE_OPENROUTER === "true"&&Boolean(process.env.OPENROUTER_API_KEY?.trim()))||personalWriterAvailable;
 }
 
 function modelProviderEnabled(model: InternalModelDefinition) {

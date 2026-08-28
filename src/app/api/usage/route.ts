@@ -10,6 +10,8 @@ const aggregate = `COUNT(*)::int requests,
   COALESCE(SUM(cache_miss_tokens),0)::int cache_miss_tokens,
   COALESCE(SUM(cache_write_tokens),0)::int cache_write_tokens,
   COALESCE(SUM(estimated_cost_usd),0) estimated_cost_usd,
+  COALESCE(SUM(CASE WHEN funding_source='afterglow' THEN estimated_cost_usd ELSE 0 END),0) afterglow_cost_usd,
+  COALESCE(SUM(CASE WHEN funding_source='byok' THEN estimated_cost_usd ELSE 0 END),0) byok_cost_usd,
   COALESCE(SUM(latency_ms),0)::int latency_ms_total,
   COUNT(latency_ms)::int latency_samples,
   COALESCE(SUM(ttft_ms),0)::int ttft_ms_total,
@@ -34,6 +36,8 @@ function usage(row: Record<string, unknown>) {
     cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
     cachedRatio: promptTokens > 0 ? cacheHitTokens / promptTokens : null,
     requests: Number(row.requests), estimatedCostUsd: Number(row.estimated_cost_usd),
+    afterglowCostUsd:Number(row.afterglow_cost_usd ?? row.estimated_cost_usd),
+    byokCostUsd:Number(row.byok_cost_usd ?? 0),
     // Averaged here rather than in SQL: only rows that actually reported a
     // measurement are counted, so a provider that omits TTFT cannot drag the
     // figure toward zero and make latency look better than it was.
@@ -96,7 +100,7 @@ export async function GET(request: Request) {
         values,
       ),
     ]);
-    const totalCost = Number(result.rows[0].estimated_cost_usd);
+    const totalCost = Number(result.rows[0].afterglow_cost_usd);
     const messageCount = Number(userMessages.rows[0].count);
     return {
       range: { id: range.id, label: range.label, from: range.from?.toISOString() ?? null, to: range.to?.toISOString() ?? null },

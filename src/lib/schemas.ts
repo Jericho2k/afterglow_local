@@ -361,7 +361,7 @@ export const characterLikeSchema = z.object({ characterId: z.string().uuid() });
 
 export const characterReportSchema = z.object({
   characterId: z.string().uuid(),
-  reason: z.enum(["underage", "nonconsensual", "real_person", "stolen", "harassment", "other"]),
+  reason: z.enum(["underage", "real_person", "stolen", "other"]),
   details: text(3000).default(""),
 });
 
