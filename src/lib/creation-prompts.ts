@@ -29,14 +29,16 @@ const structureRules = `STRUCTURE
 - "cast": several individually defined characters sharing one premise. There is no obligation to nominate a main character; do not demote the others into supporting text.
 - "scenario": a situation, story, world or RPG the AI narrates and populates. It may define no primary character at all.
 Never invent a person in order to avoid "scenario". If the material is a narrator or world bot, the creation is a scenario whose title is the experience, and "name" repeats that title rather than naming a fictional person. A placeholder such as {{char}} is a template token, not somebody called {{char}}.
-For a scenario, put what the AI controls into "responseDirective" and who the reader plays into "userRole". For a cast, put what they share into "scenario" and "backstory" and each person into "cast".`;
+For a scenario, put what the AI controls into "responseDirective" and who the reader plays into "userRole". For a cast, put what they share into "scenario" and "backstory" and each person into "cast".
+
+THE READER IS NOT A CAST MEMBER. "cast" holds only characters AFTERGLOW PORTRAYS. Whoever the reader plays — described as "you", "the user", "{{user}}", "the player", "your character", or listed under a heading like "User" or "Player Character" — goes in "userRole" and NOWHERE ELSE. Never create a cast entry for them, never name a cast entry "User", "You" or "{{user}}", and never count them when deciding between "character" and "cast": one defined character plus a described reader is a CHARACTER, not a cast of two.`;
 
 const fieldRules = `FIELD RULES
 - "title" is the public display title. For one character it is usually their name; for a cast or scenario it names the experience.
 - "name" is the primary character's own name. When there is no primary character, repeat the title.
 - "tagline" is one short hook, at most about 140 characters.
 - "description" is public copy a reader sees. It must never contain hidden instructions, system rules or creator notes; those belong in "responseDirective" and "boundaries".
-- "userRole" describes who the reader plays. Empty unless the material establishes one.
+- "userRole" describes who the reader plays, in the second person. Everything the material says about the reader belongs here — it is the only field for it, and it is never a cast entry.
 - "greeting" is the opening scene of the roleplay. Write it as prose with action and dialogue, and never decide the reader's words, thoughts or actions.
 - "cast" entries carry "tagline" as a short public blurb and "description" as the private definition.
 - "world" is reusable setting canon — locations, factions, institutions, rules, systems, terminology, history. Put it there rather than inside a character's personality or backstory. Omit it when the material has no setting canon.
@@ -106,6 +108,8 @@ const outputContract = `Return ONLY valid JSON with exactly these fields, writte
   "accent": "#RRGGBB",
   "avatarUrl": "string",
   "userRole": "string",
+  "greeting": "string",
+  "alternateGreetings": ["string"],
   "description": "string",
   "personality": "string",
   "backstory": "string",
@@ -113,12 +117,10 @@ const outputContract = `Return ONLY valid JSON with exactly these fields, writte
   "responseDirective": "string",
   "boundaries": "string",
   "exampleDialogue": "string",
-  "greeting": "string",
-  "alternateGreetings": ["string"],
   "world": { "name": "string", "description": "string", "content": "string" }
 }
 
-Write "cast" in full before the long prose fields below it. Every character the material defines belongs in it, complete, even if that means the later fields are shorter.`;
+Write "cast", "greeting" and "alternateGreetings" IN FULL before the long prose fields below them. Output is capped and a long source can reach the cap, at which point everything after the cut is lost — so the two things a creation cannot work without go first. Every character the material defines belongs in "cast", complete, and every opening it supplies belongs in "greeting"/"alternateGreetings", complete, even if that means the later fields are shorter.`;
 
 const typeInstruction: Record<CreationType, string> = {
   character: "The creator has already chosen Character. Build one primary character; leave \"cast\" for genuinely supporting people only.",

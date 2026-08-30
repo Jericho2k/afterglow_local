@@ -162,6 +162,57 @@ async function branchConversation(client:PoolClient,userId:string,sourceConversa
   return {conversation:conversationFromRow(created.rows[0]),messages:messages.rows.map(messageFromRow)};
 }
 
+/**
+ * How much of a story the chat sends on open.
+ *
+ * The transcript read had no bound at all, so opening a story with two thousand
+ * messages read, serialised and shipped two thousand rows — including every
+ * stored variant of every regenerated reply — before a single word appeared.
+ * That is the dominant cost of opening a chat and it grows with exactly the
+ * thing the product is trying to encourage.
+ *
+ * The window is generous on purpose: it is not a page size a reader scrolls
+ * through, it is "more than anybody scrolls back through before asking for the
+ * rest". Older messages are fetched on demand with `before`, and nothing is
+ * lost — `hasMoreBefore` tells the client there is more and the control to load
+ * it says so.
+ */
+export const transcriptWindow = 120;
+
+function transcriptLimit(raw: string | null) {
+  const value = Number.parseInt(raw ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? Math.min(value, 400) : transcriptWindow;
+}
+
+/**
+ * The newest `limit` messages of a conversation, oldest first, plus whether
+ * anything precedes them.
+ *
+ * Read newest-first through `messages_conversation_time_idx` and reversed in
+ * memory, which is what makes it a bounded index scan rather than a sort of the
+ * whole story. One extra row is read to answer `hasMoreBefore` without a second
+ * count query.
+ */
+async function transcriptPage(client: PoolClient, userId: string, conversationId: string, limit: number, before?: string | null) {
+  const anchor = before
+    ? (await client.query("SELECT created_at,id FROM messages WHERE id=$1 AND conversation_id=$2 AND user_id=$3", [before, conversationId, userId])).rows[0]
+    : null;
+  const rows = anchor
+    ? await client.query(
+      `SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2
+         AND (created_at < $3 OR (created_at = $3 AND id < $4))
+       ORDER BY created_at DESC, id DESC LIMIT $5`,
+      [conversationId, userId, anchor.created_at, anchor.id, limit + 1],
+    )
+    : await client.query(
+      "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC, id DESC LIMIT $3",
+      [conversationId, userId, limit + 1],
+    );
+  const hasMoreBefore = rows.rows.length > limit;
+  const page = (hasMoreBefore ? rows.rows.slice(0, limit) : rows.rows).reverse();
+  return { rows: page, hasMoreBefore };
+}
+
 export async function GET(request: Request) {
   const account = await currentAccount();
   if (!account) return unauthorized();
@@ -211,11 +262,12 @@ export async function GET(request: Request) {
     // applied yet, and costs one indexed read for every story that has.
     const row = listResult.rows.find((item) => String(item.id) === conversation.id);
     if (row) await ensureConversationWorlds(client, account.id, row);
-    const messages = await client.query(
-      "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC, id ASC",
-      [conversation.id, account.id],
-    );
-    return { conversations, conversation, messages: messages.rows.map(messageFromRow).map((message)=>messageForViewer(message,includeDiagnostics)) };
+    const page = await transcriptPage(client, account.id, conversation.id, transcriptLimit(url.searchParams.get("limit")), url.searchParams.get("before"));
+    return {
+      conversations, conversation,
+      messages: page.rows.map(messageFromRow).map((message)=>messageForViewer(message,includeDiagnostics)),
+      hasMoreBefore: page.hasMoreBefore,
+    };
   });
 
   if ("error" in payload) return Response.json({ error: payload.error }, { status: payload.status });

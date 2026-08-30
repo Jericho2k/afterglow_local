@@ -31,9 +31,20 @@ export type ChatView = {
   conversation: Conversation | null;
   messages: Message[];
   loading: boolean;
+  /**
+   * Whether the story continues above what is on screen.
+   *
+   * Opening a chat reads a bounded window of the newest messages rather than
+   * the whole transcript, because the whole transcript is the dominant cost of
+   * opening a long story and it grows with exactly the thing the product wants
+   * people to do. Nothing is lost: this is what the "Load earlier" control is
+   * rendered from, and `prependedMessages` puts the next page in front.
+   */
+  hasMoreBefore: boolean;
+  loadingEarlier: boolean;
 };
 
-export const emptyChatView: ChatView = { request: null, conversation: null, messages: [], loading: false };
+export const emptyChatView: ChatView = { request: null, conversation: null, messages: [], loading: false, hasMoreBefore: false, loadingEarlier: false };
 
 /**
  * Point the view at a story.
@@ -47,6 +58,8 @@ export function openChatView(view: ChatView, characterId: string, conversationId
     conversation: null,
     messages: [],
     loading: true,
+    hasMoreBefore: false,
+    loadingEarlier: false,
   };
 }
 
@@ -56,9 +69,24 @@ export function acceptsResponse(view: ChatView, nonce: number) {
 }
 
 /** A story that arrived for the request that is still current. */
-export function chatLoaded(view: ChatView, nonce: number, conversation: Conversation, messages: Message[]): ChatView {
+export function chatLoaded(view: ChatView, nonce: number, conversation: Conversation, messages: Message[], hasMoreBefore = false): ChatView {
   if (!acceptsResponse(view, nonce)) return view;
-  return { ...view, conversation, messages, loading: false };
+  return { ...view, conversation, messages, loading: false, hasMoreBefore, loadingEarlier: false };
+}
+
+/**
+ * An older page, in front of what is already shown.
+ *
+ * Guarded on the conversation rather than on a nonce: this is not a switch, and
+ * a page that arrives after the reader has moved to another story must not be
+ * spliced into it. Ids already present are skipped so a double tap cannot
+ * duplicate a message.
+ */
+export function prependedMessages(view: ChatView, conversationId: string, older: Message[], hasMoreBefore: boolean): ChatView {
+  if (view.conversation?.id !== conversationId) return view;
+  const known = new Set(view.messages.map((message) => message.id));
+  const added = older.filter((message) => !known.has(message.id));
+  return { ...view, messages: [...added, ...view.messages], hasMoreBefore, loadingEarlier: false };
 }
 
 /** A request that failed. Only the newest one may stop the spinner. */
@@ -78,6 +106,8 @@ export function adoptChatView(view: ChatView, characterId: string, conversation:
     conversation,
     messages,
     loading: false,
+    hasMoreBefore: false,
+    loadingEarlier: false,
   };
 }
 

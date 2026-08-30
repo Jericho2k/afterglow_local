@@ -42,7 +42,7 @@ import { claimDepth, justCreatedParam, rootDepth } from "@/lib/back-navigation";
 import { chatHref, commandFromSearch, isCurrentHref, routeFromSearch, viewHref, type AppView, type ShellView } from "@/lib/shell-route";
 import { savedCreationDestination } from "@/lib/creation-actions";
 import { mergeCreationLists } from "@/lib/shell-library";
-import { acceptsResponse, adoptChatView, chatFailed, chatLoaded, clearChatView, emptyChatView, openChatView, type ChatView } from "@/lib/chat-view";
+import { acceptsResponse, adoptChatView, chatFailed, chatLoaded, clearChatView, emptyChatView, openChatView, prependedMessages, type ChatView } from "@/lib/chat-view";
 
 type WorldWithCount = StudioWorld;
 
@@ -103,6 +103,14 @@ export default function AppShell() {
    * setters below keep every existing call site working unchanged.
    */
   const [chatView, setChatView] = useState<ChatView>(emptyChatView);
+  /**
+   * The newest view, readable from a callback that must not be re-created when
+   * it changes. `loadEarlier` is passed to the transcript on every render and
+   * needs the current conversation, oldest message and flags without becoming a
+   * new function each time.
+   */
+  const chatViewRef = useRef(chatView);
+  useEffect(() => { chatViewRef.current = chatView; }, [chatView]);
   const conversation = chatView.conversation;
   const messages = chatView.messages;
   const setConversation = useCallback((value: Conversation | null | ((current: Conversation | null) => Conversation | null)) => {
@@ -412,7 +420,7 @@ export default function AppShell() {
   const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
     const query = new URLSearchParams({ characterId });
     if (conversationId) query.set("conversationId", conversationId);
-    return api<{ conversations: Conversation[]; conversation: Conversation | null; messages: Message[] }>(`/api/conversations?${query}`);
+    return api<{ conversations: Conversation[]; conversation: Conversation | null; messages: Message[]; hasMoreBefore?: boolean }>(`/api/conversations?${query}`);
   }, []);
 
   /*
@@ -447,6 +455,38 @@ export default function AppShell() {
     if (data.conversation) loadMemories(characterId, data.conversation.id);
     return data;
   }, [loadChat, loadMemories]);
+
+  /**
+   * The page above what is on screen.
+   *
+   * Opening a story reads a bounded window of its newest messages; this fetches
+   * the one before it when the reader asks. The scroll position is held by
+   * measuring the transcript's height either side of the splice and restoring
+   * the difference, so the message they were reading stays under their eyes
+   * instead of the whole story jumping.
+   */
+  const loadEarlier = useCallback(async () => {
+    const view = chatViewRef.current;
+    const conversationId = view.conversation?.id;
+    const oldest = view.messages[0]?.id;
+    if (!conversationId || !oldest || view.loadingEarlier || !view.hasMoreBefore) return;
+    setChatView((current) => ({ ...current, loadingEarlier: true }));
+    const list = messagesRef.current;
+    const anchorHeight = list?.scrollHeight ?? 0;
+    const anchorTop = list?.scrollTop ?? 0;
+    try {
+      const query = new URLSearchParams({ characterId: view.request?.characterId ?? "", conversationId, before: oldest });
+      const data = await api<{ messages: Message[]; hasMoreBefore?: boolean }>(`/api/conversations?${query}`);
+      setChatView((current) => prependedMessages(current, conversationId, data.messages, Boolean(data.hasMoreBefore)));
+      requestAnimationFrame(() => {
+        const node = messagesRef.current;
+        if (node) node.scrollTop = anchorTop + (node.scrollHeight - anchorHeight);
+      });
+    } catch (reason) {
+      setChatView((current) => ({ ...current, loadingEarlier: false }));
+      setError(reason instanceof Error ? reason.message : "Could not load earlier messages");
+    }
+  }, []);
 
   const loadCharacters = useCallback(async () => {
     // Declared inside so the retry recurses on a plain function rather than on
@@ -620,8 +660,10 @@ export default function AppShell() {
         setChatView((view) => {
           if (!acceptsResponse(view, nonce)) return view;
           setConversations(data.conversations);
-          return chatLoaded(view, nonce, opened, data.messages);
+          return chatLoaded(view, nonce, opened, data.messages, Boolean(data.hasMoreBefore));
         });
+        // Off the critical path: the transcript is on screen by now, and the
+        // count beside Memories is not worth a round trip in front of it.
         loadMemories(characterId, opened.id);
       })
       .catch((reason) => {
@@ -1090,7 +1132,16 @@ export default function AppShell() {
               <span className="sr-only">Loading this story</span>
               {[0,1,2].map((row)=><div key={row} className={`skeleton-message ${row%2?"":"skeleton-assistant"}`}><i /><i /><i /></div>)}
             </div>:<>
-            <div className="date-divider"><span>THE STORY SO FAR</span></div>
+            {/* Opening a story reads a bounded window of its newest messages —
+                the whole transcript was the dominant cost of opening a long
+                chat and grew with exactly the thing the product encourages.
+                Nothing is lost: the rest is one tap above. */}
+            {chatView.hasMoreBefore && <div className="load-earlier">
+              <button disabled={chatView.loadingEarlier} onClick={() => void loadEarlier()}>
+                {chatView.loadingEarlier ? <><LoaderCircle size={13} className="spin" aria-hidden />Loading earlier messages…</> : <><ArrowUp size={13} aria-hidden />Load earlier messages</>}
+              </button>
+            </div>}
+            <div className="date-divider"><span>{chatView.hasMoreBefore ? "EARLIER IN THE STORY" : "THE STORY SO FAR"}</span></div>
             {messages.map((message, index) => (
               <article key={message.id} className={`message ${message.role}`}>
                 {message.role === "assistant" && <Avatar character={selected} />}

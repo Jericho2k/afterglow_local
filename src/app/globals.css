@@ -211,3 +211,9 @@ html,body{max-width:100%;overflow-x:hidden}.memory-drawer{min-width:0;max-width:
 @media(max-width:560px){.composer-tools{grid-template-columns:1fr;gap:6px;max-height:min(58dvh,420px);overflow-y:auto;overscroll-behavior:contain}.composer-tools>button,.composer-tools>label{min-height:52px;flex-direction:row;align-items:center;gap:10px;flex-wrap:wrap}.composer-tools>button svg{flex:none}.composer-tools strong{font-size:12px}.composer-tools small{margin-left:auto;text-align:right;font-size:10px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:52%}}
 
 .sidebar-spacer{flex:1;min-height:12px}
+
+/* The rest of a long story, one tap above the window that was loaded with it. */
+.load-earlier{display:flex;justify-content:center;margin:0 0 20px}
+.load-earlier button{display:inline-flex;align-items:center;gap:6px;min-height:34px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.03);color:var(--muted);font-family:var(--font-sans),sans-serif;font-size:10px;padding:0 14px;cursor:pointer}
+.load-earlier button:hover:not(:disabled){color:var(--ink);border-color:rgba(232,121,169,.3)}
+.load-earlier button:disabled{opacity:.6;cursor:progress}
