@@ -238,7 +238,7 @@
 
 /* ---------------------------------------------------------------- fields */
 
-.field { display: flex; flex-direction: column; gap: 7px; }
+.field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .srOnly {
   position: absolute;
   width: 1px;
@@ -266,6 +266,10 @@
 .input,
 .textarea {
   width: 100%;
+  /* `min-width: 0` because a flex item's default `auto` minimum is its content,
+     so a single long unbroken word made the control wider than its column. */
+  min-width: 0;
+  max-width: 100%;
   background: rgba(8, 6, 9, 0.65);
   border: 1px solid var(--line);
   border-radius: 13px;
@@ -284,7 +288,9 @@
   border-color: rgba(232, 121, 169, 0.5);
   background: rgba(12, 9, 13, 0.85);
 }
-.textarea { resize: vertical; min-height: 96px; }
+/* A textarea soft-wraps at spaces and nothing else, so a pasted URL or a long
+   invented name scrolled sideways inside the box rather than wrapping in it. */
+.textarea { resize: vertical; min-height: 96px; overflow-wrap: anywhere; word-break: break-word; }
 .textarea.tall { min-height: 200px; }
 .textarea.epic { min-height: 280px; font-size: 15px; }
 
@@ -543,7 +549,8 @@
 
 /* ----------------------------------------------------------------- media */
 
-.coverRow { display: flex; gap: 14px; align-items: stretch; }
+/* Wraps rather than squeezing the actions column to nothing on a narrow phone. */
+.coverRow { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; min-width: 0; }
 .coverPreview {
   flex: 0 0 auto;
   width: 108px;
@@ -616,6 +623,7 @@
 .memberCard {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 12px;
   padding: 12px;
   border-radius: 16px;
@@ -638,10 +646,19 @@
 }
 .memberAvatar img { width: 100%; height: 100%; object-fit: cover; }
 .memberCopy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.memberCopy strong { font-size: 14px; font-weight: 600; }
+/* A cast member can be called anything, including one very long unbroken
+   thing. The name wraps to two lines and then clamps; the role stays one. */
+.memberCopy strong {
+  font-size: 14px; font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere; word-break: break-word;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden;
+}
 .memberCopy small {
   font-size: 11.5px;
   color: var(--muted);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -940,8 +957,12 @@
   padding: 16px;
   border-bottom: 1px solid var(--line);
 }
-.sheetHead h3 { margin: 0; font-family: var(--font-serif), serif; font-size: 20px; font-weight: 500; flex: 1; }
-.sheetBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 16px 16px 22px; display: flex; flex-direction: column; gap: 16px; }
+/* The heading is the member's name, which can be long and unbroken. */
+.sheetHead h3 {
+  margin: 0; font-family: var(--font-serif), serif; font-size: 20px; font-weight: 500;
+  flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word;
+}
+.sheetBody { flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 16px 16px 22px; display: flex; flex-direction: column; gap: 16px; }
 .sheetFoot {
   flex: 0 0 auto;
   display: flex;

@@ -10,13 +10,20 @@
    bar so a menu never opens behind the button beside it. */
 .wrapper { position: relative; display: inline-flex; z-index: 1; }
 
+/*
+ * Portalled to `document.body` and positioned from the trigger's rectangle, so
+ * an `overflow: hidden` ancestor — every rounded card in the product — cannot
+ * clip it. `fixed` rather than `absolute` because the coordinates it is given
+ * are viewport coordinates.
+ */
 .panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  z-index: 40;
+  position: fixed;
+  z-index: 60;
   min-width: 208px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   /* Never wider than the viewport, whatever it is anchored to. */
-  max-width: min(280px, calc(100vw - 32px));
+  max-width: min(280px, calc(100vw - 24px));
   padding: 6px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -38,8 +45,6 @@
   gap: 2px;
   animation: menuIn 0.14s ease;
 }
-.panelEnd { right: 0; }
-.panelStart { left: 0; }
 
 @keyframes menuIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 

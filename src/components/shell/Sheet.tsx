@@ -43,7 +43,24 @@ export function Sheet({ title, eyebrow, onClose, children, footer, labelledBy, s
   // panel. Without this, selecting text and releasing outside closes the sheet.
   const startedOnBackdrop = useRef(false);
 
-  const close = useCallback(() => onClose(), [onClose]);
+  /*
+   * A STABLE `close`, and this is the whole of the "typing one letter closes
+   * the keyboard" report.
+   *
+   * Callers write `onClose={() => setEditing(null)}`, which is a new function
+   * on every render — so on every keystroke in a field inside a sheet, `close`
+   * changed, the mount effect below re-ran, and its CLEANUP fired first. That
+   * cleanup restores focus to whatever opened the sheet. Focus left the
+   * textarea, the on-screen keyboard closed, and the effect then moved focus to
+   * the first control in the panel. One letter per attempt.
+   *
+   * Holding the callback in a ref makes `close` referentially stable, so the
+   * effect runs exactly once per open — which is what "on mount" was always
+   * meant to mean — while still calling whatever the newest `onClose` is.
+   */
+  const latestOnClose = useRef(onClose);
+  useEffect(() => { latestOnClose.current = onClose; });
+  const close = useCallback(() => latestOnClose.current(), []);
 
   useEffect(() => {
     restoreFocus.current = document.activeElement;

@@ -659,3 +659,47 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
 .reportDetails{display:grid;gap:7px;color:var(--ink);font-size:12px;font-weight:700}.reportDetails>span{float:right;color:var(--faint);font-weight:400}.reportDetails textarea{resize:vertical;width:100%;padding:12px;border:1px solid var(--line);border-radius:11px;background:rgba(0,0,0,.18);color:var(--ink);font:inherit;line-height:1.5}.reportDetails textarea:focus-visible{outline:2px solid var(--rose);outline-offset:2px}.reportError{color:#ff9da6;font-size:12px}.reportActions{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}.reportActions button,.reportSuccess button{min-height:40px;padding:0 16px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--ink);font-weight:700;cursor:pointer}.reportActions button:last-child,.reportSuccess button{border-color:transparent;background:var(--rose);color:#211019}.reportActions button:disabled{opacity:.55}.reportSuccess{text-align:center;padding:15px 4px}.reportSuccess svg{color:var(--rose2)}
 @media(max-width:520px){.reportBackdrop{align-items:end;padding:0}.reportModal{width:100%;max-height:88dvh;border-radius:22px 22px 0 0;padding:24px 18px calc(22px + env(safe-area-inset-bottom))}.reportActions button{flex:1}}
 .moderationNotice{display:flex;align-items:flex-start;gap:10px;margin:12px auto;width:min(1180px,calc(100% - 28px));padding:12px 14px;border:1px solid rgba(255,112,122,.3);border-radius:12px;background:rgba(255,82,96,.09);color:#ffc0c5}.moderationNotice svg{flex:none}.moderationNotice div{display:grid;gap:3px}.moderationNotice span{font-size:12px;color:var(--muted)}
+
+/* ------------------------------------------------------- action bar --- */
+
+/*
+ * The two actions that matter, following the reader down a long page.
+ *
+ * Phones only. A creation page is hero, definition, cast, gallery, worlds and
+ * comments, and the control that starts the story was at the top of all of it —
+ * so on a phone the reader had to scroll back up to do the one thing they came
+ * for. On a desktop the hero row stays in view for most of the page and a
+ * floating bar would just be furniture, so it is not there.
+ *
+ * `.page` grows its bottom padding by exactly the bar's height, which is what
+ * stops it resting over the last line of the last comment. Both safe areas are
+ * respected: the inset is added to the padding rather than replacing it, so the
+ * bar clears a home indicator without floating in the middle of the screen on a
+ * device that has none.
+ */
+.actionBar { display: none; }
+
+@media (max-width: 700px) {
+  .page { padding-bottom: calc(84px + max(12px, env(safe-area-inset-bottom))); }
+  .actionBar {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 30;
+    display: flex; gap: 9px;
+    padding: 10px max(12px, env(safe-area-inset-left)) calc(10px + max(6px, env(safe-area-inset-bottom))) max(12px, env(safe-area-inset-right));
+    border-top: 1px solid var(--edge);
+    background: rgba(11, 8, 13, .82);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+  }
+  .actionBar .primaryCta { min-height: 50px; font-size: 14.5px; }
+  .actionBarSave {
+    flex: 0 0 auto; min-width: 74px; min-height: 50px;
+    display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    border: 1px solid var(--edge); border-radius: 15px;
+    background: rgba(255, 255, 255, .04);
+    color: var(--muted); font-size: 10px; font-weight: 600; cursor: pointer;
+  }
+  .actionBarSave[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+  .actionBarSave:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+}

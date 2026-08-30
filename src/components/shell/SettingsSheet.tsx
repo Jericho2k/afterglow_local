@@ -439,7 +439,7 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
 
       <div className={styles.stack} style={{ marginTop: 14 }}>
         {usage.byType.map((item) => <div key={item.key} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-          <span style={{ minWidth: 0 }}>
+          <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
             <strong style={{ fontSize: 13 }}>{usageLabels[item.key] ?? item.key}</strong>
             <br />
             <small className={styles.fieldHint}>{item.requests} calls · {number(item.promptTokens + item.completionTokens)} tokens · {percent(item.cachedRatio)} cached</small>
@@ -452,7 +452,8 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
         <span className={styles.fieldLabel}>Upstream providers</span>
         <div className={styles.stack} style={{ marginTop: 8 }}>
           {usage.byUpstreamProvider.map((item) => <div key={item.key} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-            <span className={styles.fieldHint}>{item.key} · {item.requests} calls · {percent(item.cachedRatio)} cached</span>
+            {/* An upstream provider id has no break opportunity in it. */}
+            <span className={styles.fieldHint} style={{ minWidth: 0, overflowWrap: "anywhere" }}>{item.key} · {item.requests} calls · {percent(item.cachedRatio)} cached</span>
             <b style={{ fontVariantNumeric: "tabular-nums", fontSize: 12 }}>{usd(item.estimatedCostUsd)}</b>
           </div>)}
         </div>
