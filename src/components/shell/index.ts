@@ -1,4 +1,6 @@
 export { ChatsView } from "./ChatsView";
+export { ContextInspector, contextActionLabel } from "./ContextInspector";
+export { MemoryLibrary } from "./MemoryLibrary";
 export { InstructionsSheet } from "./InstructionsSheet";
 export { LibraryView } from "./LibraryView";
 export { MemoryFeedback } from "./MemoryFeedback";

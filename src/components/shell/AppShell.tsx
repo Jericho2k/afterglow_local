@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {useRouter, useSearchParams} from "next/navigation";
-import type { AppSettings, Character, Conversation, Memory, MemoryArc, Message, ModelCatalog, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
+import type { AppSettings, Character, Conversation, Memory, Message, ModelCatalog, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
 import { api } from "@/lib/api-client";
-import { creationKindLine, creationSubject, creationTitle, inlineTitle } from "@/lib/creation";
+import { composerPlaceholder, creationKindLine, creationSubject, creationTitle, inlineTitle } from "@/lib/creation";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
 import { DiscoveryFeed } from "@/components/feed";
 import { YourCreations } from "@/components/creations";
@@ -12,7 +12,7 @@ import { WorldsHub, WorldEditor } from "@/components/worlds";
 import { RichMessage, StyledMessage, openingBlocksFor } from "@/components/rich";
 import {
   ArrowDown, ArrowUp, Bell, BookMarked, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Compass, Eraser, FileText, GitBranch, Globe2, LoaderCircle, LogOut, MessagesSquare, MoreHorizontal,
+  Compass, Eraser, FileText, GitBranch, Globe2, LoaderCircle, LogOut, MessagesSquare,
   Flag, Gauge, Pencil, Play, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Sparkles, Star, Trash2,
   TriangleAlert, Trophy, UserRound, Users, X,
 } from "lucide-react";
@@ -20,6 +20,8 @@ import { ChatsView } from "./ChatsView";
 import { InstructionsSheet } from "./InstructionsSheet";
 import { LibraryView } from "./LibraryView";
 import { MemoryFeedback } from "./MemoryFeedback";
+import { MemoryLibrary } from "./MemoryLibrary";
+import { ContextInspector, contextActionLabel } from "./ContextInspector";
 import { PersonasView } from "./PersonasView";
 import { NotificationsView } from "./NotificationsView";
 import { ProfileView } from "./ProfileView";
@@ -33,7 +35,7 @@ import { activeInstructionCount, instructionSummary } from "@/lib/chat-instructi
 import { forgetAllStoredDrafts } from "@/components/studio/drafts";
 import { compactMessagePreview } from "@/lib/message-format";
 import { supabaseBrowser, supabaseBrowserConfigured } from "@/lib/supabase/client";
-import { AppMenuButton, IconButton, SelectField, SettingsChoiceRow, type SelectOption } from "@/components/ui";
+import { AppMenuButton, IconButton, SelectField, SettingsChoiceRow } from "@/components/ui";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { closeStorySurface, closedStoryNavigation, openChatChild, openStory, openStoryChild, type StoryChild } from "@/lib/story-navigation";
 import { claimDepth, justCreatedParam, rootDepth } from "@/lib/back-navigation";
@@ -119,6 +121,15 @@ export default function AppShell() {
   const [storyNavigation, setStoryNavigation] = useState(closedStoryNavigation);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /**
+   * Desktop only, and a different idea from `sidebarOpen`.
+   *
+   * On a phone the sidebar is a drawer that is either over the page or not
+   * there. On a desktop it is a COLUMN, and the hamburger's job is to give that
+   * column's width back to the story. One control, two meanings, chosen by the
+   * viewport rather than by a second button nobody would find.
+   */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeView, setActiveView] = useState<AppView>(bootRoute?.view ?? "home");
   const [studioStartSection, setStudioStartSection] = useState<"basics" | "definition" | "world">("basics");
   // The world being authored: "new" for a fresh one, a record for an edit.
@@ -148,7 +159,6 @@ export default function AppShell() {
   const [libraryError, setLibraryError] = useState("");
   const [accountNotice,setAccountNotice]=useState("");
   const [branchPendingMessageId, setBranchPendingMessageId] = useState<string | null>(null);
-  const [sidebarCharacterMenuId,setSidebarCharacterMenuId]=useState<string|null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -162,9 +172,52 @@ export default function AppShell() {
   const [atBottom, setAtBottom] = useState(true);
   const selected = useMemo(() => characters.find((item) => item.id === selectedId) ?? null, [characters, selectedId]);
   const activePersona = useMemo(() => personas.find((item) => item.id === conversation?.personaId) ?? personas.find((item) => item.isDefault) ?? null, [personas, conversation?.personaId]);
-  const ownedCharacters=useMemo(()=>characters.filter((character)=>character.ownedByViewer),[characters]);
   const closeStoryNavigation=()=>setStoryNavigation((state)=>closeStorySurface(state));
   const openComposerTool=(child:StoryChild)=>{setStoryNavigation(openChatChild(child));setComposerToolsOpen(false);};
+
+  /** The phone breakpoint the sidebar's two behaviours are chosen by. */
+  const isPhone = useCallback(() => typeof window !== "undefined" && window.matchMedia("(max-width: 500px)").matches, []);
+  const toggleMenu = useCallback(() => {
+    if (isPhone()) setSidebarOpen(true);
+    else setSidebarCollapsed((value) => !value);
+  }, [isPhone]);
+
+  /*
+   * The shell owns the viewport; the document does not scroll.
+   *
+   * `.app-shell` is already `height:100dvh; overflow:hidden`, but the DOCUMENT
+   * around it was still free to scroll and rubber-band, which is what showed a
+   * band of the page background above and below the app. The class is added
+   * from here rather than set globally because the standalone pages — a
+   * creation, a creator, a world — are ordinary documents and must keep
+   * scrolling normally.
+   */
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.add("shell-locked");
+    return () => root.classList.remove("shell-locked");
+  }, []);
+
+  /*
+   * While the drawer is open, the page underneath does not move.
+   *
+   * Setting `overflow:hidden` on the scrolling transcript would reset its
+   * scroll position, so the lock is a backdrop that swallows touch instead:
+   * the position behind is preserved exactly, and closing restores it with
+   * nothing to restore.
+   */
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const previous = document.body.style.overscrollBehavior;
+    document.body.style.overscrollBehavior = "none";
+    function onKeyDown(event: KeyboardEvent) { if (event.key === "Escape") setSidebarOpen(false); }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overscrollBehavior = previous;
+    };
+  }, [sidebarOpen]);
+
   const openCharacterPage=(characterId:string)=>router.push(`/characters/${characterId}`);
 
   /**
@@ -359,16 +412,21 @@ export default function AppShell() {
   const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
     const query = new URLSearchParams({ characterId });
     if (conversationId) query.set("conversationId", conversationId);
-    return api<{ conversations: Conversation[]; conversation: Conversation; messages: Message[] }>(`/api/conversations?${query}`);
+    return api<{ conversations: Conversation[]; conversation: Conversation | null; messages: Message[] }>(`/api/conversations?${query}`);
   }, []);
 
-  /** The durable memories behind a story, for the administrator's drawer. */
+  /*
+   * The memory count beside the Memories control.
+   *
+   * No longer administrator-gated: a reader owns this archive and the control
+   * that opens it is theirs. The list itself is re-read by the library when it
+   * opens, so this is only ever used for the count.
+   */
   const loadMemories = useCallback((characterId: string, conversationId?: string | null) => {
-    if (!isAdmin) { setMemories([]); return; }
     void api<{ memories: Memory[] }>(memoriesUrl(characterId,conversationId))
       .then((data) => setMemories(data.memories))
       .catch(() => undefined);
-  }, [isAdmin]);
+  }, []);
 
   /**
    * Re-reads the story already on screen.
@@ -383,7 +441,10 @@ export default function AppShell() {
       ? { ...view, conversation: data.conversation, messages: data.messages, loading: false }
       : view);
     setConversations(data.conversations);
-    loadMemories(characterId, data.conversation.id);
+    // A refresh never starts a story. If the last one was just deleted there is
+    // nothing to re-read, and creating one here is exactly the behaviour that
+    // filled Chats with conversations nobody opened.
+    if (data.conversation) loadMemories(characterId, data.conversation.id);
     return data;
   }, [loadChat, loadMemories]);
 
@@ -536,14 +597,32 @@ export default function AppShell() {
     const request = chatView.request;
     if (!request || !chatView.loading) return;
     const { characterId, conversationId, nonce } = request;
-    loadChat(characterId, conversationId ?? undefined)
+    /*
+     * Opening a chat that does not exist yet is the one place the shell starts
+     * one, and it POSTs to do it. Reading no longer creates — see the GET in
+     * src/app/api/conversations/route.ts — so a creation whose stories are
+     * merely listed somewhere can no longer acquire one behind the reader's
+     * back. Navigating to the chat surface IS the explicit act, so it is
+     * honoured here and nowhere else.
+     */
+    const openOrStart = async () => {
+      const data = await loadChat(characterId, conversationId ?? undefined);
+      if (data.conversation) return data;
+      const started = await api<{ conversation: Conversation; messages: Message[] }>("/api/conversations", {
+        method: "POST", body: JSON.stringify({ characterId }),
+      });
+      return { conversations: [started.conversation], conversation: started.conversation, messages: started.messages };
+    };
+    openOrStart()
       .then((data) => {
+        const opened = data.conversation;
+        if (!opened) return;
         setChatView((view) => {
           if (!acceptsResponse(view, nonce)) return view;
           setConversations(data.conversations);
-          return chatLoaded(view, nonce, data.conversation, data.messages);
+          return chatLoaded(view, nonce, opened, data.messages);
         });
-        loadMemories(characterId, data.conversation.id);
+        loadMemories(characterId, opened.id);
       })
       .catch((reason) => {
         setChatView((view) => {
@@ -861,7 +940,7 @@ export default function AppShell() {
 
   return (
     <ShellNavProvider value={shellNav}>
-    <main className="app-shell">
+    <main className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${sidebarOpen ? " sidebar-open" : ""}`}>
       {accountNotice&&<div className="account-notice" role="status"><Sparkles size={14} aria-hidden />{accountNotice}<button onClick={()=>setAccountNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
       {/* The shell's own lists failing used to be reported only inside the chat
           panel, so a Chats page whose creations never arrived said nothing at
@@ -932,7 +1011,17 @@ export default function AppShell() {
             })}
           </div>)}
         </nav>
-        <section className="sidebar-characters" aria-label="Your Creations"><button className="sidebar-section-link" onClick={()=>goToView("creations")}>Your Creations<ChevronRight size={12} aria-hidden /></button>{ownedCharacters.map((character)=><div className="sidebar-character" key={character.id}><button className="sidebar-character-link" title={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}><Avatar character={character}/><strong>{creationTitle(character)}</strong></button><button className="sidebar-character-more" aria-label={`View or edit ${creationTitle(character)}`} aria-expanded={sidebarCharacterMenuId===character.id} onClick={()=>setSidebarCharacterMenuId((current)=>current===character.id?null:character.id)}><MoreHorizontal size={14} aria-hidden /></button>{sidebarCharacterMenuId===character.id&&<div className="sidebar-character-menu"><button aria-label={`View ${creationTitle(character)}`} onClick={()=>openCharacterPage(character.id)}>View creation</button><button aria-label={`Edit ${creationTitle(character)}`} onClick={()=>{setSidebarCharacterMenuId(null);setSidebarOpen(false);router.push(`/characters/${character.id}/edit`);}}>Edit creation</button></div>}</div>)}</section>
+        {/*
+          * The sidebar's recent-creations list is gone.
+          *
+          * It duplicated the Creations destination two rows above it, went stale
+          * against the real library, and carried its own popup menu that had to
+          * be positioned inside a scrolling, overflow-hidden column. Removing it
+          * removes a module, a menu, a piece of state and a clipping problem.
+          * Creator Profile's own Recent activity section is a different thing
+          * and is untouched.
+          */}
+        <div className="sidebar-spacer" />
         <div className="sidebar-footer">
           {/* The account, as an identity rather than as a status pill: the same
               avatar and handle that appear on everything this account
@@ -960,31 +1049,35 @@ export default function AppShell() {
           ><LogOut size={16} aria-hidden /></button>
         </div>
       </aside>
+      {/* The drawer's scroll lock. A backdrop rather than an overflow change on
+          the transcript underneath, so the page position behind is preserved
+          exactly and closing restores it with nothing to restore. */}
+      {sidebarOpen && <button className="sidebar-scrim" aria-label="Close menu" onClick={() => setSidebarOpen(false)} />}
       {/* The floating hamburger is gone. Every shell view now renders the one
           canonical menu control inside its own header, which is what removes
           the pair that appeared together on Worlds — and the stray one that
           rendered in normal flow above 760px because the old class was only
           ever declared inside two media queries. */}
 
-      {activeView === "home" ? <DiscoveryFeed onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "chats" ? <ChatsView characters={characters} conversations={chatIndex} personas={personas} onOpenMenu={() => setSidebarOpen(true)} onCreate={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); }} onOpen={(characterId,conversationId) => openChat(characterId,conversationId)} /> : activeView === "worlds" ? <WorldsHub
-        onOpenMenu={() => setSidebarOpen(true)}
+      {activeView === "home" ? <DiscoveryFeed onOpenMenu={toggleMenu} /> : activeView === "chats" ? <ChatsView characters={characters} conversations={chatIndex} personas={personas} onOpenMenu={toggleMenu} onCreate={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); }} onOpen={(characterId,conversationId) => openChat(characterId,conversationId)} /> : activeView === "worlds" ? <WorldsHub
+        onOpenMenu={toggleMenu}
         onCreate={() => setEditingWorld("new")}
         onEdit={(world) => setEditingWorld(world)}
         onChanged={() => void loadLibraries()}
-      /> : activeView === "personas" ? <PersonasView personas={personas} onOpenMenu={() => setSidebarOpen(true)} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <ProfileView profile={profile} onSaved={setProfile} onReturnToPublic={(username) => router.push(`/creators/${encodeURIComponent(username)}`)} onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "saved" ? <LibraryView onOpenMenu={() => setSidebarOpen(true)} /> : activeView === "creations" ? <YourCreations
-        onOpenMenu={() => setSidebarOpen(true)}
+      /> : activeView === "personas" ? <PersonasView personas={personas} onOpenMenu={toggleMenu} onChange={() => void loadLibraries()} /> : activeView === "profile" ? <ProfileView profile={profile} onSaved={setProfile} onReturnToPublic={(username) => router.push(`/creators/${encodeURIComponent(username)}`)} onOpenMenu={toggleMenu} /> : activeView === "saved" ? <LibraryView onOpenMenu={toggleMenu} /> : activeView === "creations" ? <YourCreations
+        onOpenMenu={toggleMenu}
         onCreate={() => { setStudioStartSection("basics"); setEditing(null); setStudioOpen(true); }}
         onChanged={() => { void loadCharacters(); void loadChatIndex().catch(() => undefined); }}
-      /> : activeView === "notifications" ? <NotificationsView onOpenMenu={() => setSidebarOpen(true)} />
-        : activeView === "rankings" ? <RankingsView onOpenMenu={() => setSidebarOpen(true)} />
-        : activeView === "reports" ? (isModerator?<AdminReports onOpenMenu={()=>setSidebarOpen(true)}/>:<DiscoveryFeed onOpenMenu={()=>setSidebarOpen(true)}/>)
+      /> : activeView === "notifications" ? <NotificationsView onOpenMenu={toggleMenu} />
+        : activeView === "rankings" ? <RankingsView onOpenMenu={toggleMenu} />
+        : activeView === "reports" ? (isModerator?<AdminReports onOpenMenu={toggleMenu}/>:<DiscoveryFeed onOpenMenu={toggleMenu}/>)
         : selected ? (
         <section className="chat-panel">
           <header className="chat-header">
-            <div className="chat-identity"><AppMenuButton className="chat-menu-button" onOpen={() => setSidebarOpen(true)} /><button className="identity-profile" title={`View ${creationTitle(selected)}`} onClick={() => openCharacterPage(selected.id)}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{creationTitle(selected)}</strong><small>{selected.creationType === "character" ? `Chatting as ${activePersona?.name || "You"}` : creationKindLine(selected)}</small></span></button></div>
+            <div className="chat-identity"><AppMenuButton className="chat-menu-button" onOpen={toggleMenu} /><button className="identity-profile" title={`View ${creationTitle(selected)}`} onClick={() => openCharacterPage(selected.id)}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{creationTitle(selected)}</strong><small>{selected.creationType === "character" ? `Chatting as ${activePersona?.name || "You"}` : creationKindLine(selected)}</small></span></button></div>
             <div className="header-actions">
               <button className="icon-button labeled" onClick={() => setStoryNavigation(openStory())}><SlidersHorizontal size={16} aria-hidden /><span>Story</span></button>
-              {isAdmin && <button className="icon-button labeled" onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} aria-hidden /><span>Memories</span>{memories.length > 0 && <b>{memories.length}</b>}</button>}
+              <button className="icon-button labeled" title={`What ${creationSubject(selected)} remembers`} onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} aria-hidden /><span>Memories</span>{memories.length > 0 && <b>{memories.length}</b>}</button>
               {selected.ownedByViewer?<button className="icon-button labeled" title={`Edit ${creationTitle(selected)}`} onClick={() => { setStudioStartSection("basics"); setEditing(selected); setStudioOpen(true); }}><Pencil size={16} aria-hidden /><span>Edit</span></button>:<button className="icon-button labeled" title={`View ${creationTitle(selected)}`} onClick={()=>openCharacterPage(selected.id)}><FileText size={16} aria-hidden /><span>Page</span></button>}
             </div>
           </header>
@@ -1006,7 +1099,7 @@ export default function AppShell() {
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`} style={editingMessageId === message.id && editWidth ? { width: editWidth } : undefined}>
                     {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" && openingBlocks(message, index) ? <RichMessage blocks={openingBlocks(message, index)} bucket={characterAvatarBucket} /> : <StyledMessage content={message.content} providerEscapes={message.role === "assistant"} />) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}><ChevronLeft size={15} aria-hidden /></button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}><ChevronRight size={15} aria-hidden /></button><em>Selected</em></div>}</>}
                   </div>
-                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}><Pencil size={12} aria-hidden />Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}><Eraser size={12} aria-hidden />Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?<><LoaderCircle size={12} className="spin" aria-hidden />Creating…</>:<><GitBranch size={12} aria-hidden />Branch here</>}</button>{isAdmin && <button title="See which durable memories and historical arcs were recalled for this reply" onClick={() => setRecallMessage(message)}><BrainCircuit size={12} aria-hidden />{recallLabel(message)}</button>}{conversation && <MemoryFeedback messageId={message.id} conversationId={conversation.id} />}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}><RefreshCw size={12} aria-hidden />Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}><Play size={12} aria-hidden />Continue</button></>}</div>}
+                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}><Pencil size={12} aria-hidden />Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}><Eraser size={12} aria-hidden />Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?<><LoaderCircle size={12} className="spin" aria-hidden />Creating…</>:<><GitBranch size={12} aria-hidden />Branch here</>}</button><button title="See what story context this reply was written from" onClick={() => setRecallMessage(message)}><BrainCircuit size={12} aria-hidden />{contextActionLabel(message)}</button>{conversation && <MemoryFeedback messageId={message.id} conversationId={conversation.id} />}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}><RefreshCw size={12} aria-hidden />Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}><Play size={12} aria-hidden />Continue</button></>}</div>}
                 </div>
               </article>
             ))}
@@ -1021,11 +1114,15 @@ export default function AppShell() {
               <button onClick={() => openComposerTool("world")}><Globe2 size={16} aria-hidden /><strong>Worlds</strong><small>{storyWorlds===null?"In this story":storyWorlds.length===1?"1 in this story":`${storyWorlds.length} in this story`}</small></button>
               <button onClick={() => openComposerTool("persona")}><Users size={16} aria-hidden /><strong>Persona</strong><small>{activePersona?.name || "Choose who you are"}</small></button>
               <button onClick={() => openComposerTool("instructions")}><SlidersHorizontal size={16} aria-hidden /><strong>Instructions</strong><small>{instructionSummary(conversation)}</small></button>
+              {/* Memories sits immediately above Engine. On a phone the header
+                  controls collapse to icons and the full library was reachable
+                  from nowhere; this is where a reader looks for it. */}
+              <button onClick={() => { setComposerToolsOpen(false); setMemoryOpen(true); }}><BrainCircuit size={16} aria-hidden /><strong>Memories</strong><small>{memories.length ? `${memories.length} remembered` : "What she remembers"}</small></button>
               <button onClick={() => openComposerTool("model")}><Sparkles size={16} aria-hidden /><strong>Engine</strong><small>{modelCatalog.engines.find((engine)=>engine.id===(conversation?.rpEngineId||settings.roleplayPreset))?.label || "Choose an engine"}</small></button>
             </div>}
             <div className="composer">
               <IconButton className={`composer-plus ${composerToolsOpen ? "active" : ""}`} label={composerToolsOpen ? "Close chat tools" : "Open chat tools"} aria-expanded={composerToolsOpen} onClick={() => setComposerToolsOpen((value) => !value)}>{composerToolsOpen ? <X size={18} aria-hidden /> : <Plus size={18} aria-hidden />}</IconButton>
-              <textarea ref={composerRef} value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={`Message ${inlineTitle(creationSubject(selected), 24)}…`} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
+              <textarea ref={composerRef} value={composer} onChange={(e) => setComposer(e.target.value)} placeholder={composerPlaceholder(selected)} rows={1} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(max-width: 760px)").matches) { e.preventDefault(); void send(); } }} disabled={streaming} />
               <button className="send-button" aria-label="Send message" disabled={streaming || !composer.trim()} onClick={() => void send()}><ArrowUp size={18} aria-hidden /></button>
             </div>
             <small className="composer-hint"><span className="desktop-composer-hint">Enter to send · Shift + Enter for a new line</span><span className="mobile-composer-hint">Enter for a new line · Tap send to send</span></small>
@@ -1080,10 +1177,17 @@ export default function AppShell() {
         openChat(character.id);
         refreshLibraries();
       }} onDeleted={() => { setStudioOpen(false); setEditing(null); goToView("chats"); void Promise.all([loadCharacters(),loadChatIndex()]).catch(()=>undefined); }} />}
-      {isAdmin && memoryOpen && selected && <MemoryDrawer character={selected} conversation={conversation} memories={memories} onClose={() => setMemoryOpen(false)} onChange={async () => { const data = await api<{ memories: Memory[]; arcs: MemoryArc[] }>(memoriesUrl(selected.id,conversation?.id)); setMemories(data.memories); }} />}
+      {memoryOpen && selected && <MemoryLibrary
+        characterId={selected.id}
+        characterName={creationSubject(selected)}
+        conversationId={conversation?.id ?? null}
+        diagnostics={isAdmin ? <AdminMemoryTools conversation={conversation} onRefreshed={() => loadMemories(selected.id, conversation?.id)} /> : undefined}
+        onClose={() => setMemoryOpen(false)}
+        onChanged={setMemories}
+      />}
       {storyNavigation.surface==="story" && selected && <ConversationDrawer character={selected} conversation={conversation} settings={settings} catalog={modelCatalog} personas={personas} conversations={conversations} activeId={conversation?.id ?? null} creating={creatingConversation} onClose={() => setStoryNavigation(closedStoryNavigation)} onNew={(greetingIndex,personaId) => void newConversation(greetingIndex,personaId)} onSelect={(id) => openChat(selected.id,id)} onChange={() => void refreshChat(selected.id)} onUpdate={updateConversationContext} onOpenModel={()=>setStoryNavigation(openStoryChild("model"))} onOpenPersona={()=>setStoryNavigation(openStoryChild("persona"))} onOpenInstructions={()=>setStoryNavigation(openStoryChild("instructions"))} onOpenWorld={()=>setStoryNavigation(openStoryChild("world"))} storyWorldCount={storyWorlds===null?null:storyWorlds.length} />}
       {settingsOpen && <SettingsSheet isAdmin={isAdmin} settings={settings} models={models} catalog={modelCatalog} onClose={() => setSettingsOpen(false)} onSaved={(value) => { setSettings({...defaultSettings,...value}); setSettingsOpen(false); }} onImported={async () => { await loadCharacters(); const data = await api<{ settings: AppSettings; catalog: ModelCatalog }>("/api/settings"); setSettings({...defaultSettings,...data.settings}); if(data.catalog)setModelCatalog(data.catalog); }} />}
-      {isAdmin && recallMessage && <RecallDrawer message={recallMessage} onClose={() => setRecallMessage(null)} />}
+      {recallMessage && <ContextInspector message={recallMessage} onClose={() => setRecallMessage(null)} />}
       {storyNavigation.surface==="instructions" && conversation && <InstructionsSheet conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
       {storyNavigation.surface==="persona" && conversation && <PersonaPicker personas={personas} selectedId={conversation.personaId || activePersona?.id || null} onClose={closeStoryNavigation} onManage={() => { setStoryNavigation(closedStoryNavigation); setActiveView("personas"); }} onCreated={(persona)=>setPersonas((items)=>[persona,...items])} onSave={async (personaId) => { await updateConversationContext({personaId}); closeStoryNavigation(); }} />}
       {storyNavigation.surface==="model" && conversation && <ModelPicker catalog={modelCatalog} conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
@@ -1223,78 +1327,27 @@ function SceneStatePanel({ conversation }: { conversation: Conversation | null }
   </section>;
 }
 
-function MemoryDrawer({ character, conversation, memories, onClose, onChange }: { character: Character; conversation: Conversation | null; memories: Memory[]; onClose: () => void; onChange: () => void }) {
-  const [content, setContent] = useState(""); const [keywords, setKeywords] = useState(""); const [scope,setScope] = useState<"chat"|"character">("chat"); const [busy, setBusy] = useState(false);
-  async function updateMemory(memory: Memory, changes: Partial<Pick<Memory,"content"|"kind"|"importance"|"keywords"|"pinned"|"status"|"resolution">>) {
-    await api(`/api/memories?id=${memory.id}`,{method:"PATCH",body:JSON.stringify({content:memory.content,kind:memory.kind,importance:memory.importance,keywords:memory.keywords,pinned:memory.pinned,status:memory.status,resolution:memory.resolution,...changes})});
-    onChange();
-  }
-  const memoryKinds: SelectOption[] = [{value:"identity",label:"Identity"},{value:"relationship",label:"Relationship"},{value:"event",label:"Event"},{value:"promise",label:"Promise"},{value:"preference",label:"Preference"},{value:"boundary",label:"Boundary"},{value:"open_loop",label:"Open loop"}];
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><aside className="memory-drawer"><header><div><span className="eyebrow">Continuity</span><h2>{character.name}&apos;s memories</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="memory-explainer"><BrainCircuit size={16} aria-hidden /><p>Generated memories belong only to this chat. Active promises and open loops receive protected recall; resolved ones remain in the permanent archive.</p>{conversation && <button disabled={busy || conversation.messageCount < 2} onClick={async () => { setBusy(true); try { await api("/api/memories/consolidate",{method:"POST",body:JSON.stringify({conversationId:conversation.id})}); onChange(); } finally { setBusy(false); } }}>{busy?"Remembering…":"Refresh now"}</button>}</div><SceneStatePanel conversation={conversation}/>{conversation?.summary && <section className="summary-card"><span className="eyebrow">Rolling story-so-far · this chat</span><p>{conversation.summary}</p></section>}<div className="memory-list">{memories.map((memory) => <article key={memory.id} className={`memory-card memory-${memory.status}`}><div><span className={`memory-pin ${memory.pinned ? "pinned" : ""}`}>{memory.pinned ? "◆ Pinned" : `Importance ${memory.importance}/5`} · {memory.conversationId ? "This chat" : "All chats"} · {memory.status}</span><span className="memory-controls"><SelectField label="Memory type" value={memory.kind} options={memoryKinds} onChange={(value)=>void updateMemory(memory,{kind:value as Memory["kind"]})} compact/>{(memory.kind === "promise" || memory.kind === "open_loop") && <SelectField label="Memory status" value={memory.status} options={[{value:"active",label:"Active"},{value:"resolved",label:"Resolved"},{value:"superseded",label:"Superseded"}]} onChange={(value)=>void updateMemory(memory,{status:value as Memory["status"],resolution:value === "active" ? "" : memory.resolution})} compact/>}<button onClick={() => void updateMemory(memory,{pinned:!memory.pinned})}>{memory.pinned?"Unpin":"Pin"}</button><button onClick={() => { const value=window.prompt("Edit memory",memory.content)?.trim(); if(value&&value!==memory.content) void updateMemory(memory,{content:value}); }}>Edit</button><button onClick={async () => { if(!window.confirm("Delete this memory?")) return; await api(`/api/memories?id=${memory.id}`, { method: "DELETE" }); onChange(); }}>Delete</button></span></div><p>{memory.content}</p>{memory.resolution && <p className="memory-resolution">Resolved: {memory.resolution}</p>}{memory.keywords.length > 0 && <small>{memory.keywords.map((key) => `#${key}`).join("  ")}</small>}</article>)}</div><form className="memory-form" onSubmit={async (e) => { e.preventDefault(); setBusy(true); try { await api("/api/memories", { method: "POST", body: JSON.stringify({ characterId: character.id, conversationId: scope === "chat" ? conversation?.id ?? null : null, content, kind:"event", keywords: keywords.split(",").map((x) => x.trim()).filter(Boolean), importance: 5, pinned: true }) }); setContent(""); setKeywords(""); onChange(); } finally { setBusy(false); } }}><span className="eyebrow">Add pinned journal</span><SelectField label="Use in" value={scope} options={[{value:"chat",label:"This chat only"},{value:"character",label:"All chats with this character"}]} onChange={(value)=>setScope(value as "chat"|"character")}/><textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="A fact, promise, preference, or piece of lore…" rows={3} /><input value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="Recall keywords, comma separated" /><button className="primary" disabled={busy || !content.trim()}>Add to memory</button></form></aside></div>;
-}
-
-type RecallItem =
-  | { kind: "memory"; id: string; available: true; content: string; memoryKind: string; status: string; importance: number; resolution: string; scope: "chat" | "creation" }
-  | { kind: "arc"; id: string; available: true; summary: string; startMessageCount: number; endMessageCount: number }
-  | { kind: "memory" | "arc"; id: string; available: false };
-type RecallDetail = { items: RecallItem[]; counts: { memories: number; arcs: number; unavailable: number; total: number } };
-
-/** "4 memories · 2 arcs", or "Context" when this reply recalled nothing. */
-function recallLabel(message: Message) {
-  const parts: string[] = [];
-  if (message.memoryIds.length) parts.push(`${message.memoryIds.length} ${message.memoryIds.length === 1 ? "memory" : "memories"}`);
-  if (message.arcIds.length) parts.push(`${message.arcIds.length} ${message.arcIds.length === 1 ? "arc" : "arcs"}`);
-  return parts.length ? parts.join(" · ") : "Context";
-}
-
 /**
- * What one reply remembered.
+ * The operator's half of the memory library.
  *
- * Reads the reply's own recall from the server rather than resolving its stored
- * ids against a list the shell loaded when the chat was opened. That list goes
- * stale the moment consolidation writes a new memory — which happens after
- * every reply — and resolving against it is how "Recalled 6" came to open an
- * empty panel. The count on the button and the rows in here are now the same
- * array, and an item that no longer exists says so instead of vanishing.
+ * Scene State is internal metadata and manual consolidation spends an
+ * Afterglow-funded model call on demand, so both stay behind the administrator
+ * boundary and are passed into the library as a slot rather than living in it.
  */
-function RecallDrawer({ message, onClose }: { message: Message; onClose: () => void }) {
-  const [detail, setDetail] = useState<RecallDetail | null>(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    let live = true;
-    api<RecallDetail>(`/api/messages/${message.id}/recall`)
-      .then((data) => { if (live) setDetail(data); })
-      .catch(() => { if (live) setFailed(true); });
-    return () => { live = false; };
-  }, [message.id]);
-
-  const expected = message.memoryIds.length + message.arcIds.length;
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
-    <aside className="memory-drawer recall-drawer">
-      <header><div><span className="eyebrow">Reply context</span><h2>What this reply remembered</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header>
-      <div className="memory-explainer"><BrainCircuit size={16} aria-hidden /><p>Every reply also receives the complete creation profile, the current rolling summary, and the recent transcript. Listed below are the {expected === 1 ? "one additional continuity item" : `${expected} additional continuity items`} recalled from the permanent archive for this reply.</p></div>
-      <div className="memory-list">
-        {!detail && !failed && <section className="summary-card"><span className="eyebrow">Reading this reply&apos;s recall</span></section>}
-        {failed && <section className="summary-card"><span className="eyebrow">Recall unavailable</span><p>This reply&apos;s recall could not be read. Nothing has been lost — close and reopen this panel to try again.</p></section>}
-        {detail?.items.map((item) => {
-          if (!item.available) return <article className="memory-card memory-superseded" key={item.id}>
-            <div><span className="memory-pin">{item.kind === "arc" ? "Historical arc" : "Memory"} · no longer in the archive</span></div>
-            <p>This was recalled for the reply and has since been edited away or deleted. It is listed so the count above always matches what was used.</p>
-          </article>;
-          if (item.kind === "arc") return <article className="memory-card" key={item.id}>
-            <div><span className="memory-pin">Historical arc · messages {item.startMessageCount}–{item.endMessageCount}</span></div>
-            <p>{item.summary}</p>
-          </article>;
-          return <article className="memory-card" key={item.id}>
-            <div><span className="memory-pin">{item.memoryKind.replace("_"," ")} · {item.status} · importance {item.importance}/5 · {item.scope === "chat" ? "this chat" : "all chats"}</span></div>
-            <p>{item.content}</p>
-            {item.resolution && <p className="memory-resolution">Resolution: {item.resolution}</p>}
-          </article>;
-        })}
-        {detail && !detail.items.length && <section className="summary-card"><span className="eyebrow">No separate archive recall</span><p>Creation canon, rolling continuity and the recent transcript were still included. This reply drew nothing additional from the permanent archive.</p></section>}
-      </div>
-    </aside>
-  </div>;
+function AdminMemoryTools({ conversation, onRefreshed }: { conversation: Conversation | null; onRefreshed: () => void }) {
+  const [busy, setBusy] = useState(false);
+  if (!conversation) return null;
+  return <>
+    <SceneStatePanel conversation={conversation} />
+    <section className="summary-card">
+      <span className="eyebrow">Operator</span>
+      <button disabled={busy || conversation.messageCount < 2} onClick={async () => {
+        setBusy(true);
+        try { await api("/api/memories/consolidate",{method:"POST",body:JSON.stringify({conversationId:conversation.id})}); onRefreshed(); }
+        finally { setBusy(false); }
+      }}>{busy ? "Remembering…" : "Consolidate now"}</button>
+    </section>
+  </>;
 }
 
 function ConversationDrawer({ character, conversation, settings, catalog, personas, conversations, activeId, creating, onClose, onNew, onSelect, onChange, onUpdate, onOpenModel, onOpenPersona, onOpenInstructions, onOpenWorld, storyWorldCount }: { character: Character; conversation: Conversation | null; settings: AppSettings; catalog: ModelCatalog; personas: Persona[]; conversations: Conversation[]; activeId: string | null; creating: boolean; onClose: () => void; onNew: (greetingIndex: number, personaId: string | null) => void; onSelect: (id: string) => void; onChange: () => void; onUpdate: (changes: Partial<Pick<Conversation,"responseLength"|"temperature">>) => Promise<void>; onOpenModel:()=>void; onOpenPersona:()=>void; onOpenInstructions:()=>void; onOpenWorld:()=>void; storyWorldCount:number|null }) {

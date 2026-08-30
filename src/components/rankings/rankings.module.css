@@ -131,16 +131,21 @@
 
 /* A sibling of the row's link, so a creation's creator is reachable from a
    board whose rows open the creation. */
+/* The byline is the creator's identity, so it carries their picture and ring
+   as well as their name. `min-width: 0` on the label is what keeps a long
+   display name inside the column instead of widening the row. */
 .rowCreator {
   flex: 0 0 auto;
-  display: grid; place-items: center;
-  max-width: 132px; padding: 0 13px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  max-width: 132px; min-width: 0; padding: 8px 13px;
   border-left: 1px solid var(--line);
   color: var(--faint); text-decoration: none;
   font-size: 11px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border-radius: 0 14px 14px 0;
 }
+.rowCreator > span { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rowCreator em { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: 9.5px; opacity: .8; }
+.rowCreator:hover { color: var(--ink); }
 a.rowCreator:hover { background: rgba(232, 121, 169, .12); color: #f0a6c6; }
 a.rowCreator:focus-visible { outline: 2px solid #f0a6c6; outline-offset: -2px; }
 

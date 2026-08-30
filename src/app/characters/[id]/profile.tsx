@@ -21,6 +21,7 @@ import { chatHref } from "@/lib/shell-route";
 import { compactCount, exactCount } from "@/lib/format";
 import { creatorProfileHref } from "@/lib/follows";
 import { toggleCreationSave } from "@/lib/saves";
+import { shareLink, shareMessage } from "@/lib/share";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
 import { markEditorOpenedFromCreation } from "@/lib/editor-navigation";
@@ -255,10 +256,12 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     if (failure) setError(failure);
   }, [character]);
 
+  // One primitive, shared with the creator profile: native share sheet where
+  // there is one, clipboard otherwise, one message either way. It used to copy
+  // silently on desktop, which read as a button that did nothing.
   const share = useCallback(() => {
-    const url = window.location.href;
-    if (navigator.share) { void navigator.share({ title: character ? creationTitle(character) : "Afterglow", url }).catch(() => undefined); return; }
-    void navigator.clipboard?.writeText(url).catch(() => undefined);
+    void shareLink({ url: window.location.href, title: character ? creationTitle(character) : "Afterglow" })
+      .then((outcome) => setError(shareMessage(outcome, "Creation")));
   }, [character]);
 
   const copyLink = useCallback(() => {

@@ -20,13 +20,22 @@ import styles from "./shell.module.css";
  * open and returns to whatever opened it on close, and the page behind never
  * scrolls underneath.
  */
-export function Sheet({ title, eyebrow, onClose, children, footer, labelledBy }: {
+export function Sheet({ title, eyebrow, onClose, children, footer, labelledBy, size = "auto", headerExtra }: {
   title: string;
   eyebrow?: string;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
   labelledBy?: string;
+  /**
+   * `full` takes the whole viewport on a phone rather than the default
+   * nine-tenths. For surfaces that are a PAGE — a long, scrollable library —
+   * a peek of the chat behind is not reassurance, it is 10% less room to
+   * read in and a second scrollable thing under your thumb.
+   */
+  size?: "auto" | "full";
+  /** Controls that belong on the header row, beside the close button. */
+  headerExtra?: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const restoreFocus = useRef<Element | null>(null);
@@ -60,12 +69,13 @@ export function Sheet({ title, eyebrow, onClose, children, footer, labelledBy }:
     onMouseDown={(event) => { startedOnBackdrop.current = event.target === event.currentTarget; }}
     onMouseUp={(event) => { if (startedOnBackdrop.current && event.target === event.currentTarget) close(); }}
   >
-    <div className={styles.sheet} ref={panel} role="dialog" aria-modal="true" aria-labelledby={labelledBy} aria-label={labelledBy ? undefined : title}>
+    <div className={size === "full" ? `${styles.sheet} ${styles.sheetFull}` : styles.sheet} ref={panel} role="dialog" aria-modal="true" aria-labelledby={labelledBy} aria-label={labelledBy ? undefined : title}>
       <header className={styles.sheetHeader}>
         <div>
           {eyebrow && <span className={styles.eyebrow}>{eyebrow}</span>}
           <h2 id={labelledBy}>{title}</h2>
         </div>
+        {headerExtra}
         <IconButton label="Close" tone="subtle" onClick={close}><X size={18} aria-hidden /></IconButton>
       </header>
       <div className={styles.sheetBody}>{children}</div>

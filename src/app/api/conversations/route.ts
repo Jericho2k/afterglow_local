@@ -179,19 +179,30 @@ export async function GET(request: Request) {
   if (!characterId) return Response.json({ error: "characterId is required" }, { status: 400 });
 
   const payload = await asUser(account.id, async (client) => {
-    let listResult = await client.query(
+    /*
+     * READING A CREATION'S STORIES DOES NOT START ONE.
+     *
+     * This used to create a conversation whenever the list came back empty,
+     * which made an ordinary GET a write. Every incidental read of a creation's
+     * stories therefore materialised one — saving an edit, a post-save library
+     * refresh, a shell that reopened a chat address — and the reader watched
+     * Chats fill up with conversations they had never opened, one per creation
+     * they had merely made. Starting a story is an explicit act and it has an
+     * explicit route: POST.
+     *
+     * An empty list is now returned as an empty list. The caller decides.
+     */
+    const listResult = await client.query(
       "SELECT * FROM conversations WHERE character_id=$1 AND user_id=$2 ORDER BY updated_at DESC, created_at DESC",
       [characterId, account.id],
     );
-    if (!listResult.rowCount) {
-      const created = await createConversation(client, account.id, characterId);
-      if (!created) return { error: "Character not found", status: 404 as const };
-      listResult = await client.query(
-        "SELECT * FROM conversations WHERE character_id=$1 AND user_id=$2 ORDER BY updated_at DESC, created_at DESC",
-        [characterId, account.id],
-      );
-    }
     const conversations = listResult.rows.map(conversationFromRow);
+    if (!conversations.length) {
+      // The creation still has to be one this account may read, so an id
+      // belonging to somebody else's private creation is a 404 either way.
+      if (!(await readableCharacter(client, account.id, characterId))) return { error: "Character not found", status: 404 as const };
+      return { conversations, conversation: null, messages: [] };
+    }
     const conversation = requestedId ? conversations.find((item) => item.id === requestedId) : conversations[0];
     if (!conversation) return { error: "Conversation not found", status: 404 as const };
     // A story written before conversation worlds existed is given its set the
