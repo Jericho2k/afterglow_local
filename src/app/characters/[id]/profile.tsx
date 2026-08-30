@@ -21,6 +21,7 @@ import { chatHref } from "@/lib/shell-route";
 import { compactCount, exactCount } from "@/lib/format";
 import { creatorProfileHref } from "@/lib/follows";
 import { toggleCreationSave } from "@/lib/saves";
+import { shareLink, shareMessage } from "@/lib/share";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
 import { markEditorOpenedFromCreation } from "@/lib/editor-navigation";
@@ -255,10 +256,12 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     if (failure) setError(failure);
   }, [character]);
 
+  // One primitive, shared with the creator profile: native share sheet where
+  // there is one, clipboard otherwise, one message either way. It used to copy
+  // silently on desktop, which read as a button that did nothing.
   const share = useCallback(() => {
-    const url = window.location.href;
-    if (navigator.share) { void navigator.share({ title: character ? creationTitle(character) : "Afterglow", url }).catch(() => undefined); return; }
-    void navigator.clipboard?.writeText(url).catch(() => undefined);
+    void shareLink({ url: window.location.href, title: character ? creationTitle(character) : "Afterglow" })
+      .then((outcome) => setError(shareMessage(outcome, "Creation")));
   }, [character]);
 
   const copyLink = useCallback(() => {
@@ -633,6 +636,44 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     </div>
 
     {error && <div className={styles.toast} role="status">{error}<button onClick={() => setError("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
+
+    {/*
+      * The action bar, on phones only.
+      *
+      * A creation page is long — hero, definition, cast, gallery, worlds,
+      * comments — and the one thing a reader came to do was at the very top of
+      * it. Scrolling back up to start a story is not a gesture anybody should
+      * have to learn, so the two actions that matter follow the reader down
+      * the page.
+      *
+      * It is a copy of the hero's controls rather than a move of them: on a
+      * desktop the hero row is visible for most of the page and a floating bar
+      * would be furniture. It is hidden while the report dialog is open,
+      * because that dialog covers the viewport and a bar floating over a modal
+      * is the wrong layer.
+      *
+      * `.page` reserves the bar's height at the bottom, so it rests over the
+      * gradient and never over the last line of the last comment.
+      */}
+    {!reportOpen && <div className={styles.actionBar}>
+      <button
+        className={styles.primaryCta}
+        onClick={() => openChat(cta.conversationId)}
+        disabled={starting}
+        aria-label={chatCtaDescription(character, cta)}
+      >
+        <Sparkles size={17} /><span>{starting ? "Opening story…" : cta.label}</span>
+      </button>
+      <button
+        className={styles.actionBarSave}
+        aria-pressed={Boolean(character.savedByViewer)}
+        aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"}
+        onClick={() => void toggleSave()}
+      >
+        <Bookmark size={17} fill={character.savedByViewer ? "currentColor" : "none"} />
+        <span>{character.savedByViewer ? "Saved" : "Save"}</span>
+      </button>
+    </div>}
   </main>;
 }
 

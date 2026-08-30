@@ -11,6 +11,7 @@ import { refreshUnreadNotifications, setUnreadNotifications } from "@/lib/notifi
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { uiStyles } from "@/components/ui";
 import { PageHeader } from "./PageHeader";
+import { useShellNav } from "./ShellNav";
 import styles from "./shell.module.css";
 
 /**
@@ -59,6 +60,7 @@ export function NotificationsView({ onOpenMenu }: { onOpenMenu?: () => void }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [unread, setUnread] = useState(0);
+  const { openView } = useShellNav();
 
   const load = useCallback(async (before: string | null) => {
     const params = new URLSearchParams({ limit: String(notificationsPageSize) });
@@ -165,10 +167,17 @@ export function NotificationsView({ onOpenMenu }: { onOpenMenu?: () => void }) {
                 href={`/characters/${creation.id}`}
                 onClick={() => { if (!item.read) markOne(item.id); }}
               >
+                {/* The artwork gets its own clipping box INSIDE the frame.
+                    The frame has to stay `overflow: visible` so the creator's
+                    badge can overhang its corner, and that is exactly what let
+                    a portrait sit proud of the rounded rectangle. Two elements,
+                    two jobs: one clips, one overhangs. */}
                 <span className={styles.notificationArt}>
-                  {artwork
-                    ? <img src={artwork} alt="" loading="lazy" decoding="async" />
-                    : <span aria-hidden>{initials(title)}</span>}
+                  <span className={styles.notificationArtFrame}>
+                    {artwork
+                      ? <img src={artwork} alt="" loading="lazy" decoding="async" />
+                      : <span aria-hidden>{initials(title)}</span>}
+                  </span>
                   <span className={styles.notificationActor}>
                     {portrait ? <img src={portrait} alt="" loading="lazy" /> : <span aria-hidden>{initials(actorName)}</span>}
                   </span>
@@ -212,9 +221,20 @@ export function NotificationsView({ onOpenMenu }: { onOpenMenu?: () => void }) {
           That is everything.
         </p>}
 
-        {items?.length === 0 && <Link className={styles.profileLink} href="/">
+        {/*
+          * Discovery through the SHELL, not through the address bar.
+          *
+          * This was a `<Link href="/">`. The shell renders several surfaces
+          * from one route and reads its view once, on the first render, so a
+          * client-side navigation to `/` from `/?view=notifications` changed
+          * the URL and nothing else: the reader stayed on an empty
+          * notifications list looking at a button that appeared to do nothing.
+          * `useShellNav` is the same `goToView` every sidebar item uses, so
+          * this gets the same history entry and the same result.
+          */}
+        {items?.length === 0 && <button type="button" className={styles.profileLink} onClick={() => openView("home")}>
           <Compass size={14} aria-hidden />Find creators to follow
-        </Link>}
+        </button>}
       </div>
     </div>
   </section>;

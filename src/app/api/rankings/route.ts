@@ -33,7 +33,39 @@ const pageSize = 25;
 const creationColumns = `c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
   c.tags,c.hashtags,c.nsfw_enabled,c.message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
   p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
+  p.profile_border creator_profile_border,
+  cs.rank creator_rank,cs.rank_total creator_rank_total,cs.followers creator_followers,cs.user_messages creator_user_messages,
+  cs.published_creations creator_creations,cs.published_worlds creator_worlds,
   (mine.character_id IS NOT NULL) saved_by_viewer`;
+
+/**
+ * The creator identity a ranked row shows.
+ *
+ * Read LIVE from `profiles` on every request, never from a snapshot taken when
+ * the board was built: a board is rebuilt on a ten-minute timer, and a creator
+ * who changes their handle, their picture or their display name in between was
+ * appearing on the leaderboard as somebody they are no longer. The ring is
+ * derived the same way their own profile derives it, from the metrics they
+ * currently hold, so a board cannot show a border its owner no longer qualifies
+ * for either.
+ */
+function rankedCreatorIdentity(row: Record<string, unknown>) {
+  if (!row.creator_id) return null;
+  const rank = row.creator_rank == null ? null : Number(row.creator_rank);
+  return {
+    id: String(row.creator_id),
+    username: String(row.creator_username || ""),
+    displayName: String(row.creator_display_name || ""),
+    avatarPath: String(row.creator_avatar_path || ""),
+    border: effectiveBorder(String(row.creator_profile_border || "default"), {
+      followers: Number(row.creator_followers || 0),
+      messages: Number(row.creator_user_messages || 0),
+      publishedCreations: Number(row.creator_creations || 0),
+      publishedWorlds: Number(row.creator_worlds || 0),
+      rank,
+    }, Number(row.creator_rank_total || 0)),
+  };
+}
 
 export async function GET(request: Request) {
   const account = await currentAccount();
@@ -99,6 +131,7 @@ export async function GET(request: Request) {
        FROM creation_rankings r
        JOIN characters c ON c.id=r.character_id AND c.visibility='public'
        LEFT JOIN profiles p ON p.id=c.user_id AND p.username IS NOT NULL
+       LEFT JOIN creator_stats cs ON cs.user_id=c.user_id
        LEFT JOIN character_likes mine ON mine.character_id=c.id AND mine.user_id=$1
        WHERE r.category=$2
        ORDER BY r.rank ASC
@@ -134,6 +167,7 @@ export async function GET(request: Request) {
        */
       userMessages: Number(row.user_messages || 0),
       creation: creationSummaryFromRow(row, account.id),
+      creator: rankedCreatorIdentity(row),
     })),
   });
 }

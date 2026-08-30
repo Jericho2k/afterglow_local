@@ -56,6 +56,7 @@ export const migrationFiles = [
   "0023_branch_copy_indexes.sql",
   "0024_byok_creation_moderation.sql",
   "0025_writer_openrouter_byok.sql",
+  "0026_memory_transparency.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {

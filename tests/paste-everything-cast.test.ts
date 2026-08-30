@@ -159,12 +159,22 @@ describe("the output contract protects the cast from a truncated response", () =
       const contract = prompt.slice(start, prompt.indexOf("\n}", start) + 2);
       const castAt = contract.indexOf('"cast"');
       expect(castAt).toBeGreaterThan(-1);
-      // The four fields most likely to be long. If any of them is written
+      // The prose fields most likely to be long. If any of them is written
       // before the cast, a response that runs out of budget loses people.
-      for (const later of ['"backstory"', '"scenario"', '"greeting"', '"alternateGreetings"']) {
+      for (const later of ['"backstory"', '"scenario"', '"exampleDialogue"', '"responseDirective"']) {
         expect(castAt).toBeLessThan(contract.indexOf(later));
       }
-      expect(prompt).toContain("Write \"cast\" in full before the long prose fields");
+      // The openings are protected the same way and for the same reason: they
+      // used to sit at the very end of the contract, which is precisely why a
+      // long import arrived with its greetings missing.
+      for (const opening of ['"greeting"', '"alternateGreetings"']) {
+        const at = contract.indexOf(opening);
+        expect(at).toBeGreaterThan(-1);
+        for (const later of ['"backstory"', '"scenario"', '"exampleDialogue"']) {
+          expect(at).toBeLessThan(contract.indexOf(later));
+        }
+      }
+      expect(prompt).toContain("IN FULL before the long prose fields below them");
     }
   });
 

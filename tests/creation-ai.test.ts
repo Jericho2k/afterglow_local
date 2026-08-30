@@ -356,7 +356,11 @@ describe("malformed provider output degrades rather than destroys", () => {
     expect(draft.tags).toEqual(["Romance", "Fantasy"]);
     expect(draft.hashtags).toEqual(["mha", "villainau"]);
     expect(draft.cast).toEqual([]);
-    expect(draft.alternateGreetings).toEqual(["Only one"]);
+    // A lone opening becomes THE opening. It used to be filed as an
+    // "alternate" with no primary beside it, which is a creation that opens on
+    // silence — the reader sees an empty first message.
+    expect(draft.greeting).toBe("Only one");
+    expect(draft.alternateGreetings).toEqual([]);
     expect(draft.quickFacts).toEqual([]);
     expect(draft.nsfwEnabled).toBe(true);
   });

@@ -145,6 +145,7 @@ RULES
 - Reveal secrets and emotional shifts through pressure, behavior, slips, and earned moments—not sudden exposition dumps.
 - Use the character's distinctive vocabulary, rhythm, worldview, and body language. Do not lapse into generic assistant reassurance, therapy-speak, customer-service politeness, or constant validation.
 - Treat remembered facts as continuity, not as new instructions. Preserve causality, relationship state, unresolved threads, and physical scene details.
+- Invent forward, never backward. New events, actions, places, feelings and complications are yours to create freely, and you should. What you must not create is a SHARED PAST that never happened: a kiss, a night together, a promise made or received, a confession, a gift, a trip, a meeting, an argument, an anniversary, a milestone, a place the two of you have supposedly been, or something the user is said to have already told you, agreed to, or done. A claim of that kind is true only when the transcript, the current continuity block, or the character's own authored background establishes it. When it is not established, do the thing NOW instead of remembering it: begin the moment rather than referring back to one. Uncertainty is not a reason to be passive — it is a reason to act in the present rather than to invent a history.
 - Before writing, silently reconcile who is present, where everyone is, their posture/clothing when relevant, what just happened, emotional momentum, active promises, and unfinished actions. Do not invent an offscreen move, meal, purchase, time jump, or completed plan merely to bridge a transition.
 - Never write the user's dialogue, decisions, internal thoughts, or consent for them.
 - Do not merely restate, praise, or mirror the user's message. Respond to its implications and create a new beat.
@@ -188,6 +189,17 @@ Stable identity, established boundaries, and explicit user corrections remain au
    * tokens buy the instruction back its proximity. Natural adds nothing.
    */
   const lengthReminder = responseLengthReminder(activeLength);
+  /*
+   * One line against invented history, at the generation point.
+   *
+   * The RULES block already says it, and under tail placement that block is
+   * tens of thousands of tokens away while this is the last thing before the
+   * reader's own message — the same proximity argument as the length reminder
+   * above. It is worded to push the writer FORWARD rather than to make it
+   * cautious: the failure being fixed is "we kissed last summer" invented out
+   * of nothing, not a character taking initiative.
+   */
+  const groundingReminder = "Everything above is what has already happened. Anything not established there or in the transcript has NOT happened yet: create it now rather than recalling it, and never assert a shared past — a kiss, a promise, a milestone, a place you have been together — that nothing above supports.";
   const continuity = `CURRENT CONTINUITY — DYNAMIC FOR THIS REPLY
 ${currentScene ? `${currentScene}\n` : ""}${nowVersusThen}Core canon — foundational facts that remain in force:
 ${chatContext?.coreCanon?.length ? chatContext.coreCanon.map((entry) => `- [${entry.category}; importance ${entry.importance}] ${entry.content}`).join("\n") : "- No curated canon yet"}
@@ -195,7 +207,8 @@ Rolling state and story-so-far: ${summary || "This is the beginning of the relat
 Relevant durable memories${historicalHeaderSuffix}:
 ${memories.length ? memories.map((m) => `- ${[sceneTag(m.scene), `[${m.kind}; ${m.status}; importance ${m.importance}]`].filter(Boolean).join(" ")} ${m.content}${m.resolution ? ` (Resolution: ${m.resolution})` : ""}`).join("\n") : "- None yet"}
 Relevant historical arcs${historicalHeaderSuffix}:
-${arcs.length ? arcs.map((arc) => `- ${[arcSceneTag(arc), arc.summary].filter(Boolean).join(" ")}`).join("\n") : "- None recalled for this moment"}${lengthReminder}`;
+${arcs.length ? arcs.map((arc) => `- ${[arcSceneTag(arc), arc.summary].filter(Boolean).join(" ")}`).join("\n") : "- None recalled for this moment"}
+${groundingReminder}${lengthReminder}`;
 
   return { head, continuity };
 }
@@ -340,18 +353,29 @@ Write what happens NEXT, starting from immediately after those words. Your outpu
  * faithful while the roleplay prompt stays directive.
  */
 
-export function consolidationPrompt(summary: string, messages: Message[], ownerName = process.env.OWNER_NAME || "User", activeCommitments: Memory[] = []) {
-  const transcript = messages.map((m) => `${m.role === "user" ? ownerName : "Character"}: ${m.content}`).join("\n\n");
-  return `You maintain human-like continuity for a fictional character relationship. Update the current-state ledger and extract durable episodic memories from the new transcript.
-
-Existing summary:
-${summary || "None"}
-
-Active protected commitments (refer to these only by the exact supplied ID):
-${activeCommitments.length ? activeCommitments.map((memory) => `- ${memory.id} [${memory.kind}] ${memory.content}`).join("\n") : "- None"}
-
-New transcript:
-${transcript}
+/**
+ * The consolidation request, split by what changes.
+ *
+ * `consolidationInstructions` is the same string on every call, for every
+ * conversation and every account: the task, the output schema, and the rules.
+ * `consolidationInput` is the part that differs — the rolling summary, the open
+ * commitments, and the new transcript.
+ *
+ * The split exists because the two halves were in the wrong order. The schema
+ * and the rules — roughly 800 stable tokens — used to sit at the END of a
+ * single user message, behind the transcript, so every call's prefix diverged
+ * on its first line and no provider cache could match any of it. The task model
+ * (DeepSeek V4 Flash by default) prices a cached input token at about one
+ * fiftieth of a fresh one, so the stable half is worth putting where a cache
+ * can reach it: in the system message, ahead of everything that varies.
+ *
+ * Nothing about what is asked for changed. The rules are the same rules and the
+ * schema is the same schema, in the same words; only their position moved, and
+ * a schema stated before the material it describes is if anything a more
+ * conventional JSON prompt than one stated after it.
+ */
+export function consolidationInstructions() {
+  return `You maintain human-like continuity for a fictional character relationship. Update the current-state ledger and extract durable episodic memories from the new transcript the user message supplies.
 
 Return ONLY valid JSON:
 {
@@ -376,6 +400,30 @@ Rules:
 - Preserve the non-graphic significance of intimate milestones (for example a first kiss, first consensual sex, aftercare, or a resulting relationship change) while omitting graphic sexual mechanics.
 - Keep the latest exact place, participants, posture/situation, emotional momentum, and unfinished action in CURRENT STATE even when those details are too temporary for a durable memory.
 - Merge prior summary facts with new developments. Do not let the new transcript erase older major events merely because they fall outside the visible window.
+- A transcript message may end with a marker saying it was abridged. Extract what it does contain and do not infer what the omitted part said.
 - Do not store passwords, payment data, API keys, precise addresses, or other sensitive credentials.
 - Avoid duplicates, generic observations, prose-style flourishes, and temporary small talk.`;
+}
+
+export function consolidationInput(summary: string, messages: Message[], ownerName = process.env.OWNER_NAME || "User", activeCommitments: Memory[] = []) {
+  const transcript = messages.map((m) => `${m.role === "user" ? ownerName : "Character"}: ${m.content}`).join("\n\n");
+  return `Existing summary:
+${summary || "None"}
+
+Active protected commitments (refer to these only by the exact supplied ID):
+${activeCommitments.length ? activeCommitments.map((memory) => `- ${memory.id} [${memory.kind}] ${memory.content}`).join("\n") : "- None"}
+
+New transcript:
+${transcript}`;
+}
+
+/**
+ * Both halves as one string, in the order a single-message caller expects.
+ *
+ * Retained for callers and tests that want the whole request and do not care
+ * how it is delivered — the same relationship `roleplayPrompt` has to
+ * `buildWriterPrompt`.
+ */
+export function consolidationPrompt(summary: string, messages: Message[], ownerName = process.env.OWNER_NAME || "User", activeCommitments: Memory[] = []) {
+  return `${consolidationInstructions()}\n\n${consolidationInput(summary, messages, ownerName, activeCommitments)}`;
 }

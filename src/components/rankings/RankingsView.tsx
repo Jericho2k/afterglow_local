@@ -37,7 +37,16 @@ import styles from "./rankings.module.css";
  * every row is gold is a page where nothing is.
  */
 
-type RankedCreation = { rank: number; rankTotal: number; userMessages: number; creation: CreationSummary };
+/**
+ * `creator` is the byline's identity, read live on every request. It is
+ * separate from `creation.creator` so a row always shows who the creator is
+ * NOW — same handle, same picture, same ring as their own profile — rather
+ * than whatever was true when the board was last rebuilt.
+ */
+type RankedCreation = {
+  rank: number; rankTotal: number; userMessages: number; creation: CreationSummary;
+  creator: { id: string; username: string; displayName: string; avatarPath: string; border: ProfileBorder } | null;
+};
 
 type RankedCreator = {
   rank: number; rankTotal: number;
@@ -225,8 +234,15 @@ function RankedCreationRow({ entry, category }: { entry: RankedCreation; categor
   const title = creationTitle(creation);
   const artwork = avatarSource(characterAvatarBucket, creation.avatarPath, creation.avatarUrl);
   const tier = medalTier(entry.rank);
-  const creatorName = creation.creator?.username ? `@${creation.creator.username}` : creation.creator?.displayName || "";
-  const creatorHref = creatorProfileHref(creation.creator?.username);
+  /*
+   * The creator's CURRENT identity, read live by the route rather than taken
+   * from whatever the board was built with. Display name first because that is
+   * the name a creator chose to be known by; the handle is the fallback and the
+   * link target.
+   */
+  const identity = entry.creator ?? creation.creator ?? null;
+  const creatorName = identity?.displayName || (identity?.username ? `@${identity.username}` : "");
+  const creatorHref = creatorProfileHref(identity?.username);
   // The category this row is being ranked within, when it is not Overall.
   const shown = category || creation.tags.find((tag) => tag === category) || "";
 
@@ -268,8 +284,15 @@ function RankedCreationRow({ entry, category }: { entry: RankedCreation; categor
     </Link>
 
     {creatorName && (creatorHref
-      ? <Link className={styles.rowCreator} href={creatorHref}>by {creatorName}</Link>
-      : <span className={styles.rowCreator}>by {creatorName}</span>)}
+      ? <Link className={styles.rowCreator} href={creatorHref} aria-label={`Open ${creatorName}'s creator profile`}>
+        <CreatorAvatar avatarPath={identity?.avatarPath ?? ""} name={creatorName} border={entry.creator?.border ?? profileBorder("default")} size={20} />
+        <span>{creatorName}</span>
+        {identity?.username && identity.displayName && <em>@{identity.username}</em>}
+      </Link>
+      : <span className={styles.rowCreator}>
+        <CreatorAvatar avatarPath={identity?.avatarPath ?? ""} name={creatorName} border={entry.creator?.border ?? profileBorder("default")} size={20} />
+        <span>{creatorName}</span>
+      </span>)}
   </li>;
 }
 

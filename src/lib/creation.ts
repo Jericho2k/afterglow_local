@@ -155,3 +155,28 @@ export function creationShortCta(creation: Pick<Character, "name" | "title" | "c
 export function creationSubject(creation: Pick<Character, "name" | "title" | "creationType" | "profileType" | "cast">) {
   return creationType(creation) === "character" ? primaryCharacterName(creation) || creationTitle(creation) : creationTitle(creation);
 }
+
+/**
+ * The longest name the chat composer will put in its placeholder.
+ *
+ * Beyond this the placeholder wraps, and a wrapped placeholder is worse than
+ * losing the name: the composer sizes itself from `scrollHeight`, so a two-line
+ * placeholder grows an EMPTY composer and then leaves it scrollable, which is
+ * the reported bug. Measured against the narrowest supported viewport (375px)
+ * with the send and tools controls beside it.
+ */
+export const composerNameLimit = 22;
+
+/**
+ * What the empty composer says.
+ *
+ * Named after the character when the name fits, generic when it does not. The
+ * generic form is not a degradation — "Send a message…" is what every other
+ * messaging surface says — and it is the only version that cannot resize the
+ * control it sits in.
+ */
+export function composerPlaceholder(creation: Pick<Character, "name" | "title" | "creationType" | "profileType" | "cast">) {
+  const subject = creationSubject(creation).replace(/\s+/g, " ").trim();
+  return subject && Array.from(subject).length <= composerNameLimit ? `Message ${subject}…` : "Send a message…";
+}
+

@@ -76,7 +76,7 @@ export async function GET(request: Request) {
       `SELECT ${select} FROM usage_events WHERE ${predicate}${groupBy ? ` GROUP BY ${groupBy} ORDER BY requests DESC` : ""}`,
       values,
     );
-    const [result, models, providers, engines, funding, types, upstream, replies, userMessages] = await Promise.all([
+    const [result, models, providers, engines, funding, types, upstream, writerGenerations, userMessages] = await Promise.all([
       scoped(aggregate),
       scoped(`model, ${aggregate}`, "model"),
       scoped(`provider_id, ${aggregate}`, "provider_id"),
@@ -87,9 +87,20 @@ export async function GET(request: Request) {
       // half of the caching picture: stickiness is only working if one
       // conversation's turns keep landing on the same provider.
       scoped(`upstream_provider, ${aggregate}`, "upstream_provider"),
-      // Volume the quota work will meter against: replies produced in range.
+      /*
+       * Writer generations, from the LEDGER rather than from the transcript.
+       *
+       * A reply row is not a generation. Branching copies transcript rows, so
+       * counting `messages WHERE role='assistant'` reports work that was never
+       * done and quietly inflates every per-generation figure — and it misses
+       * the opposite case too, because a regenerate REPLACES a row in place and
+       * a continue appends to one. The ledger has an event per paid call, so
+       * Reply + Regenerate + Continue is the number of times a writer actually
+       * ran. That is the definition, and it is the only one that survives a
+       * branch.
+       */
       client.query(
-        `SELECT COUNT(*)::int count FROM messages WHERE ${predicate.replace("user_id=$1", "user_id=$1 AND role='assistant'")}`,
+        `SELECT COUNT(*)::int count FROM usage_events WHERE ${predicate} AND usage_type IN ('chat','regenerate','continue')`,
         values,
       ),
       // A branch copies transcript rows. authored_event_id preserves the
@@ -102,12 +113,24 @@ export async function GET(request: Request) {
     ]);
     const platformCost = Number(result.rows[0].afterglow_cost_usd);
     const messageCount = Number(userMessages.rows[0].count);
+    const generationCount = Number(writerGenerations.rows[0].count);
     return {
       range: { id: range.id, label: range.label, from: range.from?.toISOString() ?? null, to: range.to?.toISOString() ?? null },
       usage: usage(result.rows[0]),
-      replies: Number(replies.rows[0].count),
+      /*
+       * Two denominators, because they answer two questions.
+       *
+       * User turns is what a reader DID — the volume a quota would meter, and
+       * the figure a per-message price is quoted against. Writer generations is
+       * what Afterglow RAN, which is larger by every regenerate and continue,
+       * and is the honest denominator for "what does producing a reply cost".
+       * Neither replaces the other and both are stated rather than derived from
+       * the transcript.
+       */
+      writerGenerations: generationCount,
       userMessages: messageCount,
       costPer100UserMessages: messageCount ? platformCost * 100 / messageCount : 0,
+      costPer100WriterGenerations: generationCount ? platformCost * 100 / generationCount : 0,
       byModel: models.rows.map((item) => ({ key: String(item.model), ...usage(item) })),
       byProvider: providers.rows.map((item) => ({ key: String(item.provider_id), ...usage(item) })),
       byEngine: engines.rows.map((item) => ({ key: String(item.rp_engine_id), ...usage(item) })),

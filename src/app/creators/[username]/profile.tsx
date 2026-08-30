@@ -10,6 +10,7 @@ import { creationTitle } from "@/lib/creation";
 import { compactCount, exactCount } from "@/lib/format";
 import { toggleCreationSave } from "@/lib/saves";
 import { toggleCreatorFollow } from "@/lib/follows";
+import { shareLink, shareMessage } from "@/lib/share";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
 import { BackButton } from "@/components/nav";
@@ -187,11 +188,12 @@ export default function CreatorProfile({ username }: { username: string }) {
     if (failure) setNotice(failure);
   }, []);
 
+  // The same primitive a creation uses: native share sheet where there is one,
+  // clipboard otherwise, one message either way. See src/lib/share.ts.
   const share = useCallback(() => {
-    void navigator.clipboard?.writeText(window.location.href)
-      .then(() => setNotice("Profile link copied."))
-      .catch(() => setNotice("Could not copy the link. Use your browser's address bar."));
-  }, []);
+    void shareLink({ url: window.location.href, title: profile?.displayName || profile?.username || "Afterglow" })
+      .then((outcome) => setNotice(shareMessage(outcome, "Profile")));
+  }, [profile]);
 
   if (error && !payload) {
     return <main className={styles.state}>
@@ -221,7 +223,7 @@ export default function CreatorProfile({ username }: { username: string }) {
 
       <div className={styles.heroBar}>
         <BackButton className={iconButtonClass("media")} fallback={backFallbacks.creation} />
-        <button className={iconButtonClass("media")} aria-label="Copy a link to this profile" title="Copy link" onClick={share}>
+        <button className={iconButtonClass("media")} aria-label="Share this profile" title="Share profile" onClick={share}>
           <Share2 size={18} />
         </button>
       </div>

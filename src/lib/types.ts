@@ -363,12 +363,25 @@ export type Memory = {
   recallCount: number;
   sourceMessageCount: number;
   /**
+   * Who wrote this memory.
+   *
+   * `consolidation` is the extractor's; `user` is the reader's own; `import`
+   * came in with a backup. The distinction is what lets the archive be shown
+   * honestly — "Afterglow remembered this" and "you wrote this" are different
+   * claims — and it is deliberately not a permission: an owner may edit either.
+   */
+  origin?: "consolidation" | "user" | "import";
+  /** The memory that replaced this one, when it was superseded by an edit. */
+  supersededBy?: string | null;
+  supersededAt?: string | null;
+  /**
    * Lightweight grounding for when/where this happened in the story. Absent on
    * memories written before Scene State existed, which is expected and fine:
    * an un-annotated memory is simply presented without a chronology tag.
    */
   scene?: SceneStamp | null;
   createdAt: string;
+  updatedAt?: string;
 };
 
 export type MemoryArc = {
@@ -627,9 +640,15 @@ export type UsageResponse = {
   /** The window every figure below describes. */
   range?: UsageRangeSummary;
   usage: UsageSummary;
-  replies?: number;
+  /**
+   * Paid writer calls in range: Reply + Regenerate + Continue, counted from the
+   * usage ledger. Never from assistant message rows — branching copies those.
+   */
+  writerGenerations?: number;
+  /** Distinct accepted user turns that started a generation. */
   userMessages?: number;
   costPer100UserMessages?: number;
+  costPer100WriterGenerations?: number;
   byModel: UsageBreakdown[];
   byProvider: UsageBreakdown[];
   byEngine: UsageBreakdown[];

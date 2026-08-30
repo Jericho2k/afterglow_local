@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { completionWithUsage, parseJson } from "./llm";
 import { asUser, getUserSettings } from "./db";
-import { consolidationPrompt } from "./prompts";
+import { consolidationInput, consolidationInstructions } from "./prompts";
 import type { Memory, MemoryArc, Message } from "./types";
 import { memoryArcFromRow, memoryFromRow, messageFromRow } from "./db";
 import { recordUsageEvent } from "./usage";
@@ -9,6 +9,8 @@ import { estimateTokens } from "./context";
 import { providerModelId, taskModelSelection } from "./provider";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled } from "./memory-flags";
+import { isStaleCommitment, protectedTierBudget, protectedTierLimit, recencyScore } from "./memory-scoring";
+import { consolidationTrigger, maxBatchRows, planConsolidationBatch } from "./consolidation-batch";
 import { invalidateSceneStatesAfter, sceneSpanBetween, sceneStampAt } from "./scene-state-store";
 import type { PoolClient } from "pg";
 
@@ -67,7 +69,7 @@ function memoryCost(memory: Memory) {
   return estimateTokens(`${memory.content} ${memory.resolution}`) + 16;
 }
 
-export function rankMemories(memories: Memory[], input: string, limit = 8, tokenBudget = 6000) {
+export function rankMemories(memories: Memory[], input: string, limit = 8, tokenBudget = 6000, now = Date.now()) {
   const inputTerms = terms(input);
   const ranked = memories
     .map((memory) => {
@@ -75,11 +77,13 @@ export function rankMemories(memories: Memory[], input: string, limit = 8, token
       let overlap = 0;
       inputTerms.forEach((term) => { if (memoryTerms.has(term)) overlap += 1; });
       const phraseHits = memory.keywords.filter((key) => input.toLowerCase().includes(key.toLowerCase())).length;
-      const ageDays = Math.max(0, (Date.now() - new Date(memory.createdAt).getTime()) / 86_400_000);
-      const activeBoost = memory.status === "active" && protectedKinds.has(memory.kind) ? 18 : 0;
+      // Staleness and decay are shared with the V2 ranker so the two paths
+      // cannot disagree about how a memory ages; see src/lib/memory-scoring.ts.
+      const stale = isStaleCommitment(memory, now);
+      const activeBoost = memory.status === "active" && protectedKinds.has(memory.kind) && !stale ? 18 : 0;
       const kindBoost = essentialKinds.has(memory.kind) ? 7 : memory.kind === "event" ? 2 : 0;
-      const score = phraseHits * 24 + overlap * 5 + memory.importance * 3 + activeBoost + kindBoost + 2 / (1 + ageDays / 45);
-      return { memory, score, overlap, phraseHits };
+      const score = phraseHits * 24 + overlap * 5 + memory.importance * 3 + activeBoost + kindBoost + recencyScore(memory, now);
+      return { memory, score, overlap, phraseHits, stale };
     })
     .filter(({ memory }) => memory.status !== "superseded")
     .sort((a, b) => b.score - a.score);
@@ -98,14 +102,16 @@ export function rankMemories(memories: Memory[], input: string, limit = 8, token
   // boundaries, and open loops receive their own protected tier and do not
   // consume the ordinary relevant-event slot count.
   ranked.filter(({ memory }) => memory.pinned).forEach(({ memory }) => addWithinBudget(memory));
-  const protectedTokenLimit = Math.max(500, Math.floor(tokenBudget * 0.55));
+  const protectedTokenLimit = protectedTierBudget(tokenBudget);
   let protectedTokens = 0;
   let protectedCount = 0;
   ranked
-    .filter(({ memory }) => !memory.pinned && memory.status === "active" && protectedKinds.has(memory.kind))
+    // A commitment nobody has returned to keeps its place in the archive and
+    // loses only its guarantee: it still competes for a dynamic slot below.
+    .filter(({ memory, stale }) => !memory.pinned && memory.status === "active" && protectedKinds.has(memory.kind) && !stale)
     .forEach(({ memory }) => {
       const cost = memoryCost(memory);
-      if (protectedCount >= 12 || (protectedCount > 0 && protectedTokens + cost > protectedTokenLimit)) return;
+      if (protectedCount >= protectedTierLimit || (protectedCount > 0 && protectedTokens + cost > protectedTokenLimit)) return;
       if (addWithinBudget(memory)) { protectedCount += 1; protectedTokens += cost; }
     });
   const dynamic = ranked
@@ -118,6 +124,47 @@ export function rankMemories(memories: Memory[], input: string, limit = 8, token
   for (const { memory } of dynamic) {
     if (dynamicCount >= limit) break;
     if (addWithinBudget(memory)) dynamicCount += 1;
+  }
+  return selected;
+}
+
+
+/**
+ * The commitments a consolidation pass may mark resolved.
+ *
+ * This is NOT the writer's retrieval question and must not reuse its answer.
+ * The writer asks "what is relevant to this moment", which is a relevance
+ * ranking against the reader's latest turn. The consolidator asks "did anything
+ * in this window close one of these", and relevance to the window is exactly
+ * the wrong filter: a promise the transcript never mentions by name is the one
+ * most likely to have been quietly fulfilled, and ranking it out means it can
+ * never be resolved and stays open forever. Reusing `rankMemories` here is how
+ * the archive accumulated permanently-open commitments.
+ *
+ * So the selection is deterministic and chronological rather than lexical:
+ * every open commitment, oldest first, bounded by a count and a token budget so
+ * the prompt cannot grow without limit. Oldest first is deliberate — the
+ * commitments most in need of a resolution decision are the ones that have been
+ * open longest.
+ */
+export const commitmentCandidateLimit = 24;
+
+export function commitmentResolutionCandidates(memories: Memory[], limit = commitmentCandidateLimit, tokenBudget = 2000) {
+  const open = memories
+    .filter((memory) => memory.status === "active" && (memory.kind === "promise" || memory.kind === "open_loop" || memory.kind === "boundary"))
+    .sort((a, b) => {
+      // Pinned first, then oldest first, then by id so the order is total.
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      const byAge = a.createdAt.localeCompare(b.createdAt);
+      return byAge !== 0 ? byAge : a.id.localeCompare(b.id);
+    });
+  const selected: Memory[] = [];
+  let used = 0;
+  for (const memory of open) {
+    if (selected.length >= limit) break;
+    const cost = estimateTokens(memory.content) + 16;
+    if (selected.length > 0 && used + cost > tokenBudget) continue;
+    selected.push(memory); used += cost;
   }
   return selected;
 }
@@ -218,34 +265,76 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
       const eligibleMessageCount = acceptedMessageCount(messageCount,latestResult.rows[0]?.role as Message["role"] | undefined);
       const previousCount = Number(conversation.last_consolidated_count || 0);
       const delta = eligibleMessageCount - previousCount;
-      if (delta <= 0 || eligibleMessageCount < 2 || (!force && delta < settings.consolidationInterval)) return null;
+      if (delta <= 0 || eligibleMessageCount < 2) return null;
 
-      // Process the next unseen window rather than the newest 50 messages. If
-      // maintenance ever falls behind, no older accepted turns are skipped.
-      const batchSize = Math.min(50,delta);
-      const batchEnd = previousCount + batchSize;
-      const messageResult = await client.query(
+      // The cheap gate first: below the interval there is nothing to weigh.
+      if (!force && delta < settings.consolidationInterval) return null;
+
+      /*
+       * The next unseen window, read once and then weighed.
+       *
+       * `pendingTokens` is measured in JS rather than in SQL because the test
+       * database has no `length()`, and a query shape that cannot be tested is
+       * worse than one extra pass over rows this function is about to read
+       * anyway. It is bounded by the row ceiling, and under-counting can only
+       * happen when more rows are pending than the ceiling — which is already
+       * far past `maxPendingMessages`, so the backlog trigger has fired.
+       */
+      const candidateRows = await client.query(
         "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at ASC,id ASC OFFSET $3 LIMIT $4",
-        [conversationId,userId,previousCount,batchSize],
+        [conversationId,userId,previousCount,Math.min(maxBatchRows(),Math.max(1,delta))],
       );
-      const messages = messageResult.rows.map(messageFromRow) as Message[];
+      const candidates = candidateRows.rows.map(messageFromRow) as Message[];
+      const pendingTokens = candidates.reduce((sum,message) => sum + estimateTokens(message.content) + 8, 0);
+      /*
+       * Whether this window is worth a call, measured in transcript rather than
+       * in message count. Ten one-line messages no longer buy their own
+       * ~8K-token call; they wait for the story to accumulate, or for the
+       * pending-message ceiling.
+       */
+      const trigger = consolidationTrigger({ delta, interval: settings.consolidationInterval, pendingTokens, force });
+      if (!trigger.due) return null;
+
+      // The batch is a chronological PREFIX of what is unseen, so if
+      // maintenance ever falls behind no older accepted turn is skipped and the
+      // position pointer advances by exactly the number of rows read.
+      const batch = planConsolidationBatch(candidates);
+      if (!batch.size) return null;
+      const messages = batch.messages;
+      const batchEnd = previousCount + batch.size;
       const activeResult = await client.query(
         "SELECT * FROM memories WHERE user_id=$3 AND character_id=$1 AND (conversation_id=$2 OR conversation_id IS NULL) AND status='active' AND kind IN ('promise','open_loop','boundary') ORDER BY pinned DESC,importance DESC,created_at ASC",
         [conversation.character_id, conversationId, userId],
       );
-      const allActiveCommitments = activeResult.rows.map(memoryFromRow);
-      const activeCommitments = rankMemories(allActiveCommitments, `${conversation.summary || ""}\n${messages.map((message) => message.content).join("\n")}`, 0, 5000);
-      return { settings, conversation, batchEnd, messages, activeCommitments };
+      /*
+       * Which commitments this call may close.
+       *
+       * Deliberately NOT the writer's relevance ranking, which is what this
+       * used to reuse with a 5,000-token budget. See
+       * `commitmentResolutionCandidates`: ranking by similarity to the window
+       * hides exactly the commitments most likely to have been quietly
+       * fulfilled, and the block was a large fixed cost on every call.
+       */
+      const activeCommitments = commitmentResolutionCandidates(activeResult.rows.map(memoryFromRow));
+      return { settings, conversation, batchEnd, messages, activeCommitments, batch, trigger };
     });
     if (!prepared) return false;
-    const { settings, conversation, batchEnd, messages, activeCommitments } = prepared;
+    const { settings, conversation, batchEnd, messages, activeCommitments, batch } = prepared;
     const previousCount = Number(conversation.last_consolidated_count || 0);
+    if (batch.clipped) console.warn("[memory] a single message exceeded the consolidation window and was abridged (marked in the prompt)", JSON.stringify({ conversationId, batchEnd }));
 
     const { providerId,modelId } = taskModelSelection("memory_consolidation");
     const rpEngineId = String(conversation.rp_engine_id || settings.roleplayPreset);
+    /*
+     * Stable prefix first, changing material second.
+     *
+     * The system message is byte-identical on every consolidation call this
+     * deployment ever makes, so it is the part a provider prompt cache can
+     * actually reuse. See `consolidationInstructions`.
+     */
     const response = await completionWithUsage({ providerId, modelId }, [
-      { role: "system", content: "You are a precise continuity editor and episodic-memory curator. Output JSON only." },
-      { role: "user", content: consolidationPrompt(String(conversation.summary), messages, settings.ownerName, activeCommitments) },
+      { role: "system", content: `You are a precise continuity editor and episodic-memory curator. Output JSON only.\n\n${consolidationInstructions()}` },
+      { role: "user", content: consolidationInput(String(conversation.summary), messages, settings.ownerName, activeCommitments) },
     ], { json: true, maxTokens: 3600, temperature: 0.2 });
     if (response.usage) await recordUsageEvent({ userId, conversationId, providerId, model: modelId, actualModel: providerModelId(providerId,modelId) ?? modelId, rpEngineId, kind: "memory_consolidation", taskRoute: "memory_consolidation", usage: response.usage });
     const data = parseJson<Consolidation>(response.content);

@@ -4,6 +4,9 @@ import { adultTagsIn, canonicalTag, isAdultTag, isPlatformTag, maxHashtags, maxT
 import type { CreationType } from "./types";
 import { creationTypes } from "./types";
 
+/** The product limit on extra openings, matching `characterSchema`. */
+export const maxAlternateGreetings = 12;
+
 /**
  * The canonical AI creation result.
  *
@@ -109,16 +112,71 @@ export function resolveCreationType(raw: string, castCount: number, requested?: 
   return castCount > 1 ? "cast" : "character";
 }
 
+/**
+ * The reader is not a cast member.
+ *
+ * Almost every card format describes who the READER plays — "You are the new
+ * recruit", "{{user}} is her younger brother", a "User" entry in a character
+ * list — and a model asked to extract "the characters" will dutifully return
+ * that as one of them. The consequences are worse than one stray row: an
+ * AI-portrayed cast that contains the reader means the writer plays the reader,
+ * speaks for them and decides what they do, which is the one thing the roleplay
+ * prompt forbids everywhere else. It also inflates the count that decides
+ * Character versus Cast, so a single character with a described reader role
+ * arrived as a two-person Cast.
+ *
+ * Matching is on the NAME, deliberately, and on an explicit flag if the model
+ * sets one. A name is the reliable signal; a description that says "you" is
+ * not — a character can be written in the second person and still be a
+ * character. Anything not on this list stays.
+ */
+/** Already in `comparableName` form: lower case, no punctuation, single spaces. */
+const readerNames = new Set([
+  "user", "the user", "you", "yourself", "player", "the player", "reader", "the reader",
+  "me", "myself", "protagonist you", "you the user", "you the reader", "you the player",
+  "user persona", "player character", "the main character you",
+]);
+
+/** Strips template markers and punctuation so `{{user}}` and `<USER>` both match. */
+function comparableName(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/\{\{\s*([^}]*?)\s*\}\}/g, "$1")
+    .replace(/[<>[\]{}()]/g, " ")
+    .replace(/[^a-z ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function isReaderCastEntry(entry: { name: string; role?: string; isUser?: unknown; isPlayer?: unknown }) {
+  if (boolish(entry.isUser) || boolish(entry.isPlayer)) return true;
+  const name = comparableName(entry.name);
+  if (readerNames.has(name)) return true;
+  // "the user character", "user persona", "player character (you)".
+  if (/^(the )?(user|player|reader)( character| persona| avatar| insert)?$/.test(name)) return true;
+  // A role that says, in so many words, that this entry IS the reader.
+  const role = comparableName(entry.role ?? "");
+  return role === "the user" || role === "the player" || role === "the reader" || role === "you";
+}
+
 /** Cast members, de-duplicated by name so one person cannot arrive twice. */
 function normalizeCast(value: unknown) {
   const raw = Array.isArray(value) ? value : [];
   const seen = new Set<string>();
   const members: { name: string; role: string; description: string; tagline: string; avatarPath: string; avatarUrl: string }[] = [];
+  const readerEntries: string[] = [];
   let duplicates = 0;
   for (const entry of raw) {
     const item = object(entry);
     const name = text(item.name ?? item.characterName ?? item.character, 120);
     if (!name) continue;
+    const role = text(item.role ?? item.relationship ?? item.title, 240);
+    if (isReaderCastEntry({ name, role, isUser: item.isUser, isPlayer: item.isPlayer })) {
+      // Kept, not discarded: what the source says about the reader belongs in
+      // `userRole`, which is where the writer prompt already reads it from.
+      readerEntries.push(text(item.description ?? item.profile ?? item.details ?? item.personality, 4000) || role);
+      continue;
+    }
     const key = name.toLowerCase();
     if (seen.has(key)) {
       // A model that lists the same person twice usually splits their detail
@@ -135,7 +193,7 @@ function normalizeCast(value: unknown) {
     seen.add(key);
     members.push({
       name,
-      role: text(item.role ?? item.relationship ?? item.title, 240),
+      role,
       description: text(item.description ?? item.profile ?? item.details ?? item.personality, 8000),
       tagline: text(item.tagline ?? item.summary ?? item.blurb ?? item.shortDescription, 240),
       avatarPath: "",
@@ -143,7 +201,7 @@ function normalizeCast(value: unknown) {
     });
     if (members.length >= 50) break;
   }
-  return { members, duplicates };
+  return { members, duplicates, readerEntries: readerEntries.filter(Boolean) };
 }
 
 /**
@@ -254,11 +312,35 @@ export function normalizeCreationResult(raw: string, options: NormalizeOptions =
     });
   }
 
-  const { members: cast, duplicates } = normalizeCast(value.cast ?? value.characters ?? value.castMembers);
+  const { members: cast, duplicates, readerEntries } = normalizeCast(value.cast ?? value.characters ?? value.castMembers);
   if (duplicates) notices.push({ kind: "structure", message: `${duplicates} duplicate cast ${duplicates === 1 ? "entry was" : "entries were"} merged into the character they described.` });
+  if (readerEntries.length) {
+    notices.push({
+      kind: "structure",
+      message: `${readerEntries.length === 1 ? "An entry described" : `${readerEntries.length} entries described`} the reader rather than a character the AI plays, so ${readerEntries.length === 1 ? "it was moved" : "they were moved"} to “Your role in this story”. Cast is only for characters Afterglow portrays.`,
+    });
+  }
 
   const typeHint = text(value.creationType ?? value.type ?? value.cardType ?? value.profileType, 60);
-  const creationType = resolveCreationType(typeHint, cast.length, options.creationType);
+  /*
+   * The reader must not be able to turn a Character into a Cast.
+   *
+   * `resolveCreationType` trusts the model's own answer over the member count,
+   * and a model that put the reader in the cast usually answered "cast"
+   * because of it. So when removing reader entries leaves at most one
+   * AI-portrayed character, and the creator did not explicitly ask for a cast,
+   * the answer is corrected rather than honoured. A creator's own choice is
+   * still an instruction and is never overridden.
+   */
+  const hintedType = resolveCreationType(typeHint, cast.length, options.creationType);
+  const readerInflatedCast = !options.creationType && hintedType === "cast" && readerEntries.length > 0 && cast.length <= 1;
+  const creationType = readerInflatedCast ? "character" : hintedType;
+  if (readerInflatedCast) {
+    notices.push({
+      kind: "structure",
+      message: "This is one character with a described reader role, not a cast, so it was kept as a Character. Change it on the first step if that is wrong.",
+    });
+  }
   const profileType = creationType === "character" ? "single" as const : "ensemble" as const;
 
   const suppliedName = text(value.name ?? value.characterName ?? value.cardName, 120);
@@ -317,9 +399,42 @@ export function normalizeCreationResult(raw: string, options: NormalizeOptions =
     notices.push({ kind: "world", message: `World material was separated into “${world.name}”. It becomes a reusable World when you save, and you can edit or remove it first.` });
   }
 
-  const greeting = text(value.greeting ?? value.firstMessage ?? value.initialMessage ?? value.opening, 8000);
-  const alternateGreetings = list(value.alternateGreetings ?? value.alternativeGreetings ?? value.initialMessages ?? value.openings, 8000, 12)
-    .filter((opening) => opening !== greeting);
+  const suppliedUserRole = text(value.userRole ?? value.playerRole ?? value.yourRole, 4000);
+  // What a removed reader entry said about the reader is not lost; it lands in
+  // the field the writer prompt already reads the reader's role from.
+  const userRole = suppliedUserRole || text(readerEntries.join("\n\n"), 4000);
+
+  /*
+   * Openings, kept.
+   *
+   * "The greeting disappeared" had three separate causes and all three are
+   * handled here rather than hoped away:
+   *
+   *   THE PRIMARY WAS EMPTY WHILE ALTERNATES EXISTED. A model that returns
+   *   `greeting: ""` and three `alternateGreetings` was giving three openings,
+   *   not none. The first is promoted rather than the creation opening on
+   *   silence.
+   *
+   *   MORE THAN THE LIMIT ARRIVED. The schema accepts twelve; a card with
+   *   fifteen used to lose three without a word. They are still capped — the
+   *   product limit is real — but the creator is told how many and can keep
+   *   the ones they want.
+   *
+   *   THE RESPONSE STOPPED MID-ARRAY. That is reported by `parsed.repair`
+   *   above, and the openings block is now written EARLY in the output
+   *   contract so a truncated response loses prose rather than openings.
+   */
+  const suppliedOpenings = list(value.alternateGreetings ?? value.alternativeGreetings ?? value.initialMessages ?? value.openings, 8000, 64);
+  const primary = text(value.greeting ?? value.firstMessage ?? value.initialMessage ?? value.opening, 8000);
+  const greeting = primary || suppliedOpenings[0] || "";
+  const remaining = suppliedOpenings.filter((opening) => opening !== greeting);
+  const alternateGreetings = remaining.slice(0, maxAlternateGreetings);
+  if (remaining.length > alternateGreetings.length) {
+    notices.push({
+      kind: "structure",
+      message: `${remaining.length + 1} openings were found and Afterglow keeps ${maxAlternateGreetings + 1}, so the last ${remaining.length - alternateGreetings.length} ${remaining.length - alternateGreetings.length === 1 ? "was" : "were"} not imported. The rest are on the Opening step.`,
+    });
+  }
 
   const draft = characterSchema.parse({
     name,
@@ -328,7 +443,7 @@ export function normalizeCreationResult(raw: string, options: NormalizeOptions =
     profileType,
     tagline: text(value.tagline ?? value.hook ?? value.summary, 300),
     description: text(value.description ?? value.publicDescription ?? value.premise, 6000),
-    userRole: text(value.userRole ?? value.playerRole ?? value.yourRole, 4000),
+    userRole,
     avatarUrl,
     avatarPath: "",
     accent,
