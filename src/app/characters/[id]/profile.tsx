@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Award, BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images, Link2,
-  MessageCircle, Pencil, Plus, Share2, Sparkles, Tag, Trash2, UserRound, Users, X,
+  Flag, MessageCircle, Pencil, Plus, Share2, ShieldAlert, Sparkles, Tag, Trash2, UserRound, Users, X,
 } from "lucide-react";
 import type { AttachedWorld, Character, CharacterComment } from "@/lib/types";
 import {
@@ -92,6 +92,11 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const [posting, setPosting] = useState(false);
   const overviewRef = useRef<HTMLParagraphElement>(null);
   const [overflowing, setOverflowing] = useState(false);
+  const [reportOpen,setReportOpen]=useState(false);
+  const [reportReason,setReportReason]=useState<"underage"|"real_person"|"stolen"|"other">("other");
+  const [reportDetails,setReportDetails]=useState("");
+  const [reportState,setReportState]=useState<"ready"|"submitting"|"success"|"error">("ready");
+  const [reportError,setReportError]=useState("");
 
   useEffect(() => {
     fetch(`/api/characters/${characterId}`)
@@ -107,6 +112,13 @@ export default function CharacterProfile({ characterId }: { characterId: string 
       .catch(() => setComments([]));
   }, [characterId]);
 
+  useEffect(()=>{
+    if(!reportOpen)return;
+    const close=(event:KeyboardEvent)=>{if(event.key==="Escape")setReportOpen(false);};
+    window.addEventListener("keydown",close);
+    return()=>window.removeEventListener("keydown",close);
+  },[reportOpen]);
+
   const character = detail?.character;
   const worlds = useMemo(() => detail?.worlds ?? [], [detail]);
 
@@ -117,6 +129,16 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   // plain one keeps its clamp and its Show more, exactly as before.
   const illustrated = useMemo(() => imageCount(character?.descriptionRich) > 0, [character]);
   const cast = useMemo(() => (character ? publicCastMembers(character.cast) : []), [character]);
+
+  async function submitReport(){
+    setReportState("submitting");setReportError("");
+    try{
+      const response=await fetch("/api/reports",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({characterId,reason:reportReason,details:reportDetails})});
+      const body=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(body.error||"Could not submit this report");
+      setReportState("success");
+    }catch(reason){setReportError(reason instanceof Error?reason.message:"Could not submit this report");setReportState("error");}
+  }
 
   useEffect(() => {
     const node = overviewRef.current;
@@ -322,7 +344,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const heroTags = character.tags.slice(0, 6);
   // Which actions exist is decided in one place, so the menu here and any
   // other surface that grows one cannot disagree about what ownership allows.
-  const menuIcons = { edit: <Pencil size={16} aria-hidden />, copy_link: <Link2 size={16} aria-hidden />, delete: <Trash2 size={16} aria-hidden /> };
+  const menuIcons = { edit: <Pencil size={16} aria-hidden />, copy_link: <Link2 size={16} aria-hidden />, report:<Flag size={16} aria-hidden />, delete: <Trash2 size={16} aria-hidden /> };
   const menuHandlers = {
     /*
      * Straight to the edit route, which is a real page rather than a redirect
@@ -338,9 +360,12 @@ export default function CharacterProfile({ characterId }: { characterId: string 
       router.push(creationEditHref(character.id));
     },
     copy_link: copyLink,
+    report:()=>{setReportOpen(true);setReportState("ready");setReportError("");},
     delete: () => void removeCreation(),
   };
-  const menuItems: MoreMenuItem[] = creationActions({ owner: detail.owner }).map((action) => ({
+  const menuItems: MoreMenuItem[] = creationActions({ owner: detail.owner })
+    .filter((action)=>character.moderationStatus!=="removed"||!(["edit","delete"] as const).includes(action.id as "edit"|"delete"))
+    .map((action) => ({
     label: action.label,
     icon: menuIcons[action.id],
     danger: action.danger,
@@ -348,6 +373,22 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   }));
 
   return <main className={styles.page} style={accentVariables(character.accent) as React.CSSProperties}>
+    {reportOpen&&<div className={styles.reportBackdrop} role="presentation" onMouseDown={(event)=>{if(event.target===event.currentTarget)setReportOpen(false);}}>
+      <section className={styles.reportModal} role="dialog" aria-modal="true" aria-labelledby="report-title">
+        <button className={styles.reportClose} aria-label="Close report dialog" onClick={()=>setReportOpen(false)}><X size={18}/></button>
+        {reportState==="success"?<div className={styles.reportSuccess}><Flag size={26} aria-hidden/><h2 id="report-title">Report received</h2><p>Thank you. Afterglow’s moderation team can now review the creation and the snapshot captured with your report.</p><button onClick={()=>setReportOpen(false)}>Done</button></div>:<>
+          <span className={styles.reportEyebrow}>Safety report</span><h2 id="report-title">Report {title}</h2>
+          <p className={styles.reportIntro}>Choose the closest reason. The creator will not see your report or its details.</p>
+          <fieldset className={styles.reportReasons}><legend>Reason</legend>{[
+            ["underage","Sexual content involving minors"],["real_person","Real person or impersonation"],["stolen","Stolen or copied creation"],["other","Other safety concern"],
+          ].map(([value,label],index)=><label key={value} data-active={reportReason===value}><input autoFocus={index===0} type="radio" name="report-reason" value={value} checked={reportReason===value} onChange={()=>setReportReason(value as typeof reportReason)}/><span>{label}</span></label>)}</fieldset>
+          <label className={styles.reportDetails}>Details <span>Optional</span><textarea maxLength={3000} rows={5} value={reportDetails} onChange={(event)=>setReportDetails(event.target.value)} placeholder="What should the moderation team know?"/></label>
+          {reportError&&<p className={styles.reportError} role="alert">{reportError}</p>}
+          <div className={styles.reportActions}><button onClick={()=>setReportOpen(false)}>Cancel</button><button disabled={reportState==="submitting"} onClick={()=>void submitReport()}>{reportState==="submitting"?"Submitting…":"Submit report"}</button></div>
+        </>}
+      </section>
+    </div>}
+    {detail.owner&&character.moderationStatus==="removed"&&<div className={styles.moderationNotice} role="status"><ShieldAlert size={16} aria-hidden/><div><strong>This creation was removed by Afterglow.</strong><span>It is private and locked from publishing while moderation is active.{character.moderationReason?` ${character.moderationReason}`:""}</span></div></div>}
     <div className={styles.hero}>
       <div className={styles.heroMedia}>
         {image ? <img src={image} alt="" /> : <span className={styles.heroFallback}>{initials(character.name)}</span>}

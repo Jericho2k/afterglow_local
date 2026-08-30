@@ -45,6 +45,9 @@ const memoryFeedback = await import("@/app/api/memory-feedback/route");
 const conversationWorlds = await import("@/app/api/conversations/[id]/worlds/route");
 const follows = await import("@/app/api/follows/route");
 const creators = await import("@/app/api/creators/[username]/route");
+const reports = await import("@/app/api/reports/route");
+const adminReports = await import("@/app/api/admin/reports/route");
+const adminReportAction = await import("@/app/api/admin/reports/[id]/route");
 
 const aliceCharacter = "aaaaaaaa-0000-4000-8000-000000000001";
 const alicePublic = "aaaaaaaa-0000-4000-8000-000000000002";
@@ -114,6 +117,35 @@ describe("unauthenticated access", () => {
 });
 
 describe("cross-account access", () => {
+  it("captures private moderation evidence once and lets an explicit moderator remove and restore",async()=>{
+    account={id:bob,email:"bob@example.com"};
+    const submitted=await reports.POST(post("http://test/api/reports",{characterId:alicePublic,reason:"underage",details:"Safety concern"}));
+    expect(submitted.status).toBe(201);
+    const reportId=String((await submitted.json()).reportId);
+    expect((await reports.POST(post("http://test/api/reports",{characterId:alicePublic,reason:"other",details:"duplicate"}))).status).toBe(409);
+    const evidence=await query("SELECT snapshot FROM character_report_evidence WHERE report_id=$1",[reportId]);
+    expect(evidence.rowCount).toBe(1);
+    expect(evidence.rows[0].snapshot).not.toHaveProperty("sourceMaterial");
+
+    expect((await adminReports.GET(new Request("http://test/api/admin/reports"))).status).toBe(403);
+    account={id:alice,email:"alice@example.com"};
+    const queue=await (await adminReports.GET(new Request("http://test/api/admin/reports"))).json();
+    expect(queue.groups[0].priority).toBe(true);
+    expect(queue.groups[0].reportCount).toBe(1);
+
+    const remove=await adminReportAction.POST(post(`http://test/api/admin/reports/${reportId}`,{action:"remove_creation",reason:"Safety review"}),{params:Promise.resolve({id:reportId})});
+    expect(remove.status).toBe(200);
+    let creation=(await query("SELECT visibility,moderation_status,published_at FROM characters WHERE id=$1",[alicePublic])).rows[0];
+    expect(creation.visibility).toBe("private");expect(creation.moderation_status).toBe("removed");
+
+    const restore=await adminReportAction.POST(post(`http://test/api/admin/reports/${reportId}`,{action:"restore_creation"}),{params:Promise.resolve({id:reportId})});
+    expect(restore.status).toBe(200);
+    creation=(await query("SELECT visibility,moderation_status FROM characters WHERE id=$1",[alicePublic])).rows[0];
+    expect(creation.visibility).toBe("public");expect(creation.moderation_status).toBe("active");
+    expect(Number((await query("SELECT COUNT(*) count FROM moderation_actions WHERE report_id=$1",[reportId])).rows[0].count)).toBe(2);
+    account={id:bob,email:null};
+    expect((await reports.POST(post("http://test/api/reports",{characterId:alicePublic,reason:"other",details:"A new concern after resolution"}))).status).toBe(201);
+  });
   it("creates an isolated conversation branch through the selected message", async () => {
     account = { id: alice, email: null };
     const sourceMessage = await query("SELECT id FROM messages WHERE conversation_id=$1 ORDER BY created_at,id LIMIT 1",[aliceConversation]);

@@ -88,7 +88,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const supportsPreviews = await worldPreviewsSupported(account.id);
   const detail = await asUser(account.id, async (client) => {
     const result = await client.query(
-      `SELECT ${wantsEditPayload ? "c.*" : "c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,c.nsfw_enabled,c.visibility,c.like_count,c.chat_count,c.message_count,c.published_at,c.created_at,c.updated_at"},p.id creator_id,p.username creator_username,p.display_name creator_display_name,
+      `SELECT ${wantsEditPayload ? "c.*" : "c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,c.nsfw_enabled,c.visibility,c.moderation_status,c.moderation_reason,c.like_count,c.chat_count,c.message_count,c.published_at,c.created_at,c.updated_at"},p.id creator_id,p.username creator_username,p.display_name creator_display_name,
          p.avatar_path creator_avatar_path,p.profile_border creator_border,
          COALESCE(p.follower_count,0) creator_followers,
          COALESCE(cs.user_messages,0) creator_messages,COALESCE(cs.published_creations,0) creator_creations,
@@ -311,6 +311,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const account = await currentAccount();
   if (!account) return unauthorized();
   const { id } = await context.params;
+  const moderation=await asUser(account.id,(client)=>client.query("SELECT moderation_status,moderation_reason FROM characters WHERE id=$1 AND user_id=$2",[id,account.id]));
+  if(moderation.rows[0]?.moderation_status==="removed")return Response.json({error:"This creation was removed by Afterglow and is locked from editing or republishing while moderation is active."},{status:423});
   const parsed = characterSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: characterValidationMessage(parsed.error), details: parsed.error.flatten() }, { status: 400 });
   const c = parsed.data;

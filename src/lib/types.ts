@@ -109,6 +109,8 @@ export type Character = {
   /** Public totals across every account, not the viewer's own activity. */
   publicStats: CharacterPublicStats;
   visibility: CharacterVisibility;
+  moderationStatus?: "active" | "removed";
+  moderationReason?: string;
   nsfwEnabled: boolean;
   /** Global saves. Same number as `publicStats.saves`, kept for card code. */
   saveCount?: number;

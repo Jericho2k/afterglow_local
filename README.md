@@ -85,7 +85,8 @@ psql "$DATABASE_URL" -f supabase/migrations/0020_scene_physical_state.sql
 psql "$DATABASE_URL" -f supabase/migrations/0021_creator_profile_v2.sql
 psql "$DATABASE_URL" -f supabase/migrations/0022_social_discovery.sql
 psql "$DATABASE_URL" -f supabase/migrations/0023_branch_copy_indexes.sql
-psql "$DATABASE_URL" -f supabase/migrations/0024_writer_openrouter_byok.sql
+psql "$DATABASE_URL" -f supabase/migrations/0024_byok_creation_moderation.sql
+psql "$DATABASE_URL" -f supabase/migrations/0025_writer_openrouter_byok.sql
 ```
 
 Every file is idempotent, so re-running them is safe. `0002_storage.sql` touches the `storage` schema and only applies to Supabase.
@@ -131,7 +132,7 @@ No part of the application uses the service-role key. Ordinary reads and writes 
 
    The two `NEXT_PUBLIC_*` values are inlined into the browser bundle while the image is built, not read when the container starts, so they must be present **before** the build runs. The Dockerfile declares them as build arguments and Railway passes service variables to the build automatically; on another host, pass them with `--build-arg`. Adding them to an already-built deployment has no effect until it is rebuilt, and the app now says so on its front page rather than failing silently.
 4. Optionally enable OpenRouter with the server-only `ENABLE_OPENROUTER=true` and `OPENROUTER_API_KEY`. Add the desired catalog IDs to `ALLOWED_MODELS`: `minimax-m2-her`, `kimi-k2.5`, `glm-4.7`, `midnight-cherry`, `passion-fruit`, and `wild-peach`. `DEEPSEEK_BASE_URL` and `DEEPSEEK_MODEL` remain available for the direct provider.
-5. To enable writer-only BYOK, apply migration `0024`, set `ENABLE_BYOK=true`, and set `BYOK_ENCRYPTION_KEY` to one stable base64-encoded 32-byte random secret. An operator can generate that format with `openssl rand -base64 32`; store the output in the deployment secret manager and never print or commit a production value. `OPENROUTER_API_KEY` remains Afterglow's platform credential for memory, Scene State, canon, embeddings, imports, and other internal work.
+5. To enable writer-only BYOK, apply migrations `0024` and `0025`, set `ENABLE_BYOK=true`, and set `BYOK_ENCRYPTION_KEY` to one stable base64-encoded 32-byte random secret. An operator can generate that format with `openssl rand -base64 32`; store the output in the deployment secret manager and never print or commit a production value. `OPENROUTER_API_KEY` remains Afterglow's platform credential for memory, Scene State, canon, embeddings, imports, and other internal work.
 6. To trial Memory Retrieval V2, apply migration `0006`, set `MEMORY_RETRIEVAL_V2_ENABLED=true`, and put the owner/test account UUID in `MEMORY_RETRIEVAL_V2_USER_IDS`. Keep `MEMORY_RETRIEVAL_V2_ALL_USERS=false` during beta. Semantic recall uses Afterglow's OpenRouter key with `MEMORY_EMBEDDING_MODEL=qwen/qwen3-embedding-8b` and `MEMORY_EMBEDDING_DIMENSIONS=1024`; failure automatically falls back to V1 lexical retrieval.
 7. Apply migration `0007` for per-story response length/creativity and branch idempotency, then `0008` for canonical generated-user-message accounting. Set `AFTERGLOW_ADMIN_USER_IDS` to the comma-separated Supabase account UUIDs that may access memory diagnostics, tuning, manual consolidation, and the internal cost ledger. During transition, `MEMORY_RETRIEVAL_V2_USER_IDS` is used only when the explicit admin list is empty.
 
