@@ -956,7 +956,7 @@ export default function AppShell() {
             className="sidebar-lock"
             aria-label="Sign out"
             title="Sign out"
-            onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); clearUnreadNotifications(); setSidebarOpen(false); setAuthenticated(false); setProfile(null); }}
+            onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); clearUnreadNotifications(); setSidebarOpen(false); setSettingsOpen(false); setAuthenticated(false); setProfile(null); setSettings(defaultSettings); setModels([]); setModelCatalog({providers:[],models:[],engines:[]}); }}
           ><LogOut size={16} aria-hidden /></button>
         </div>
       </aside>

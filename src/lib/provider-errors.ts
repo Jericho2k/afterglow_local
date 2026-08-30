@@ -75,6 +75,14 @@ export type ProviderDiagnostic = {
   detail?: string;
 };
 
+/** Defensive log redaction for provider bodies and accidentally stringified headers. */
+export function redactProviderSecrets(value: string) {
+  return value
+    .replace(/(authorization["']?\s*[:=]\s*["']?bearer\s+)[^\s"',}]+/gi, "$1[REDACTED]")
+    .replace(/(bearer\s+)[^\s"',}]+/gi, "$1[REDACTED]")
+    .replace(/sk-or-v1-[A-Za-z0-9_-]+/g, "[REDACTED_OPENROUTER_KEY]");
+}
+
 export class ProviderError extends Error {
   readonly category: ProviderErrorCategory;
   readonly diagnostic: ProviderDiagnostic;
@@ -148,8 +156,12 @@ export function classifyProviderFailure(status: number, body: string): ProviderE
  */
 export function logProviderDiagnostic(context: string, error: unknown) {
   if (error instanceof ProviderError) {
-    console.error(`[provider] ${context}`, JSON.stringify({ category: error.category, ...error.diagnostic }));
+    const diagnostic = {
+      ...error.diagnostic,
+      ...(error.diagnostic.detail ? { detail: redactProviderSecrets(error.diagnostic.detail) } : {}),
+    };
+    console.error(`[provider] ${context}`, redactProviderSecrets(JSON.stringify({ category: error.category, ...diagnostic })));
     return;
   }
-  console.error(`[provider] ${context}`, error instanceof Error ? error.message : String(error));
+  console.error(`[provider] ${context}`, redactProviderSecrets(error instanceof Error ? error.message : String(error)));
 }

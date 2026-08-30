@@ -267,6 +267,23 @@ describeTenancy("multi-tenant isolation", () => {
     expect(await visibleCount(pool, bob, "user_settings", "user_id=$1", [bob])).toBe(1);
   });
 
+  it("gives the browser role no path to credential ciphertext or metadata", async () => {
+    await pool.query(
+      `INSERT INTO user_provider_credentials
+       (user_id,provider,ciphertext,nonce,auth_tag,key_version,key_suffix,validated_at)
+       VALUES ($1,'openrouter',$2,$3,$4,1,'a7F2',now())`,
+      [alice, Buffer.from("ciphertext"), Buffer.alloc(12, 1), Buffer.alloc(16, 2)],
+    );
+    for (const accountId of [alice, bob]) {
+      await expect(asAccount(pool, accountId, (run) => run("SELECT * FROM user_provider_credentials")))
+        .rejects.toThrow(/permission denied|row-level security/i);
+      await expect(asAccount(pool, accountId, (run) => run("UPDATE user_provider_credentials SET key_suffix='nope' WHERE user_id=$1", [alice])))
+        .rejects.toThrow(/permission denied|row-level security/i);
+      await expect(asAccount(pool, accountId, (run) => run("DELETE FROM user_provider_credentials WHERE user_id=$1", [alice])))
+        .rejects.toThrow(/permission denied|row-level security/i);
+    }
+  });
+
   it("lets a second account start a private chat from a published character", async () => {
     const bobConversation = "cccccccc-0000-4000-8000-000000000002";
     await asAccount(pool, bob, async (run) => {

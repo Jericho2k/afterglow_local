@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { conversationCharacter, ownedConversation } from "@/lib/access";
 import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
-import { streamCompletion, type LLMUsage } from "@/lib/llm";
+import { streamWriterCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { focusedRetrievalQuery, maybeBackfillMemoryEmbeddings, maybeCurateCanon, memoryRetrievalV2Enabled, retrieveContinuityV2 } from "@/lib/memory-v2";
 import { buildWriterPrompt, continueSceneCue, continuityPlacementFor, writerMessages } from "@/lib/prompts";
@@ -20,10 +20,18 @@ import { responseLengthPlan } from "@/lib/response-length";
 import { contextExceededMessage, fitConversation } from "@/lib/context-budget";
 import { inferenceSessionId } from "@/lib/inference-session";
 import { ProviderError, classifyProviderFailure, logProviderDiagnostic, publicErrorMessage, publicErrorStatus } from "@/lib/provider-errors";
-import { canUseByok } from "@/lib/byok";
+import { ByokError, preflightWriterFunding, resolveWriterFunding, type InferenceFunding } from "@/lib/byok";
 
 /** An error a provider delivered inside the stream rather than as a status. */
 type StreamFailure = { message: string; code?: number } | null;
+
+function writerErrorMessage(error: unknown, funding: InferenceFunding) {
+  if (funding.type === "byok" && error instanceof ProviderError) {
+    if (error.category === "auth") return "Your OpenRouter key is no longer valid. Reconnect it in Settings.";
+    if (error.category === "billing") return "Your OpenRouter account couldn't fund this request. Check your OpenRouter credits.";
+  }
+  return publicErrorMessage(error);
+}
 
 export const maxDuration = 120;
 
@@ -116,6 +124,17 @@ export async function POST(request: Request) {
         : "This chat's model is no longer available. Choose another model in chat tools — your story, memories and settings are untouched.",
       reason: !engineDefinition ? "engine_unavailable" : "model_unavailable",
     }, { status: 409 });
+  }
+
+  // Funding is preflighted before a Send persists the user's turn. This check
+  // reads only preference/existence metadata, not ciphertext, so the secret can
+  // still be decrypted immediately before the outgoing writer call.
+  let fundingIntent: Awaited<ReturnType<typeof preflightWriterFunding>>;
+  try {
+    fundingIntent = await preflightWriterFunding(account.id, "rp_generation", selection);
+  } catch (error) {
+    if (error instanceof ByokError) return Response.json({ error: error.message, reason: error.code }, { status: 409 });
+    throw error;
   }
 
   // Memory maintenance is deliberately not on the reply's critical path. The
@@ -277,11 +296,16 @@ export async function POST(request: Request) {
     }));
   }
   const completionMessages = writerMessages(writerPrompt, fitted.messages, placement);
-  let writerCredential;
-  try {
-    writerCredential=await canUseByok(account.id,"rp_generation",selection);
-  } catch(error) {
-    return Response.json({error:error instanceof Error?error.message:"Your personal provider key could not be used."},{status:409});
+  let writerFunding: InferenceFunding = { type: "afterglow" };
+  if (fundingIntent.type === "byok") {
+    try {
+      // The ciphertext is read and decrypted only now: after context assembly,
+      // directly before the request that needs it. Nothing stores the result.
+      writerFunding = await resolveWriterFunding(account.id, "rp_generation", selection);
+    } catch (error) {
+      if (error instanceof ByokError) return Response.json({ error: error.message, reason: error.code }, { status: error.code === "server_configuration" ? 503 : 409 });
+      throw error;
+    }
   }
   // Response Length owns the output envelope as well as the directive. The
   // account's `maxTokens` is the Natural baseline the other two scale from, so
@@ -303,12 +327,11 @@ export async function POST(request: Request) {
     // ask for the same upstream host, which is what lets its prompt cache stay
     // warm; a different story is a different session and shares nothing.
     sessionId: inferenceSessionId("rp_generation", conversationId),
-    apiKey:writerCredential.apiKey,
   };
   let upstream: ReadableStream<Uint8Array>;
   const requestStartedAt = Date.now();
   try {
-    upstream = await streamCompletion(selection,completionMessages,completionOptions);
+    upstream = await streamWriterCompletion(selection,completionMessages,writerFunding,completionOptions);
   } catch (error) {
     // The operator gets the status, the route and the upstream body; the
     // reader gets one sentence. These are two different strings on purpose —
@@ -317,8 +340,7 @@ export async function POST(request: Request) {
     logProviderDiagnostic("rp generation failed before streaming", error instanceof ProviderError
       ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId })
       : error);
-    const personalKeyFailure=writerCredential.fundingSource==="byok"&&error instanceof ProviderError&&(error.category==="auth"||error.category==="billing");
-    return Response.json({ error: personalKeyFailure?"OpenRouter rejected your personal key or its balance. Check it in Settings; Afterglow did not retry on the platform key.":publicErrorMessage(error) }, { status: personalKeyFailure?402:publicErrorStatus(error) });
+    return Response.json({ error: writerErrorMessage(error, writerFunding) }, { status: publicErrorStatus(error) });
   }
   if (userMessageId) {
     await asUser(account.id, (client) => client.query(
@@ -371,7 +393,7 @@ export async function POST(request: Request) {
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       const recordAttemptUsage = async () => {
         if (!usage) return;
-        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, fundingSource:writerCredential.fundingSource, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
+        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, fundingSource: writerFunding.type, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
       };
       const consume = async (stream: ReadableStream<Uint8Array>,startedAt: number) => {
         const reader = stream.getReader();
@@ -463,7 +485,7 @@ export async function POST(request: Request) {
           // The retry is DIFFERENT from the attempt that failed, which is the
           // point. It avoids the host that produced nothing, and if the silence
           // looked like an envelope spent on reasoning it asks for none.
-          const retry = await streamCompletion(selection,completionMessages,{
+          const retry = await streamWriterCompletion(selection,completionMessages,writerFunding,{
             ...completionOptions,
             excludeProviders: exhaustedProviders,
             ...(spentOnReasoning ? { thinking: false } : {}),
@@ -532,8 +554,7 @@ export async function POST(request: Request) {
         logProviderDiagnostic("rp generation failed mid-stream", error instanceof ProviderError
           ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, upstreamProvider })
           : error);
-        const personalKeyFailure=writerCredential.fundingSource==="byok"&&error instanceof ProviderError&&(error.category==="auth"||error.category==="billing");
-        send({ type: "error", error: personalKeyFailure?"OpenRouter rejected your personal key or its balance. Check it in Settings; Afterglow did not retry on the platform key.":publicErrorMessage(error) });
+        send({ type: "error", error: writerErrorMessage(error, writerFunding) });
         controller.close();
       }
     },

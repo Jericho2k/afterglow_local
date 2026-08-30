@@ -36,8 +36,8 @@ function usage(row: Record<string, unknown>) {
     cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
     cachedRatio: promptTokens > 0 ? cacheHitTokens / promptTokens : null,
     requests: Number(row.requests), estimatedCostUsd: Number(row.estimated_cost_usd),
-    afterglowCostUsd:Number(row.afterglow_cost_usd ?? row.estimated_cost_usd),
-    byokCostUsd:Number(row.byok_cost_usd ?? 0),
+    afterglowCostUsd: Number(row.afterglow_cost_usd ?? row.estimated_cost_usd),
+    byokCostUsd: Number(row.byok_cost_usd ?? 0),
     // Averaged here rather than in SQL: only rows that actually reported a
     // measurement are counted, so a provider that omits TTFT cannot drag the
     // figure toward zero and make latency look better than it was.
@@ -100,14 +100,14 @@ export async function GET(request: Request) {
         values,
       ),
     ]);
-    const totalCost = Number(result.rows[0].afterglow_cost_usd);
+    const platformCost = Number(result.rows[0].afterglow_cost_usd);
     const messageCount = Number(userMessages.rows[0].count);
     return {
       range: { id: range.id, label: range.label, from: range.from?.toISOString() ?? null, to: range.to?.toISOString() ?? null },
       usage: usage(result.rows[0]),
       replies: Number(replies.rows[0].count),
       userMessages: messageCount,
-      costPer100UserMessages: messageCount ? totalCost * 100 / messageCount : 0,
+      costPer100UserMessages: messageCount ? platformCost * 100 / messageCount : 0,
       byModel: models.rows.map((item) => ({ key: String(item.model), ...usage(item) })),
       byProvider: providers.rows.map((item) => ({ key: String(item.provider_id), ...usage(item) })),
       byEngine: engines.rows.map((item) => ({ key: String(item.rp_engine_id), ...usage(item) })),

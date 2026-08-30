@@ -611,10 +611,11 @@ export type UsageSummary = {
   avgLatencyMs: number | null;
   avgTtftMs: number | null;
   requests: number;
+  /** Total provider-reported/estimated inference value, regardless of payer. */
   estimatedCostUsd: number;
-  /** Spend paid by the platform; BYOK is deliberately excluded. */
+  /** Actual platform expense; explicitly excludes BYOK rows. */
   afterglowCostUsd: number;
-  /** Provider-reported value for calls paid with the account's own key. */
+  /** Informational value paid through users' OpenRouter credentials. */
   byokCostUsd: number;
 };
 

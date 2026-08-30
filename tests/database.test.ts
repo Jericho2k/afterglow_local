@@ -35,7 +35,7 @@ describe("PostgreSQL persistence", () => {
 
   it("creates every durable application table and defaults without ownerless user data", async () => {
     const tables = await query<{ table_name: string }>("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
-    expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","memory_arcs","usage_events","app_settings","personas","worlds","character_worlds"]));
+    expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(["characters","conversations","messages","memories","memory_arcs","usage_events","app_settings","personas","worlds","character_worlds","user_provider_credentials"]));
     const settings = await getDefaultSettings();
     expect(settings.model).toMatch(/^deepseek-/);
     expect(settings.providerId).toBe("deepseek");

@@ -2,6 +2,11 @@ type Entry = { count: number; resetAt: number };
 const globalRateLimits = globalThis as unknown as { afterglowLimits?: Map<string, Entry> };
 const limits = globalRateLimits.afterglowLimits ??= new Map<string, Entry>();
 
+export function resetRateLimitsForTesting() {
+  if (process.env.NODE_ENV !== "test") throw new Error("Rate-limit reset is test-only");
+  limits.clear();
+}
+
 export function clientIp(request: Request) {
   return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
     || request.headers.get("x-real-ip")
