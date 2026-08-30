@@ -46,5 +46,10 @@ describe("BYOK Settings responsive containment", () => {
   it.each([375, 390, 430, 768, 1280, 1440])("has a bounded layout strategy at %ipx", (width) => {
     expect(width <= 430 ? css.includes("@media (max-width: 430px)") : css.includes("minmax(0, 1fr)")).toBe(true);
     expect(css).toContain(".sheet {\n  display: flex; flex-direction: column;\n  width: 100%;");
+    expect(css).toContain("min-width: 0;\n  max-width: 100vw;");
+    expect(css).toContain("overflow-x: clip; overflow-y: auto;");
+    expect(css).toContain(".sheetBody > * { min-width: 0; max-width: 100%; }");
+    expect(css).toContain(".card {\n  width: 100%;\n  min-width: 0;\n  max-width: 100%;");
+    expect(css).toContain(".input, .textarea, .select {\n  width: 100%;\n  min-width: 0;\n  max-width: 100%;");
   });
 });
