@@ -18,6 +18,10 @@ const essentialKinds = new Set<MemoryKind>(["identity","relationship","promise",
 export type RetrievalScoreDetail = {
   type: "memory" | "arc";
   id: string;
+  /** What the candidate is. Absent for an arc, which has no kind. */
+  kind?: MemoryKind;
+  /** Its lifecycle at ranking time, which changes several components below. */
+  status?: Memory["status"];
   semantic: number;
   lexical: number;
   importance: number;
@@ -180,7 +184,7 @@ export function hybridRankMemories(memories: Memory[], input: string, semanticSc
   const ids = new Set(selected.map((memory) => memory.id));
   return {
     selected,
-    details: scored.slice(0,80).map((row):RetrievalScoreDetail => ({ type:"memory",id:row.memory.id,semantic:row.semantic,lexical:row.lexical,importance:row.importance,kindStatus:row.kindStatus,protectedPinned:row.protectedPinned,recency:row.recency,final:row.final,selected:ids.has(row.memory.id),reason:row.reason,rejection:ids.has(row.memory.id)?"":(rejected.get(row.memory.id)??(dynamic>=limit?"slot_limit":"")) })),
+    details: scored.slice(0,80).map((row):RetrievalScoreDetail => ({ type:"memory",id:row.memory.id,kind:row.memory.kind,status:row.memory.status,semantic:row.semantic,lexical:row.lexical,importance:row.importance,kindStatus:row.kindStatus,protectedPinned:row.protectedPinned,recency:row.recency,final:row.final,selected:ids.has(row.memory.id),reason:row.reason,rejection:ids.has(row.memory.id)?"":(rejected.get(row.memory.id)??(dynamic>=limit?"slot_limit":"")) })),
   };
 }
 

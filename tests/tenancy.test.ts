@@ -94,6 +94,55 @@ describeTenancy("multi-tenant isolation", () => {
     expect(await visibleCount(pool, alice, "memories", "id=$1", [aliceMemory])).toBe(1);
   });
 
+  /*
+   * The memory library and the Context inspector are open to every reader now
+   * rather than to an administrator, so the boundary that used to be enforced
+   * twice — by an admin check AND by RLS — is enforced by RLS alone. These
+   * assert that half is genuinely load-bearing.
+   */
+  it("M — lets an owner correct their own memory and nobody else touch it", async () => {
+    await asAccount(pool, bob, async (run) => {
+      const edited = await run("UPDATE memories SET content='rewritten by a stranger' WHERE id=$1", [aliceMemory]);
+      expect(edited.rowCount).toBe(0);
+      const removed = await run("UPDATE memories SET status='superseded' WHERE id=$1", [aliceMemory]);
+      expect(removed.rowCount).toBe(0);
+      expect((await run("DELETE FROM memories WHERE id=$1", [aliceMemory])).rowCount).toBe(0);
+    });
+    await asAccount(pool, alice, async (run) => {
+      const edited = await run("UPDATE memories SET content='corrected by its owner',origin='user' WHERE id=$1 RETURNING content,origin", [aliceMemory]);
+      expect(edited.rowCount).toBe(1);
+      expect(edited.rows[0].content).toBe("corrected by its owner");
+      expect(edited.rows[0].origin).toBe("user");
+    });
+  });
+
+  it("M — refuses to hang a memory off another account's conversation", async () => {
+    await asAccount(pool, bob, async (run) => {
+      await expect(run(
+        "INSERT INTO memories (id,character_id,conversation_id,user_id,content) VALUES ($1,$2,$3,$4,'injected')",
+        ["eeeeeeee-0000-4000-8000-000000000099", alicePublicCharacter, aliceConversation, bob],
+      )).rejects.toThrow();
+    });
+  });
+
+  it("M — keeps one reply's recorded context out of another account's reach", async () => {
+    await asAccount(pool, alice, async (run) => {
+      await run("UPDATE messages SET context_provenance=$2::jsonb WHERE id=$1", [aliceMessage, JSON.stringify({ version: 1, canonIds: [aliceCanon] })]);
+    });
+    // The inspector reads this column; a stranger cannot see the row at all.
+    expect(await visibleCount(pool, bob, "messages", "id=$1", [aliceMessage])).toBe(0);
+    await asAccount(pool, alice, async (run) => {
+      const rows = await run("SELECT context_provenance FROM messages WHERE id=$1", [aliceMessage]);
+      const provenance = rows.rows[0].context_provenance as { canonIds: string[] };
+      expect(provenance.canonIds).toEqual([aliceCanon]);
+    });
+  });
+
+  it("M — keeps retrieval runs and their score details account-scoped", async () => {
+    expect(await visibleCount(pool, bob, "memory_retrieval_runs", "id=$1", [aliceRetrieval])).toBe(0);
+    expect(await visibleCount(pool, alice, "memory_retrieval_runs", "id=$1", [aliceRetrieval])).toBe(1);
+  });
+
   it("keeps the usage ledger private per account", async () => {
     expect(await visibleCount(pool, bob, "usage_events")).toBe(0);
     expect(await visibleCount(pool, alice, "usage_events")).toBe(1);

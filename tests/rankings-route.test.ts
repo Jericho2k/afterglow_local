@@ -43,6 +43,7 @@ const kaelen = "aaaaaaaa-0000-4000-8000-000000000002";
 type RankedCreation = {
   rank: number; rankTotal: number; userMessages: number;
   creation: { id: string; title: string; saveCount: number; messageCount: number; creator: { username: string } | null };
+  creator: { id: string; username: string; displayName: string; avatarPath: string; border: { id: string } } | null;
 };
 async function board(search = "") {
   const response = await rankings.GET(new Request(`http://test/api/rankings${search}`));
@@ -114,6 +115,42 @@ describe("the creations board", () => {
     // The card underneath still carries the feed's meaning of the word, and the
     // two are deliberately different numbers.
     expect(top.creation.messageCount).toBe(501_000);
+  });
+
+  /*
+   * A board is rebuilt on a ten-minute timer. A creator who changes their
+   * handle, their picture or their display name in between was appearing on
+   * the leaderboard as somebody they are no longer — so the byline is read
+   * live on every request rather than taken from the materialised row.
+   */
+  it("shows the creator's identity as it is now, not as the board was built", async () => {
+    const before = await board();
+    expect(before.creations![0].creator?.username).toBe("nova");
+    expect(before.creations![0].creator?.displayName).toBe("Nova Vale");
+
+    await query("UPDATE profiles SET username='nova_vale',display_name='Nova V.',avatar_path='p/new.png' WHERE id=$1", [alice]);
+
+    // No board rebuild in between: the ranking rows are untouched.
+    const after = await board();
+    expect(after.creations![0].creator).toMatchObject({
+      username: "nova_vale", displayName: "Nova V.", avatarPath: "p/new.png",
+    });
+  });
+
+  it("carries the ring the creator has actually earned", async () => {
+    const page = await board();
+    expect(page.creations![0].creator?.border?.id).toBeTruthy();
+    // A stored choice they no longer qualify for falls back rather than being
+    // honoured, exactly as it does on their own profile.
+    await query("UPDATE profiles SET profile_border='not-a-real-border' WHERE id=$1", [alice]);
+    const after = await board();
+    expect(after.creations![0].creator?.border?.id).toBe("default");
+  });
+
+  it("has no creator identity for a creation whose author has not published a handle", async () => {
+    await query("UPDATE profiles SET username=NULL WHERE id=$1", [alice]);
+    const page = await board();
+    expect(page.creations![0].creator).toBeNull();
   });
 
   it("offers the categories rather than making a client know the taxonomy", async () => {
