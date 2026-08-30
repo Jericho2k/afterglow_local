@@ -8,6 +8,7 @@ import { providerModelId, taskModelSelection } from "./provider";
 import { recordUsageEvent } from "./usage";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled, memorySemanticEnabled } from "./memory-flags";
+import { isStaleCommitment, protectedTierBudget, protectedTierLimit, recencyScore } from "./memory-scoring";
 import type { CoreCanonEntry, Memory, MemoryArc, Message, MemoryKind } from "./types";
 
 const stopWords = new Set(["the","and","that","this","with","from","have","your","you","are","was","for","but","not","they","she","him","her","his","our"]);
@@ -26,6 +27,8 @@ export type RetrievalScoreDetail = {
   final: number;
   selected: boolean;
   reason: string[];
+  /** Why an unselected candidate did not make it. Empty when it was selected. */
+  rejection?: string;
 };
 
 export type RetrievalV2Result = {
@@ -33,6 +36,8 @@ export type RetrievalV2Result = {
   memories: Memory[];
   arcs: MemoryArc[];
   diagnostics: {
+    /** The stored `memory_retrieval_runs` row, for admin diagnostics. */
+    runId: string;
     semanticAvailable: boolean;
     fallbackReason: string;
     totalStoredMemories: number;
@@ -110,40 +115,72 @@ function lexicalComponents(content: string, keywords: string[], input: string) {
   return { overlap, phraseHits, score: Math.min(40,phraseHits * 20 + overlap * 4) };
 }
 
-export function hybridRankMemories(memories: Memory[], input: string, semanticScores: Map<string,number>, limit = 8, tokenBudget = 4200) {
+/**
+ * Hybrid ranking, in three tiers with an explicit budget between them.
+ *
+ * Two properties changed here, and both are about the GUARANTEED tier rather
+ * than about scoring.
+ *
+ *   THE TIER IS BOUNDED IN TOKENS, NOT ONLY IN COUNT. It used to take up to
+ *   twelve entries with no token ceiling of its own, so twelve long
+ *   commitments could consume the entire episodic budget and leave nothing for
+ *   the scene the reader is actually in. Half the budget is now reserved for
+ *   relevance; see `protectedTierBudget`.
+ *
+ *   A COMMITMENT NOBODY HAS RETURNED TO STOPS BEING GUARANTEED. Not resolved,
+ *   not dropped — it competes on relevance like everything else. See
+ *   `isStaleCommitment` for why age-since-recorded is the only usable signal.
+ *
+ * Nothing about a boundary changed: boundaries are never stale and never lose
+ * their slot. That is the durability the tier exists for.
+ */
+export function hybridRankMemories(memories: Memory[], input: string, semanticScores: Map<string,number>, limit = 8, tokenBudget = 4200, now = Date.now()) {
   const scored = memories.filter((memory) => memory.status !== "superseded").map((memory) => {
     const lexical = lexicalComponents(memory.content,memory.keywords,input);
     const semantic = Math.max(0,Math.min(1,semanticScores.get(memory.id) ?? 0));
     const importance = memory.importance * 3;
     const kindStatus = (essentialKinds.has(memory.kind) ? 7 : memory.kind === "event" ? 2 : 0) + (memory.status === "active" ? 2 : -2);
-    const protectedPinned = (memory.pinned ? 35 : 0) + (memory.status === "active" && protectedKinds.has(memory.kind) ? 20 : 0);
-    const ageDays = Math.max(0,(Date.now() - new Date(memory.createdAt).getTime()) / 86_400_000);
-    const recency = 2 / (1 + ageDays / 45);
+    const stale = isStaleCommitment(memory,now);
+    const protectedPinned = (memory.pinned ? 35 : 0) + (memory.status === "active" && protectedKinds.has(memory.kind) && !stale ? 20 : 0);
+    const recency = recencyScore(memory,now);
     const final = semantic * 45 + lexical.score + importance + kindStatus + protectedPinned + recency;
-    const reason = [semantic >= .25 ? "semantic" : "",lexical.score > 0 ? "lexical" : "",memory.pinned ? "pinned" : "",protectedKinds.has(memory.kind) && memory.status === "active" ? "protected" : "",memory.importance >= 4 ? "important" : ""].filter(Boolean);
-    return { memory, semantic, lexical:lexical.score, importance, kindStatus, protectedPinned, recency, final, reason };
+    const reason = [semantic >= .25 ? "semantic" : "",lexical.score > 0 ? "lexical" : "",memory.pinned ? "pinned" : "",protectedKinds.has(memory.kind) && memory.status === "active" && !stale ? "protected" : "",stale ? "stale_commitment" : "",memory.importance >= 4 ? "important" : ""].filter(Boolean);
+    return { memory, semantic, lexical:lexical.score, importance, kindStatus, protectedPinned, recency, final, reason, stale };
   }).sort((a,b) => b.final - a.final || a.memory.id.localeCompare(b.memory.id));
 
   const selected: Memory[] = []; let used = 0; let dynamic = 0;
+  const rejected = new Map<string,string>();
   const add = (row: typeof scored[number], guaranteed = false) => {
     if (selected.some((memory) => memory.id === row.memory.id)) return false;
-    if (!guaranteed && selected.some((memory) => jaccard(memory.content,row.memory.content) >= .72)) return false;
+    if (!guaranteed && selected.some((memory) => jaccard(memory.content,row.memory.content) >= .72)) { rejected.set(row.memory.id,"duplicate"); return false; }
     const cost = estimateTokens(`${row.memory.content} ${row.memory.resolution}`) + 16;
-    if (selected.length && used + cost > tokenBudget) return false;
+    if (selected.length && used + cost > tokenBudget) { rejected.set(row.memory.id,"token_budget"); return false; }
     selected.push(row.memory); used += cost; return true;
   };
+  // A pinned memory is the reader's own instruction and outranks every budget
+  // rule below it, exactly as before.
   scored.filter((row) => row.memory.pinned).forEach((row) => add(row,true));
-  scored.filter((row) => !row.memory.pinned && row.memory.status === "active" && protectedKinds.has(row.memory.kind)).slice(0,12).forEach((row) => add(row,true));
+  const guaranteedBudget = protectedTierBudget(tokenBudget);
+  let guaranteedTokens = 0; let guaranteedCount = 0;
+  for (const row of scored) {
+    if (guaranteedCount >= protectedTierLimit) break;
+    const { memory } = row;
+    if (memory.pinned || memory.status !== "active" || !protectedKinds.has(memory.kind) || row.stale) continue;
+    const cost = estimateTokens(`${memory.content} ${memory.resolution}`) + 16;
+    if (guaranteedCount > 0 && guaranteedTokens + cost > guaranteedBudget) { rejected.set(memory.id,"protected_tier_full"); continue; }
+    if (add(row,true)) { guaranteedCount += 1; guaranteedTokens += cost; }
+  }
   for (const row of scored) {
     if (dynamic >= limit) break;
     if (selected.some((memory) => memory.id === row.memory.id)) continue;
     const relevant = row.semantic >= .25 || row.lexical > 0 || (row.memory.status === "active" && (row.memory.importance >= 4 || essentialKinds.has(row.memory.kind)));
-    if (relevant && add(row)) dynamic += 1;
+    if (!relevant) { rejected.set(row.memory.id,"not_relevant"); continue; }
+    if (add(row)) dynamic += 1;
   }
   const ids = new Set(selected.map((memory) => memory.id));
   return {
     selected,
-    details: scored.slice(0,80).map((row):RetrievalScoreDetail => ({ type:"memory",id:row.memory.id,semantic:row.semantic,lexical:row.lexical,importance:row.importance,kindStatus:row.kindStatus,protectedPinned:row.protectedPinned,recency:row.recency,final:row.final,selected:ids.has(row.memory.id),reason:row.reason })),
+    details: scored.slice(0,80).map((row):RetrievalScoreDetail => ({ type:"memory",id:row.memory.id,semantic:row.semantic,lexical:row.lexical,importance:row.importance,kindStatus:row.kindStatus,protectedPinned:row.protectedPinned,recency:row.recency,final:row.final,selected:ids.has(row.memory.id),reason:row.reason,rejection:ids.has(row.memory.id)?"":(rejected.get(row.memory.id)??(dynamic>=limit?"slot_limit":"")) })),
   };
 }
 
@@ -156,17 +193,18 @@ export function hybridRankArcs(arcs: MemoryArc[], input: string, semanticScores:
     return { arc,semantic,lexical:lexical.score,recency,final:semantic * 45 + lexical.score + recency };
   }).filter((row) => row.semantic >= .22 || row.lexical > 0).sort((a,b) => b.final - a.final || a.arc.id.localeCompare(b.arc.id));
   const selected: MemoryArc[] = []; let used = 0;
+  const arcRejected = new Map<string,string>();
   for (const row of scored) {
-    if (selected.some((arc) => jaccard(arc.summary,row.arc.summary) >= .72)) continue;
+    if (selected.some((arc) => jaccard(arc.summary,row.arc.summary) >= .72)) { arcRejected.set(row.arc.id,"duplicate"); continue; }
     const cost = estimateTokens(row.arc.summary) + 12;
-    if (selected.length && used + cost > tokenBudget) continue;
+    if (selected.length && used + cost > tokenBudget) { arcRejected.set(row.arc.id,"token_budget"); continue; }
     selected.push(row.arc); used += cost;
     if (selected.length >= limit) break;
   }
   const ids = new Set(selected.map((arc) => arc.id));
   return {
     selected,
-    details: scored.slice(0,60).map((row):RetrievalScoreDetail => ({ type:"arc",id:row.arc.id,semantic:row.semantic,lexical:row.lexical,importance:0,kindStatus:0,protectedPinned:0,recency:row.recency,final:row.final,selected:ids.has(row.arc.id),reason:[row.semantic >= .22 ? "semantic":"",row.lexical > 0 ? "lexical":""].filter(Boolean) })),
+    details: scored.slice(0,60).map((row):RetrievalScoreDetail => ({ type:"arc",id:row.arc.id,semantic:row.semantic,lexical:row.lexical,importance:0,kindStatus:0,protectedPinned:0,recency:row.recency,final:row.final,selected:ids.has(row.arc.id),reason:[row.semantic >= .22 ? "semantic":"",row.lexical > 0 ? "lexical":""].filter(Boolean),rejection:ids.has(row.arc.id)?"":(arcRejected.get(row.arc.id)??"slot_limit") })),
   };
 }
 
@@ -227,14 +265,15 @@ export async function retrieveContinuityV2(input: { userId:string;characterId:st
     : { selected:rankArcs(archive.arcs,input.query,4,arcBudget),details:[] as RetrievalScoreDetail[] };
   const episodicTokens = rankedMemories.selected.reduce((sum,memory) => sum + estimateTokens(`${memory.content} ${memory.resolution}`) + 16,0);
   const arcTokens = rankedArcs.selected.reduce((sum,arc) => sum + estimateTokens(arc.summary) + 12,0);
-  const diagnostics = { semanticAvailable,fallbackReason,totalStoredMemories:archive.memories.length,coreCanonTokens:coreTokens,episodicTokens,arcTokens,scores:[...rankedMemories.details,...rankedArcs.details] };
+  const runId = randomUUID();
+  const diagnostics = { runId,semanticAvailable,fallbackReason,totalStoredMemories:archive.memories.length,coreCanonTokens:coreTokens,episodicTokens,arcTokens,scores:[...rankedMemories.details,...rankedArcs.details] };
   await asUser(input.userId,async (client) => {
     if (rankedMemories.selected.length) await client.query("UPDATE memories SET last_recalled_at=now(),recall_count=recall_count+1 WHERE id=ANY($1::uuid[]) AND user_id=$2",[rankedMemories.selected.map((memory) => memory.id),input.userId]);
     await client.query(
       `INSERT INTO memory_retrieval_runs
        (id,conversation_id,user_id,message_id,retrieval_version,semantic_available,fallback_reason,total_stored_memories,core_canon_tokens,retrieved_episodic_tokens,arc_tokens,recalled_memory_ids,recalled_arc_ids,score_details,latency_ms)
        VALUES ($1,$2,$3,$4,'v2',$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)`,
-      [randomUUID(),input.conversationId,input.userId,input.messageId ?? null,semanticAvailable,fallbackReason,archive.memories.length,coreTokens,episodicTokens,arcTokens,rankedMemories.selected.map((memory) => memory.id),rankedArcs.selected.map((arc) => arc.id),JSON.stringify(diagnostics.scores),Date.now()-started],
+      [runId,input.conversationId,input.userId,input.messageId ?? null,semanticAvailable,fallbackReason,archive.memories.length,coreTokens,episodicTokens,arcTokens,rankedMemories.selected.map((memory) => memory.id),rankedArcs.selected.map((arc) => arc.id),JSON.stringify(diagnostics.scores),Date.now()-started],
     );
   }).catch((error) => console.error("Memory V2 diagnostics failed",error));
   return { coreCanon,memories:rankedMemories.selected,arcs:rankedArcs.selected,diagnostics };
@@ -256,6 +295,29 @@ async function saveEmbeddings(userId:string,conversationId:string,records:Array<
          ON CONFLICT (arc_id) DO UPDATE SET embedding=EXCLUDED.embedding,embedding_model=EXCLUDED.embedding_model,content_hash=EXCLUDED.content_hash,updated_at=now()`,[record.id,userId,conversationId,vector,result.model,hash]);
     }
   });
+}
+
+/**
+ * Drops the stored vector for one memory.
+ *
+ * Called when a memory's text changes or it is superseded. The alternative —
+ * leaving the vector and letting the backfill catch up — means the OLD wording
+ * keeps answering semantic queries in the meantime, so the archive and the
+ * prompt disagree about what the memory says. No vector is a smaller lie than
+ * the wrong vector: retrieval falls back to lexical scoring for this one row
+ * until the backfill re-embeds it, which it does unprompted because the content
+ * hash no longer matches.
+ *
+ * Best effort, and deliberately outside the caller's transaction. The durable
+ * guarantee is elsewhere: `maybeBackfillMemoryEmbeddings` compares a content
+ * hash, so an edited memory is re-embedded on the next maintenance pass whether
+ * or not this succeeded. This only closes the window in between, so a
+ * deployment without the vector tables must not fail an ordinary memory edit
+ * because of it.
+ */
+export async function forgetMemoryEmbedding(userId: string, memoryId: string) {
+  await asUser(userId, (client) => client.query("DELETE FROM memory_embeddings WHERE memory_id=$1 AND user_id=$2",[memoryId,userId]))
+    .catch((error) => console.warn("Embedding invalidation skipped", error instanceof Error ? error.message : error));
 }
 
 export async function embedContinuityRecords(userId:string,conversationId:string,records:Array<{type:"memory"|"arc";id:string;content:string}>) {

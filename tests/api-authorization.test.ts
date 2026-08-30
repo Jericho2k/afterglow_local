@@ -250,20 +250,54 @@ describe("cross-account access", () => {
     expect(body.characters).toEqual([]);
   });
 
-  it("keeps memory diagnostics behind the admin boundary", async () => {
+  /*
+   * A memory archive belongs to the account that accumulated it, not to an
+   * administrator. Opening it to its owner is the point of the memory
+   * inspector; what must not move is WHOSE archive a request can reach.
+   */
+  it("keeps one account's memories unreachable from another account", async () => {
     account = { id: bob, email: null };
     const response = await memories.GET(new Request(`http://test/api/memories?characterId=${aliceCharacter}&conversationId=${aliceConversation}`));
-    expect(response.status).toBe(403);
-    const protectedWrites=await Promise.all([
-      memories.PATCH(post("http://test/api/memories",{})),
+    expect(response.status).toBe(404);
+    const foreignWrites=await Promise.all([
+      memories.PATCH(post("http://test/api/memories?id="+crypto.randomUUID(),{content:"x",kind:"event",importance:3,keywords:[],pinned:false})),
       memories.DELETE(new Request("http://test/api/memories?id="+crypto.randomUUID(),{method:"DELETE"})),
+      // Manual consolidation stays an operator action: it spends an
+      // Afterglow-funded model call on demand, which reading and correcting an
+      // existing archive does not.
       consolidate.POST(post("http://test/api/memories/consolidate",{conversationId:aliceConversation})),
     ]);
-    expect(protectedWrites.map((item)=>item.status)).toEqual([403,403,403]);
+    expect(foreignWrites.map((item)=>item.status)).toEqual([404,404,403]);
     account = { id: alice, email: null };
     const own=await memories.GET(new Request(`http://test/api/memories?characterId=${aliceCharacter}&conversationId=${aliceConversation}`));
     expect(own.status).toBe(200);
     expect((await own.json()).memories).toHaveLength(1);
+  });
+
+  it("lets an ordinary account read and correct its own memories", async () => {
+    // No administrator allowlist at all: this is a reader, not an operator.
+    process.env.AFTERGLOW_ADMIN_USER_IDS="";
+    account = { id: alice, email: null };
+    const listed = await memories.GET(new Request(`http://test/api/memories?characterId=${aliceCharacter}&conversationId=${aliceConversation}`));
+    expect(listed.status).toBe(200);
+    const body = await listed.json();
+    expect(body.memories).toHaveLength(1);
+    // Derived layers are shown, never written, from here.
+    expect(body.editable).toEqual({ memories: true, arcs: false, coreCanon: false, summary: false });
+
+    const created = await memories.POST(post("http://test/api/memories", { characterId: aliceCharacter, conversationId: aliceConversation, content: "She takes her coffee black." }));
+    expect(created.status).toBe(201);
+    const memoryId = (await created.json()).memory.id;
+    const edited = await memories.PATCH(post(`http://test/api/memories?id=${memoryId}`, { content: "She takes her coffee with one sugar.", kind: "preference", importance: 4, keywords: ["coffee"], pinned: false }));
+    expect(edited.status).toBe(200);
+    expect((await edited.json()).memory.content).toContain("one sugar");
+    // Removal supersedes rather than deletes, so older replies stay legible.
+    const removed = await memories.DELETE(new Request(`http://test/api/memories?id=${memoryId}`, { method: "DELETE" }));
+    expect(removed.status).toBe(200);
+    expect((await removed.json()).removed).toBe("superseded");
+    const after = await memories.GET(new Request(`http://test/api/memories?characterId=${aliceCharacter}&conversationId=${aliceConversation}`));
+    expect((await after.json()).memories.map((item: { id: string }) => item.id)).not.toContain(memoryId);
+    process.env.AFTERGLOW_ADMIN_USER_IDS=alice;
   });
 
   it("keeps scene state admin-only, account-scoped, and never user-facing", async () => {
@@ -294,7 +328,7 @@ describe("cross-account access", () => {
   it("refuses to hang a memory off another account's conversation", async () => {
     account = { id: bob, email: null };
     const response = await memories.POST(post("http://test/api/memories", { characterId: alicePublic, conversationId: aliceConversation, content: "injected" }));
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
   });
 
   it("keeps the usage ledger admin-only and account-scoped", async () => {

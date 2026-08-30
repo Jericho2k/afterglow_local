@@ -383,7 +383,7 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
         <label className={styles.fieldLabel}>To<input className={styles.input} type="date" value={customTo} min={customFrom || undefined} onChange={(event) => setCustomTo(event.target.value)} /></label>
       </div>}
       <p className={styles.fieldHint} style={{ margin: "0 0 12px" }}>
-        {usageLoading ? "Reading the ledger…" : `${usage.range?.label ?? "All time"} · ${number(usage.replies ?? 0)} replies · ${number(usage.userMessages ?? 0)} messages sent`}
+        {usageLoading ? "Reading the ledger…" : `${usage.range?.label ?? "All time"} · ${number(usage.userMessages ?? 0)} user turns · ${number(usage.writerGenerations ?? 0)} writer generations`}
       </p>
 
       <dl className={styles.metrics}>
@@ -409,7 +409,14 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
         <div className={styles.metric}>
           <dt>Afterglow spend</dt>
           <dd>{usd(usage.usage.afterglowCostUsd)}</dd>
-          <small>{usd(usage.costPer100UserMessages || 0)} / 100 messages</small>
+          <small>{usd(usage.costPer100UserMessages || 0)} / 100 user turns</small>
+        </div>
+        {/* The other denominator: what producing a reply costs, counted from
+            the ledger so a branch cannot inflate it. */}
+        <div className={styles.metric}>
+          <dt>Per generation</dt>
+          <dd>{usd(usage.costPer100WriterGenerations || 0)}</dd>
+          <small>/ 100 writer generations</small>
         </div>
         <div className={styles.metric}>
           <dt>My OpenRouter</dt>

@@ -203,6 +203,8 @@ export async function POST(request: Request) {
 
   const continuationRetrievalAnchor = action === "continue" && history.at(-1)?.role === "assistant" ? history.at(-1)!.content : "";
   let memories; let arcs; let coreCanon = [] as Awaited<ReturnType<typeof retrieveContinuityV2>>["coreCanon"];
+  /** The retrieval run this reply was written from, when V2 produced one. */
+  let retrievalRunId = "";
   if (memoryRetrievalV2Enabled(account.id)) {
     try {
       const continuity = await retrieveContinuityV2({
@@ -214,6 +216,7 @@ export async function POST(request: Request) {
         messageId:userMessageId,limit:settings.memoryLimit,tokenBudget:settings.memoryTokenBudget,
       });
       ({memories,arcs,coreCanon}=continuity);
+      retrievalRunId = continuity.diagnostics.runId;
     } catch (error) {
       // Schema/configuration mistakes must not take chat down during the staged
       // rollout. The complete V1 path remains the operational fallback.
@@ -497,6 +500,38 @@ export async function POST(request: Request) {
         const selectedVariant = variants.length - 1;
         const memoryIds = memories.map((memory) => memory.id);
         const arcIds = arcs.map((arc) => arc.id);
+        /*
+         * What this reply was written from, recorded with the reply.
+         *
+         * The memory and arc ids were already stored and were already the only
+         * honest answer to "what did it recall". They are not the whole
+         * question the reader is asking, which is "what story context did you
+         * use" — and the transcript window, the curated canon, the scene and
+         * the rolling summary are the rest of it. None of them can be
+         * reconstructed afterwards: the window moves, canon is re-curated, the
+         * summary is overwritten on the next consolidation. Recorded now or not
+         * at all.
+         *
+         * It deliberately holds IDS AND COUNTS, never text. The inspector
+         * resolves them against the reader's own rows at read time, which is
+         * what keeps a creator's private definition out of it — there is no
+         * field here a prompt could leak through.
+         */
+        const contextProvenance = {
+          version: 1 as const,
+          transcript: {
+            messages: fitted.messages.length,
+            firstMessageId: history[Math.max(0, history.length - fitted.messages.length)]?.id ?? null,
+            lastMessageId: history.at(-1)?.id ?? null,
+            estimatedTokens: fitted.plan.promptTokens,
+            trimmedToFit: fitted.dropped ?? 0,
+          },
+          canonIds: coreCanon.map((entry) => entry.id),
+          sceneStateId: sceneState?.id ?? null,
+          summary: { used: Boolean(currentSummary.trim()), characters: currentSummary.length },
+          retrievalRunId: retrievalRunId || null,
+          continuityPlacement: placement,
+        };
 
         // The reply is complete and every field the client needs is already
         // known here, so the completion event is emitted before the write
@@ -511,21 +546,21 @@ export async function POST(request: Request) {
           if (regenerateTarget) {
             await asUser(account.id, (client) => client.query(
               `WITH saved AS (
-                 UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[]
+                 UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[],context_provenance=$8::jsonb
                  WHERE id=$6 AND user_id=$7 RETURNING conversation_id
                )
                UPDATE conversations SET updated_at=now() WHERE id=(SELECT conversation_id FROM saved) AND user_id=$7`,
-              [assistant,JSON.stringify(variants),selectedVariant,memoryIds,arcIds,assistantId,account.id],
+              [assistant,JSON.stringify(variants),selectedVariant,memoryIds,arcIds,assistantId,account.id,JSON.stringify(contextProvenance)],
             ));
           } else {
             await asUser(account.id, (client) => client.query(
               `WITH saved AS (
-                 INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids)
-                 VALUES ($1,$2,$3,'assistant',$4,$5::jsonb,0,$6::uuid[],$7::uuid[]) RETURNING conversation_id
+                 INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids,context_provenance)
+                 VALUES ($1,$2,$3,'assistant',$4,$5::jsonb,0,$6::uuid[],$7::uuid[],$8::jsonb) RETURNING conversation_id
                )
                UPDATE conversations SET message_count=message_count+1,updated_at=now()
                WHERE id=(SELECT conversation_id FROM saved) AND user_id=$3`,
-              [assistantId,conversationId,account.id,assistant,JSON.stringify(variants),memoryIds,arcIds],
+              [assistantId,conversationId,account.id,assistant,JSON.stringify(variants),memoryIds,arcIds,JSON.stringify(contextProvenance)],
             ));
           }
         } catch (error) {

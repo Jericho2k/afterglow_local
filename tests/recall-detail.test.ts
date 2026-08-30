@@ -130,9 +130,25 @@ describe("privacy", () => {
     }
   });
 
-  it("is refused for an account without diagnostics access", async () => {
-    await reply([], []);
+  /*
+   * The inspector answers a question about the reader's OWN story, so an
+   * ordinary account gets it. What stays behind the administrator boundary is
+   * the ranking machinery — scores, weights, why a candidate lost.
+   */
+  it("is available to an ordinary account, without ranking internals", async () => {
+    await memory(m1, "She keeps the map folded in her coat.");
+    await reply([m1], []);
     vi.stubEnv("AFTERGLOW_ADMIN_USER_IDS", "");
-    expect((await get()).status).toBe(403);
+    const response = await get();
+    expect(response.status).toBe(200);
+    expect(response.body.counts.memories).toBe(1);
+    expect(response.body.diagnostics).toBeUndefined();
+    expect(JSON.stringify(response.body).toLowerCase()).not.toContain("score");
+  });
+
+  it("is refused for a message belonging to another account", async () => {
+    await reply([], []);
+    account = { id: stranger, email: null };
+    expect((await get()).status).toBe(404);
   });
 });

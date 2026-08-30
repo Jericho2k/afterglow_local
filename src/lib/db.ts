@@ -371,6 +371,13 @@ async function schema() {
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_arc_ids uuid[] NOT NULL DEFAULT '{}'");
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'event'");
+  // Memory transparency (migration 0026). `context_provenance` records what one
+  // reply was written from; `origin` and the supersession stamps make a
+  // reader-owned archive editable without losing what older replies read.
+  await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS context_provenance jsonb NOT NULL DEFAULT '{}'::jsonb");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'consolidation'");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS superseded_by uuid");
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS superseded_at timestamptz");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'active'");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS moderated_at timestamptz");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS moderated_by uuid");
@@ -1092,7 +1099,11 @@ export function memoryFromRow(row: Record<string, unknown>): Memory {
     lastRecalledAt: row.last_recalled_at ? new Date(String(row.last_recalled_at)).toISOString() : null,
     recallCount: Number(row.recall_count || 0), sourceMessageCount: Number(row.source_message_count || 0),
     scene: sceneStampFromRow(row.scene_story_day,row.scene_time_of_day,row.scene_location,row.scene_present),
+    origin: (["consolidation","user","import"].includes(String(row.origin)) ? String(row.origin) : "consolidation") as Memory["origin"],
+    supersededBy: row.superseded_by ? String(row.superseded_by) : null,
+    supersededAt: row.superseded_at ? new Date(String(row.superseded_at)).toISOString() : null,
     createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: row.updated_at ? new Date(String(row.updated_at)).toISOString() : new Date(String(row.created_at)).toISOString(),
   };
 }
 

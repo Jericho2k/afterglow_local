@@ -65,6 +65,14 @@ export const failureCategories = [
   "summary_drift",
   /** Irrelevant history was retrieved and dragged the reply off-scene. */
   "retrieval_false_positive",
+  /**
+   * The reply asserted a shared past that nothing in the prompt establishes —
+   * a kiss, a promise, a milestone, a place they have been together. A writer
+   * failure by construction: no retrieval could have supplied a fact that was
+   * never true. Distinct from `contradiction`, which needs a real fact to
+   * contradict.
+   */
+  "invented_history",
   /** Not enough signal to attribute. Counted, never guessed at. */
   "ambiguous",
 ] as const;
@@ -83,6 +91,7 @@ const attributionByCategory: Record<FailureCategory, Attribution> = {
   canon_failure: "retrieval",
   summary_drift: "retrieval",
   retrieval_false_positive: "retrieval",
+  invented_history: "writer",
   ambiguous: "ambiguous",
 };
 
@@ -100,6 +109,7 @@ export const categoryLabels: Record<FailureCategory, string> = {
   canon_failure: "Core Canon failure",
   summary_drift: "Rolling-summary drift",
   retrieval_false_positive: "Retrieval false positive",
+  invented_history: "Invented past history",
   ambiguous: "Insufficient evidence",
 };
 
