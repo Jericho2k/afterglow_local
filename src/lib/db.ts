@@ -507,12 +507,27 @@ async function schema() {
       consolidation_interval integer NOT NULL DEFAULT 10,
       memory_limit integer NOT NULL DEFAULT 8,
       memory_token_budget integer NOT NULL DEFAULT 6000,
+      writer_funding text NOT NULL DEFAULT 'afterglow',
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS user_provider_credentials (
+      user_id uuid NOT NULL,
+      provider text NOT NULL,
+      ciphertext bytea NOT NULL,
+      nonce bytea NOT NULL,
+      auth_tag bytea NOT NULL,
+      key_version integer NOT NULL,
+      key_suffix text NOT NULL,
+      validated_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id,provider)
     );
   `);
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS response_length text NOT NULL DEFAULT 'natural'");
+  await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS writer_funding text NOT NULL DEFAULT 'afterglow'");
   // One default persona per account rather than per installation.
   await pool().query("DROP INDEX IF EXISTS personas_single_default_idx");
   await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS personas_user_default_idx ON personas (user_id) WHERE is_default");

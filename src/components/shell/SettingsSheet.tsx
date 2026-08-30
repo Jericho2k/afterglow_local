@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Database, Download, Gauge, Sparkles, Upload } from "lucide-react";
+import { Database, Download, Gauge, KeyRound, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import type { AppSettings, ModelCatalog, UsageResponse } from "@/lib/types";
+import type { ByokMetadata, WriterFundingPreference } from "@/lib/byok";
 import type { UsageRangeId } from "@/lib/usage-range";
 import { api } from "@/lib/api-client";
 import { responseLengthBudget } from "@/lib/response-length";
@@ -74,6 +75,22 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [byok, setByok] = useState<ByokMetadata | null>(null);
+  const [byokKey, setByokKey] = useState("");
+  const [byokBusy, setByokBusy] = useState(false);
+  const [byokError, setByokError] = useState("");
+  const [editingKey, setEditingKey] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
+  useEffect(() => { setForm(settings); }, [settings]);
+
+  useEffect(() => {
+    let live = true;
+    api<ByokMetadata>("/api/byok")
+      .then((value) => { if (live) setByok(value); })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, []);
 
   /*
    * The ledger for one window.
@@ -109,6 +126,38 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
       setError(reason instanceof Error ? reason.message : "Could not save settings");
       setBusy(false);
     }
+  }
+
+  async function connectKey() {
+    if (!byokKey.trim()) return;
+    setByokBusy(true); setByokError("");
+    try {
+      const value = await api<ByokMetadata>("/api/byok", { method: "POST", body: JSON.stringify({ apiKey: byokKey }) });
+      // The raw key is write-only browser state. Drop it immediately after the
+      // response; the server returns suffix/validation metadata only.
+      setByokKey(""); setByok(value); setEditingKey(false);
+    } catch (reason) {
+      setByokError(reason instanceof Error ? reason.message : "Could not connect the key");
+    } finally { setByokBusy(false); }
+  }
+
+  async function chooseFunding(writerFunding: WriterFundingPreference) {
+    setByokBusy(true); setByokError("");
+    try {
+      setByok(await api<ByokMetadata>("/api/byok", { method: "PATCH", body: JSON.stringify({ writerFunding }) }));
+    } catch (reason) {
+      setByokError(reason instanceof Error ? reason.message : "Could not change writer funding");
+    } finally { setByokBusy(false); }
+  }
+
+  async function removeKey() {
+    setByokBusy(true); setByokError("");
+    try {
+      setByok(await api<ByokMetadata>("/api/byok", { method: "DELETE" }));
+      setByokKey(""); setEditingKey(false); setConfirmRemove(false);
+    } catch (reason) {
+      setByokError(reason instanceof Error ? reason.message : "Could not remove the key");
+    } finally { setByokBusy(false); }
   }
 
   const providerModels = catalog.models.length
@@ -203,6 +252,91 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
       </div>
     </section>
 
+    <section className={styles.card} aria-labelledby="byok-heading">
+      <div className={styles.cardHeader}><KeyRound size={16} aria-hidden /><h2 id="byok-heading">Bring your own API key</h2></div>
+      <p className={styles.byokIntro}>
+        Use your own OpenRouter credits for replies, regenerations and continuations. Afterglow still handles memory, continuity, Scene State and other background processing.
+      </p>
+
+      {!byok && <p className={styles.fieldHint} role="status">Checking OpenRouter connection…</p>}
+      {byok && !byok.available && <div className={styles.byokUnavailable} role="status">
+        Personal OpenRouter funding is not available on this deployment. Existing saved credentials remain encrypted and are not deleted.
+      </div>}
+
+      {byok?.available && <div className={styles.byokPanel}>
+        <div className={styles.byokStatusRow}>
+          <div className={styles.byokProviderMark}><ShieldCheck size={18} aria-hidden /></div>
+          <div className={styles.byokStatusCopy}>
+            <strong>OpenRouter</strong>
+            <span>{byok.connected ? "Connected" : "Not connected"}</span>
+            {byok.connected && <small>
+              <span aria-label={`Key ending in ${byok.suffix}`}>•••••••• {byok.suffix}</span>
+              {byok.validatedAt && <> · Validated {new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(byok.validatedAt))}</>}
+            </small>}
+          </div>
+        </div>
+
+        {(!byok.connected || editingKey) && <div className={styles.byokConnect}>
+          <label className={styles.fieldLabel} htmlFor="settings-openrouter-key">
+            {byok.connected ? "Replacement OpenRouter key" : "OpenRouter API key"}
+          </label>
+          <input
+            id="settings-openrouter-key"
+            className={styles.input}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            value={byokKey}
+            aria-describedby="settings-openrouter-key-help settings-openrouter-key-error"
+            aria-invalid={Boolean(byokError)}
+            onChange={(event) => setByokKey(event.target.value)}
+            placeholder="sk-or-v1-…"
+          />
+          <span id="settings-openrouter-key-help" className={styles.fieldHint}>
+            The key is sent once for validation, encrypted on the server, and never shown again.
+          </span>
+          <div className={styles.byokActions}>
+            {editingKey && <button type="button" className={`${uiStyles.button} ${uiStyles.secondary}`} disabled={byokBusy} onClick={() => { setEditingKey(false); setByokKey(""); setByokError(""); }}>Cancel</button>}
+            <button type="button" className={`${uiStyles.button} ${uiStyles.primary}`} disabled={byokBusy || !byokKey.trim()} onClick={() => void connectKey()}>
+              {byokBusy ? "Validating…" : byok.connected ? "Validate replacement" : "Connect OpenRouter"}
+            </button>
+          </div>
+        </div>}
+
+        {byok.connected && !editingKey && <>
+          <div className={styles.field}>
+            <span className={styles.fieldLabel}>Writer funding</span>
+            <div className={styles.fundingChoices} role="radiogroup" aria-label="Writer funding">
+              <button type="button" role="radio" aria-checked={byok.writerFunding === "afterglow"} disabled={byokBusy} onClick={() => void chooseFunding("afterglow")}>
+                <strong>Afterglow</strong><small>Use Afterglow&apos;s writer funding</small>
+              </button>
+              <button type="button" role="radio" aria-checked={byok.writerFunding === "byok"} disabled={byokBusy} onClick={() => void chooseFunding("byok")}>
+                <strong>My OpenRouter</strong><small>Use your connected credits</small>
+              </button>
+            </div>
+          </div>
+          <div className={styles.byokActions}>
+            <button type="button" className={`${uiStyles.button} ${uiStyles.secondary}`} disabled={byokBusy} onClick={() => { setEditingKey(true); setConfirmRemove(false); }}>Replace key</button>
+            <button type="button" className={`${uiStyles.button} ${uiStyles.destructive}`} disabled={byokBusy} onClick={() => setConfirmRemove(true)}>Remove key</button>
+          </div>
+        </>}
+
+        {confirmRemove && <div className={styles.removeConfirm} role="group" aria-labelledby="remove-key-title" aria-describedby="remove-key-copy">
+          <strong id="remove-key-title">Remove OpenRouter key?</strong>
+          <p id="remove-key-copy">Your chats and memories will not be deleted. Writer funding will return to Afterglow.</p>
+          <div className={styles.byokActions}>
+            <button type="button" className={`${uiStyles.button} ${uiStyles.secondary}`} disabled={byokBusy} autoFocus onClick={() => setConfirmRemove(false)}>Cancel</button>
+            <button type="button" className={`${uiStyles.button} ${uiStyles.destructive}`} disabled={byokBusy} onClick={() => void removeKey()}>{byokBusy ? "Removing…" : "Remove key"}</button>
+          </div>
+        </div>}
+      </div>}
+
+      <p className={styles.byokDisclosure}>
+        When enabled, roleplay generation requests are sent through your OpenRouter account. OpenRouter may expose request details according to your OpenRouter logging and privacy settings. Afterglow&apos;s memory and continuity processing continues through Afterglow infrastructure.
+      </p>
+      {byokError && <p id="settings-openrouter-key-error" className={styles.error} role="alert">{byokError}</p>}
+    </section>
+
     {isAdmin && <section className={styles.card}>
       <div className={styles.cardHeader}><Gauge size={16} aria-hidden /><h2>Memory &amp; context</h2></div>
       <div className={styles.stack}>
@@ -268,9 +402,19 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
           <dd>{number(usage.usage.cacheWriteTokens ?? 0)}</dd>
         </div>
         <div className={styles.metric}>
-          <dt>Total cost</dt>
+          <dt>Inference value</dt>
           <dd>{usd(usage.usage.estimatedCostUsd)}</dd>
+          <small>all funding sources</small>
+        </div>
+        <div className={styles.metric}>
+          <dt>Afterglow spend</dt>
+          <dd>{usd(usage.usage.afterglowCostUsd)}</dd>
           <small>{usd(usage.costPer100UserMessages || 0)} / 100 messages</small>
+        </div>
+        <div className={styles.metric}>
+          <dt>My OpenRouter</dt>
+          <dd>{usd(usage.usage.byokCostUsd)}</dd>
+          <small>paid through your key</small>
         </div>
         {usage.usage.avgLatencyMs != null && <div className={styles.metric}>
           <dt>Latency</dt>
@@ -278,6 +422,13 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
           {usage.usage.avgTtftMs != null && <small>{usage.usage.avgTtftMs.toLocaleString()} ms to first token</small>}
         </div>}
       </dl>
+
+      {usage.byFunding.length > 0 && <div className={styles.fundingBreakdown}>
+        {usage.byFunding.map((item) => <div key={item.key}>
+          <span>{item.key === "byok" ? "Paid through your OpenRouter key" : "Paid by Afterglow"}</span>
+          <b>{usd(item.estimatedCostUsd)}</b>
+        </div>)}
+      </div>}
 
       <div className={styles.stack} style={{ marginTop: 14 }}>
         {usage.byType.map((item) => <div key={item.key} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>

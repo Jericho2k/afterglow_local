@@ -1,18 +1,25 @@
-import type { CompletionOptions, LLMMessage, LLMUsage } from "./llm";
+import type { LLMMessage, LLMUsage, ProviderAuthentication, ProviderCompletionOptions } from "./llm";
 import { ProviderError, classifyProviderFailure } from "./provider-errors";
 import { providerPolicyFor } from "./provider";
 
 const baseUrl = () => (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
 
-function apiKey() {
+function apiKey(authentication?: ProviderAuthentication) {
+  // A BYOK branch never consults the environment. An empty/corrupt request
+  // credential fails as that user's request; it cannot become platform spend.
+  if (authentication?.type === "openrouter_byok") {
+    const requestKey = authentication.credential.trim();
+    if (!requestKey) throw new ProviderError("auth", { provider: "openrouter", detail: "request credential was empty" });
+    return requestKey;
+  }
   const key = process.env.OPENROUTER_API_KEY?.trim();
   if (!key) throw new ProviderError("auth", { provider: "openrouter", detail: "OPENROUTER_API_KEY is not configured" });
   return key;
 }
 
-function headers() {
+function headers(authentication?: ProviderAuthentication) {
   const result: Record<string,string> = {
-    Authorization: `Bearer ${apiKey()}`,
+    Authorization: `Bearer ${apiKey(authentication)}`,
     "Content-Type": "application/json",
     "X-Title": process.env.OPENROUTER_APP_NAME?.trim() || "Afterglow",
   };
@@ -74,7 +81,7 @@ function wait(ms: number, signal?: AbortSignal) {
   });
 }
 
-async function request(body: Record<string,unknown>, options: CompletionOptions = {}, diagnosticModel?: string) {
+async function request(body: Record<string,unknown>, options: ProviderCompletionOptions = {}, diagnosticModel?: string) {
   const signal = options.signal;
   let lastError: ProviderError | null = null;
   // Hosts this request has already been refused by. Grows as attempts fail, so
@@ -91,7 +98,7 @@ async function request(body: Record<string,unknown>, options: CompletionOptions 
     try {
       response = await fetch(`${baseUrl()}/chat/completions`, {
         method: "POST",
-        headers: headers(),
+        headers: headers(options.authentication),
         body: JSON.stringify(payload),
         signal,
       });
@@ -153,7 +160,7 @@ function enrichedUsage(data: Record<string,unknown>, startedAt: number): LLMUsag
  * usage ledger. `session_id` is the provider-stickiness hint; it is omitted
  * rather than randomised when a task has no stable session.
  */
-function commonFields(options: CompletionOptions) {
+function commonFields(options: ProviderCompletionOptions) {
   return {
     usage: { include: true },
     ...(options.sessionId ? { session_id: options.sessionId } : {}),
@@ -161,7 +168,7 @@ function commonFields(options: CompletionOptions) {
   };
 }
 
-export async function completionWithUsage(messages: LLMMessage[], model: string, options: CompletionOptions = {}) {
+export async function completionWithUsage(messages: LLMMessage[], model: string, options: ProviderCompletionOptions = {}) {
   const { response, startedAt } = await request({
     model,
     messages,
@@ -178,7 +185,7 @@ export async function completionWithUsage(messages: LLMMessage[], model: string,
   return { content, usage: enrichedUsage(data,startedAt) };
 }
 
-export async function streamCompletion(messages: LLMMessage[], model: string, options: CompletionOptions = {}) {
+export async function streamCompletion(messages: LLMMessage[], model: string, options: ProviderCompletionOptions = {}) {
   const { response } = await request({
     model,
     messages,

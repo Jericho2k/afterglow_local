@@ -1,6 +1,7 @@
 import * as deepseek from "./deepseek";
 import * as openrouter from "./openrouter";
 import { providerModelId, resolveModel } from "./provider";
+import type { InferenceFunding } from "./byok";
 
 export type LLMMessage = { role: "system" | "user" | "assistant"; content: string };
 export type LLMUsage = deepseek.DeepSeekUsage & {
@@ -48,11 +49,20 @@ export type CompletionOptions = {
   excludeProviders?: string[];
 };
 
+/** Adapter-only authentication. Generic/background completion APIs omit it. */
+export type ProviderAuthentication =
+  | { type: "platform" }
+  | { type: "openrouter_byok"; credential: string };
+
+export type ProviderCompletionOptions = CompletionOptions & {
+  authentication?: ProviderAuthentication;
+};
+
 /** The adapter contract future OpenRouter or self-hosted runtimes implement. */
 export interface LLMProvider {
   id: string;
-  completionWithUsage(messages: LLMMessage[], modelId: string, options?: CompletionOptions): Promise<{ content: string; usage: LLMUsage | null }>;
-  streamCompletion(messages: LLMMessage[], modelId: string, options?: CompletionOptions): Promise<ReadableStream<Uint8Array>>;
+  completionWithUsage(messages: LLMMessage[], modelId: string, options?: ProviderCompletionOptions): Promise<{ content: string; usage: LLMUsage | null }>;
+  streamCompletion(messages: LLMMessage[], modelId: string, options?: ProviderCompletionOptions): Promise<ReadableStream<Uint8Array>>;
 }
 
 const deepSeekProvider: LLMProvider = {
@@ -93,9 +103,29 @@ export function completionWithUsage(selection: ModelSelection, messages: LLMMess
   return found.completionWithUsage(messages,upstreamModelId,options);
 }
 
-export function streamCompletion(selection: ModelSelection, messages: LLMMessage[], options: CompletionOptions = {}) {
+function streamCompletionWithProviderOptions(selection: ModelSelection, messages: LLMMessage[], options: ProviderCompletionOptions = {}) {
   const { found,upstreamModelId } = adapter(selection);
   return found.streamCompletion(messages,upstreamModelId,options);
+}
+
+/** Generic/platform streaming retained for diagnostics and tests; no BYOK input. */
+export function streamCompletion(selection: ModelSelection, messages: LLMMessage[], options: CompletionOptions = {}) {
+  return streamCompletionWithProviderOptions(selection, messages, options);
+}
+
+/**
+ * This is the only exported streaming path that can accept user funding.
+ * Background inference uses completionWithUsage and therefore has no API that
+ * accepts a user credential.
+ */
+export function streamWriterCompletion(selection: ModelSelection, messages: LLMMessage[], funding: InferenceFunding, options: CompletionOptions = {}) {
+  if (funding.type === "byok" && selection.providerId !== funding.provider) {
+    throw new Error("BYOK funding may only authenticate its matching writer provider");
+  }
+  const authentication: ProviderAuthentication | undefined = funding.type === "byok"
+    ? { type: "openrouter_byok", credential: funding.credential }
+    : selection.providerId === "openrouter" ? { type: "platform" } : undefined;
+  return streamCompletionWithProviderOptions(selection, messages, { ...options, authentication });
 }
 
 export function embeddingWithUsage(input: string | string[], options: { model?: string; dimensions?: number; signal?: AbortSignal } = {}) {

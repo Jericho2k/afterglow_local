@@ -53,6 +53,8 @@ export const migrationFiles = [
   "0020_scene_physical_state.sql",
   "0021_creator_profile_v2.sql",
   "0022_social_discovery.sql",
+  "0023_branch_copy_indexes.sql",
+  "0024_writer_openrouter_byok.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {

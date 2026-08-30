@@ -274,6 +274,24 @@ describe("cross-account access", () => {
     expect(own.usage.requests).toBe(1);
   });
 
+  it("separates inference value from Afterglow spend by funding source", async () => {
+    account = { id: alice, email: null };
+    await query("DELETE FROM usage_events WHERE user_id=$1", [alice]);
+    await query(
+      `INSERT INTO usage_events (id,user_id,model,usage_type,funding_source,estimated_cost_usd) VALUES
+       ($1,$4,'mimo-v2.5','chat','afterglow',0.01),
+       ($2,$4,'mimo-v2.5','chat','byok',0.20),
+       ($3,$4,'deepseek-v4-flash','memory_consolidation','afterglow',0.02)`,
+      [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID(), alice],
+    );
+    const own = await (await usage.GET(new Request("http://test/api/usage"))).json();
+    expect(own.usage.estimatedCostUsd).toBeCloseTo(0.23, 10);
+    expect(own.usage.afterglowCostUsd).toBeCloseTo(0.03, 10);
+    expect(own.usage.byokCostUsd).toBeCloseTo(0.20, 10);
+    expect(Object.fromEntries(own.byFunding.map((item: { key: string; estimatedCostUsd: number }) => [item.key, item.estimatedCostUsd])))
+      .toEqual({ afterglow: 0.03, byok: 0.2 });
+  });
+
   it("scopes the backup export to the caller", async () => {
     account = { id: bob, email: null };
     const empty = await (await backup.GET()).json();

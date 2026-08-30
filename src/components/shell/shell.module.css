@@ -522,6 +522,50 @@
 .rangeCustom { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; }
 .rangeCustom label { display: flex; flex: 1 1 150px; flex-direction: column; gap: 5px; }
 
+/* Writer-only OpenRouter funding. Secret input and saved metadata are separate
+   surfaces so a connected state never needs to decrypt or repopulate a key. */
+.byokIntro { margin: 0 0 13px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.byokPanel { display: grid; gap: 14px; min-width: 0; }
+.byokStatusRow { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.byokProviderMark {
+  display: grid; place-items: center; flex: none; width: 38px; height: 38px;
+  border: 1px solid rgba(184, 146, 240, .3); border-radius: 12px;
+  background: rgba(184, 146, 240, .09); color: #d9bdf7;
+}
+.byokStatusCopy { display: grid; gap: 2px; min-width: 0; }
+.byokStatusCopy strong { font-size: 13px; }
+.byokStatusCopy span { color: var(--muted); font-size: 12px; }
+.byokStatusCopy small { color: var(--faint); overflow-wrap: anywhere; }
+.byokConnect { display: grid; gap: 8px; min-width: 0; }
+.byokActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; min-width: 0; }
+.byokActions > * { max-width: 100%; }
+.fundingChoices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.fundingChoices button {
+  min-width: 0; min-height: 64px; display: grid; align-content: center; gap: 4px;
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+  background: rgba(255,255,255,.025); color: var(--ink); text-align: left; cursor: pointer;
+}
+.fundingChoices button[aria-checked="true"] { border-color: rgba(232,121,169,.42); background: rgba(232,121,169,.1); }
+.fundingChoices button:focus-visible { outline: 2px solid #f0a6c6; outline-offset: 2px; }
+.fundingChoices button[disabled] { opacity: .5; cursor: not-allowed; }
+.fundingChoices strong { font-size: 12.5px; }
+.fundingChoices small { min-width: 0; color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
+.byokDisclosure { margin: 14px 0 0; color: var(--faint); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.byokUnavailable { border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.removeConfirm { display: grid; gap: 8px; border: 1px solid rgba(238,104,137,.28); border-radius: 13px; background: rgba(238,104,137,.07); padding: 12px; }
+.removeConfirm strong { font-size: 13px; }
+.removeConfirm p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.fundingBreakdown { display: grid; gap: 7px; margin-top: 12px; }
+.fundingBreakdown > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+.fundingBreakdown span { min-width: 0; overflow-wrap: anywhere; }
+.fundingBreakdown b { flex: none; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 430px) {
+  .fundingChoices { grid-template-columns: 1fr; }
+  .byokActions { justify-content: stretch; }
+  .byokActions > * { flex: 1 1 140px; }
+}
+
 /*
  * Profile — the creator's own view.
  *

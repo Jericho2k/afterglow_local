@@ -609,7 +609,12 @@ export type UsageSummary = {
   avgLatencyMs: number | null;
   avgTtftMs: number | null;
   requests: number;
+  /** Total provider-reported/estimated inference value, regardless of payer. */
   estimatedCostUsd: number;
+  /** Actual platform expense; explicitly excludes BYOK rows. */
+  afterglowCostUsd: number;
+  /** Informational value paid through users' OpenRouter credentials. */
+  byokCostUsd: number;
 };
 
 export type UsageBreakdown = UsageSummary & { key: string };
