@@ -130,6 +130,7 @@ export default function AppShell() {
   const [storyNavigation, setStoryNavigation] = useState(closedStoryNavigation);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarRef = useRef<HTMLElement | null>(null);
   /**
    * Desktop only, and a different idea from `sidebarOpen`.
    *
@@ -221,9 +222,20 @@ export default function AppShell() {
     document.body.style.overscrollBehavior = "none";
     function onKeyDown(event: KeyboardEvent) { if (event.key === "Escape") setSidebarOpen(false); }
     document.addEventListener("keydown", onKeyDown);
+    /*
+     * Focus moves into the drawer, and back to what opened it.
+     *
+     * A partial-width drawer leaves the page behind it visible, which makes it
+     * far easier to end up tabbing through a chat the reader cannot see. The
+     * close button is the first thing in the panel and the right place to land:
+     * it is the way out, and reading forward from it walks the navigation.
+     */
+    const opener = document.activeElement as HTMLElement | null;
+    sidebarRef.current?.querySelector<HTMLElement>("button")?.focus();
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.body.style.overscrollBehavior = previous;
+      if (opener?.isConnected) opener.focus();
     };
   }, [sidebarOpen]);
 
@@ -1019,7 +1031,7 @@ export default function AppShell() {
         <div><strong>Some of your library could not be loaded.</strong><small>{libraryError}</small></div>
         <button onClick={()=>{setLibraryError("");refreshLibraries();}}>Try again</button>
       </div>}
-      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`} aria-label="Afterglow navigation">
+      <aside ref={sidebarRef} className={`sidebar ${sidebarOpen ? "open" : ""}`} aria-label="Afterglow navigation">
         <div className="brand"><Logo /><button className="icon-button mobile-only" aria-label="Close menu" onClick={() => setSidebarOpen(false)}><X size={18} aria-hidden /></button></div>
         {/*
           * The main navigation.

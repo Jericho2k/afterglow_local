@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { BrainCircuit, Check, Pencil, Pin, PinOff, Plus, Trash2, X } from "lucide-react";
+import { BookMarked, BrainCircuit, Check, Pencil, Pin, PinOff, Plus, ScrollText, Sparkles, Trash2, X } from "lucide-react";
 import { api } from "@/lib/api-client";
 import type { CoreCanonEntry, Memory, MemoryArc, MemoryKind } from "@/lib/types";
 import { SelectField, uiStyles, type SelectOption } from "@/components/ui";
@@ -31,6 +31,24 @@ import styles from "./shell.module.css";
  * is told that, rather than being promised a deletion that would take the
  * history of their own story with it.
  */
+
+/**
+ * The class that tints one kind's pill and its left rail.
+ *
+ * A memory's kind is its identity, and seven identical grey cards made that
+ * invisible: finding "what did it decide about boundaries" meant reading every
+ * one. Six hues across the app's own violet-to-rose range, not a rainbow — the
+ * job is telling kinds apart at a glance, not decoration.
+ */
+const kindClass: Record<MemoryKind, string> = {
+  identity: styles.kindIdentity,
+  relationship: styles.kindRelationship,
+  event: styles.kindEvent,
+  promise: styles.kindPromise,
+  preference: styles.kindPreference,
+  boundary: styles.kindBoundary,
+  open_loop: styles.kindOpenLoop,
+};
 
 const memoryKinds: SelectOption[] = [
   { value: "identity", label: "Identity" },
@@ -210,19 +228,19 @@ export function MemoryLibrary({ characterId, characterName, conversationId, diag
     {diagnostics}
 
     {payload?.coreCanon.length ? <section className={styles.memoryDerived}>
-      <h3>Core canon</h3>
+      <h3><BookMarked size={15} aria-hidden />Core canon</h3>
       <p className={styles.fieldHint}>The handful of facts this story cannot afford to forget. Curated from the memories below, so it updates when they do.</p>
       <ul>{payload.coreCanon.map((entry) => <li key={entry.id}><b>{entry.category.replace("_", " ")}</b>{entry.content}</li>)}</ul>
     </section> : null}
 
     {payload?.summary ? <section className={styles.memoryDerived}>
-      <h3>Story so far</h3>
+      <h3><ScrollText size={15} aria-hidden />Story so far</h3>
       <p className={styles.fieldHint}>The current rolling summary. Rewritten as the story advances.</p>
       <p className={styles.memorySummary}>{payload.summary}</p>
     </section> : null}
 
     <div className={styles.memoryListHead}>
-      <h3>Memories</h3>
+      <h3><Sparkles size={15} aria-hidden />Memories</h3>
       <label className={styles.memoryToggle}>
         <input type="checkbox" checked={showRemoved} onChange={(event) => setShowRemoved(event.target.checked)} />
         Show removed
@@ -235,14 +253,20 @@ export function MemoryLibrary({ characterId, characterName, conversationId, diag
       {memories.map((memory) => {
         const editing = editingId === memory.id;
         const removed = memory.status === "superseded";
-        return <li key={memory.id} className={removed ? `${styles.memoryItem} ${styles.memoryItemRemoved}` : styles.memoryItem}>
+        const itemClass = [
+          styles.memoryItem,
+          kindClass[memory.kind] ?? "",
+          removed ? styles.memoryItemRemoved : "",
+          memory.pinned && !removed ? styles.memoryItemPinned : "",
+        ].filter(Boolean).join(" ");
+        return <li key={memory.id} className={itemClass}>
           <div className={styles.memoryMeta}>
-            <span>{kindLabel(memory.kind)}</span>
+            <span className={styles.memoryKind}>{kindLabel(memory.kind)}</span>
             {memory.pinned && <span className={styles.memoryPinned}><Pin size={11} aria-hidden />Pinned</span>}
             {memory.status === "resolved" && <span>Resolved</span>}
             {removed && <span>Removed</span>}
-            <span>{memory.conversationId ? "This story" : "Every story"}</span>
-            {memory.origin === "user" && <span>You wrote this</span>}
+            <span className={styles.memoryScope}>{memory.conversationId ? "This story" : "Every story"}</span>
+            {memory.origin === "user" && <span className={styles.memoryScope}>You wrote this</span>}
           </div>
 
           {editing && draft ? <>
@@ -295,7 +319,7 @@ export function MemoryLibrary({ characterId, characterName, conversationId, diag
     </ul>
 
     {payload?.arcs.length ? <section className={styles.memoryDerived}>
-      <h3>Chapters</h3>
+      <h3><ScrollText size={15} aria-hidden />Chapters</h3>
       <p className={styles.fieldHint}>Longer stretches of the story, kept for when something from far back becomes relevant again.</p>
       <ul>{payload.arcs.map((arc) => <li key={arc.id}><b>{arc.startMessageCount}–{arc.endMessageCount}</b>{arc.summary}</li>)}</ul>
     </section> : null}
