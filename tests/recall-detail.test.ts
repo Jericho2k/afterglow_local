@@ -101,7 +101,10 @@ describe("the count is the contents", () => {
     expect(body.counts.total).toBe(2);
     expect(body.items).toHaveLength(2);
     expect(body.counts.unavailable).toBe(1);
-    expect(body.items[1]).toEqual({ kind: "memory", id: m2, available: false });
+    // It now also says WHY it cannot show the text. This reply predates
+    // per-generation provenance, so the version it read was never recorded and
+    // resolving today's text would be a guess.
+    expect(body.items[1]).toEqual({ kind: "memory", id: m2, available: false, historicalState: "not_recorded" });
   });
 
   it("reports an honest zero for a reply that recalled nothing", async () => {

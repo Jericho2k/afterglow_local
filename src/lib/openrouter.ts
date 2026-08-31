@@ -51,6 +51,33 @@ function headers(authentication?: ProviderAuthentication) {
  */
 const attemptDelays = [0, 350, 900] as const;
 
+/**
+ * HOW LONG ONE UPSTREAM MAY TAKE TO SAY ANYTHING AT ALL.
+ *
+ * There was no bound here. `fetch` was given only the caller's own abort signal
+ * — the browser hanging up — so an upstream that accepted the connection and
+ * then went quiet held the request until the platform's 120-second ceiling
+ * killed the whole function. That is the reported "close to a minute": not the
+ * model thinking slowly, one dead host holding a chat hostage while several
+ * other hosts served the same model.
+ *
+ * The bound is deliberately on the HEADERS phase only. Once the upstream has
+ * responded, the stream is left alone however long the model takes to write —
+ * cutting off a reply in progress would be a far worse failure than waiting for
+ * it, and a long reply is not a fault. What is bounded is silence before the
+ * first byte.
+ *
+ * Twenty seconds is chosen to be clearly outside normal behaviour rather than
+ * tight: a healthy provider returns headers in well under a second, and a slow
+ * one under a few. Anything past twenty is not slow, it is not coming — and the
+ * retry that follows asks OpenRouter for a DIFFERENT host serving the SAME
+ * model, so reliability is not being traded away. It is being recovered sooner.
+ */
+export function providerHeadersTimeoutMs() {
+  const configured = Number(process.env.PROVIDER_HEADERS_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 20_000;
+}
+
 /** Bounded by construction: three attempts, ~1.25s of added delay at worst. */
 export const maxAttempts = attemptDelays.length;
 
@@ -94,18 +121,56 @@ async function request(body: Record<string,unknown>, options: ProviderCompletion
     const provider = providerBlock(options.modelId, attempt, failed);
     const payload = provider ? { ...body, provider } : body;
 
+    /*
+     * One controller per attempt, so a deadline on the HEADERS does not later
+     * cut off a stream that is flowing.
+     *
+     * The caller's signal is chained into it, which is what keeps a browser
+     * hang-up working for the body as well; the timer is cleared the moment
+     * headers arrive, so only the connect-and-respond phase is bounded.
+     */
+    const attemptControl = new AbortController();
+    const relayAbort = () => attemptControl.abort();
+    signal?.addEventListener("abort", relayAbort, { once: true });
+    let timedOut = false;
+    const deadline = setTimeout(() => { timedOut = true; attemptControl.abort(); }, providerHeadersTimeoutMs());
+
     let response: Response;
     try {
       response = await fetch(`${baseUrl()}/chat/completions`, {
         method: "POST",
         headers: headers(options.authentication),
         body: JSON.stringify(payload),
-        signal,
+        signal: attemptControl.signal,
       });
+      clearTimeout(deadline);
     } catch (error) {
+      clearTimeout(deadline);
+      // The caller hanging up is final; a host going quiet is not.
+      if (signal?.aborted) throw new ProviderError("timeout", { provider: "openrouter", model: diagnosticModel, attempt: attempt + 1 });
+      if (timedOut) {
+        /*
+         * Treated as a refusal, so recovery routes away from the silence.
+         *
+         * No headers came back, so the host that went quiet cannot be named
+         * from the response. The endpoint this attempt asked for FIRST is the
+         * best evidence available, and excluding it is safe either way: if the
+         * guess is right the next attempt avoids the dead host, and if it is
+         * wrong the attempt still reaches the same model somewhere else.
+         * Attempt 1 onwards also sorts by live throughput, which routes away
+         * from a slow host without needing to name it.
+         */
+        const quiet = provider?.order?.[0];
+        if (quiet && !failed.includes(quiet)) failed.push(quiet);
+        lastError = new ProviderError("timeout", {
+          provider: "openrouter", model: diagnosticModel, attempt: attempt + 1,
+          latencyMs: Date.now() - startedAt,
+          detail: `no response headers within ${providerHeadersTimeoutMs()}ms`,
+        });
+        continue;
+      }
       // A transport failure is indistinguishable from a dead host, and is
       // treated as one: same model, another provider, bounded attempts.
-      if (signal?.aborted) throw new ProviderError("timeout", { provider: "openrouter", model: diagnosticModel, attempt: attempt + 1 });
       lastError = new ProviderError("upstream_unavailable", {
         provider: "openrouter", model: diagnosticModel, attempt: attempt + 1,
         latencyMs: Date.now() - startedAt,

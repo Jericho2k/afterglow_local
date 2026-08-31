@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { conversationCharacter, ownedConversation } from "@/lib/access";
+import { recordGeneration } from "@/lib/provenance";
+import { logTimeline, startTimeline } from "@/lib/request-timing";
 import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
 import { streamWriterCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
@@ -39,8 +41,18 @@ export async function POST(request: Request) {
   // Authorisation happens before anything is written and, critically, before
   // any paid model call: an unauthenticated or unauthorised request must never
   // reach DeepSeek.
+  /*
+   * The timeline for this turn.
+   *
+   * Nothing between "tap send" and "first token" was measured, which is why
+   * "some replies take close to a minute" could only ever be answered with a
+   * guess. See src/lib/request-timing.ts; it records stage names and durations
+   * and never content.
+   */
+  const timeline = startTimeline();
   const account = await currentAccount();
   if (!account) return unauthorized();
+  timeline.mark("auth");
   const limited = checkRateLimit(`chat:${account.id}`, 60, 60_000); if (limited) return limited;
   const ipLimited = checkRateLimit(`chat-ip:${clientIp(request)}`, 120, 60_000); if (ipLimited) return ipLimited;
   const parsed = chatSchema.safeParse(await request.json().catch(() => null));
@@ -72,10 +84,22 @@ export async function POST(request: Request) {
      * even though the link survives. See src/lib/conversation-worlds.ts.
      */
     await ensureConversationWorlds(client, account.id, row);
-    const worldRows = await conversationWorldRecords(client, account.id, conversationId);
-    const personaResult = row.persona_id
-      ? await client.query("SELECT * FROM personas WHERE id=$1 AND user_id=$2", [row.persona_id, account.id])
-      : await client.query("SELECT * FROM personas WHERE user_id=$1 AND is_default=true LIMIT 1", [account.id]);
+    /*
+     * The worlds and the persona are independent reads, so they are one wait
+     * rather than two.
+     *
+     * Everything in this handler used to be strictly sequential, and against a
+     * pooled remote database every statement is a network leg the reader waits
+     * through before a single token appears. These two have nothing to say to
+     * each other; only `ensureConversationWorlds` above has to come first,
+     * because the read below depends on what it writes.
+     */
+    const [worldRows, personaResult] = await Promise.all([
+      conversationWorldRecords(client, account.id, conversationId),
+      row.persona_id
+        ? client.query("SELECT * FROM personas WHERE id=$1 AND user_id=$2", [row.persona_id, account.id])
+        : client.query("SELECT * FROM personas WHERE user_id=$1 AND is_default=true LIMIT 1", [account.id]),
+    ]);
 
     return {
       row,
@@ -85,6 +109,7 @@ export async function POST(request: Request) {
       persona: personaResult.rows[0] ? personaFromRow(personaResult.rows[0]) : null,
     };
   });
+  timeline.mark("conversation+creation+worlds+persona");
   if ("error" in prepared) return Response.json({ error: prepared.error }, { status: 404 });
   const { row, character, settings, worlds, persona } = prepared;
   const conversationSelection = {
@@ -132,6 +157,7 @@ export async function POST(request: Request) {
   let fundingIntent: Awaited<ReturnType<typeof preflightWriterFunding>>;
   try {
     fundingIntent = await preflightWriterFunding(account.id, "rp_generation", selection);
+    timeline.mark("funding-preflight");
   } catch (error) {
     if (error instanceof ByokError) return Response.json({ error: error.message, reason: error.code }, { status: 409 });
     throw error;
@@ -172,30 +198,43 @@ export async function POST(request: Request) {
       if (regenerateTarget && sceneEnabled) await dropSceneStateForMessage(client,conversationId,regenerateTarget.id,account.id);
     }
 
-    // A few rows past the context limit, so the anchored window below has the
-    // messages it may keep. The extra rows are read, not necessarily sent.
-    const historyResult = await client.query(
-      "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT $3",
-      [conversationId, account.id, anchoredFetchLimit(settings.contextMessages)],
-    );
-    const totalMessages = await client.query(
-      "SELECT COUNT(*)::int count FROM messages WHERE conversation_id=$1 AND user_id=$2",
-      [conversationId, account.id],
-    );
+    /*
+     * The transcript, and the scene it happens in, read together.
+     *
+     * THE COUNT QUERY IS GONE. This used to follow the transcript read with
+     * `SELECT COUNT(*) FROM messages` purely to place the anchored window's
+     * quantised start — a full index scan of the conversation, growing with
+     * exactly the thing the product wants people to do, on the critical path of
+     * every single reply. The conversation row already carries `message_count`
+     * and this transaction has just incremented it.
+     *
+     * A stale count is harmless here in a way it would not be elsewhere:
+     * `selectAnchoredMessages` takes `Math.max(total, available.length)`, so
+     * under-counting can only widen the window, never narrow it. It is a cache
+     * hint, not a correctness input.
+     */
+    const [historyResult, sceneState] = await Promise.all([
+      client.query(
+        "SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT $3",
+        [conversationId, account.id, anchoredFetchLimit(settings.contextMessages)],
+      ),
+      // Read after any regeneration cleanup above, so a replaced generation's
+      // scene is already out of the way.
+      sceneEnabled ? currentSceneState(client,account.id,conversationId) : Promise.resolve(null),
+    ]);
+    const knownMessageCount = Number(row.message_count || 0) + (action === "send" ? 1 : 0);
     const availableHistory = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
     // Anchored rather than strictly sliding: the same transcript the budget
     // would have selected, with its start quantised so a provider's prompt
     // cache survives more than one turn. Never fewer messages than before.
-    const history = selectAnchoredMessages(availableHistory, Number(totalMessages.rows[0]?.count || availableHistory.length), settings.contextMessages, settings.contextTokenBudget);
+    const history = selectAnchoredMessages(availableHistory, Math.max(knownMessageCount, availableHistory.length), settings.contextMessages, settings.contextTokenBudget);
     const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
     const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
-    // Where and when this reply happens. Read after any regeneration cleanup so
-    // a replaced generation's scene is already out of the way.
-    const sceneState = sceneEnabled ? await currentSceneState(client,account.id,conversationId) : null;
-    return { regenerateTarget, userMessageId, history, lastUserInput, recallContext, sceneState };
+    return { regenerateTarget, userMessageId, history, lastUserInput, recallContext, sceneState, knownMessageCount };
   });
+  timeline.mark("transcript+scene");
 
-  const { regenerateTarget, userMessageId, history, lastUserInput, recallContext, sceneState } = staged;
+  const { regenerateTarget, userMessageId, history, lastUserInput, recallContext, sceneState, knownMessageCount } = staged;
   // Selection stays relevance-driven. The cue is opt-in and additive so an
   // A/B comparison can separate grounding from ranking.
   const sceneRetrievalHint = sceneState && sceneStateRetrievalHintEnabled() ? sceneRetrievalCue(sceneFieldsOf(sceneState)) : "";
@@ -214,6 +253,16 @@ export async function POST(request: Request) {
         // continued rather than the reader's older message.
         query:focusedRetrievalQuery(history,(action === "continue" ? continuationRetrievalAnchor : "") || lastUserInput || character.scenario || character.name,sceneRetrievalHint),
         messageId:userMessageId,limit:settings.memoryLimit,tokenBudget:settings.memoryTokenBudget,
+        /*
+         * Where the story has reached, in the story's own units.
+         *
+         * Aging used to be measured on the wall clock, which is the wrong clock
+         * for fiction: a roleplay can sit untouched for three real months while
+         * five fictional minutes pass, and every promise in it would go stale
+         * inside a scene that had not moved. Message count and the live scene's
+         * story day are the two clocks that actually track the story.
+         */
+        at:{ messageCount:knownMessageCount, storyDay:sceneState ? sceneFieldsOf(sceneState).storyDay ?? null : null },
       });
       ({memories,arcs,coreCanon}=continuity);
       retrievalRunId = continuity.diagnostics.runId;
@@ -223,8 +272,10 @@ export async function POST(request: Request) {
       console.error("Memory Retrieval V2 failed; using V1",error);
       ({memories,arcs}=await asUser(account.id,(client)=>relevantContinuity(client,account.id,row.character_id,conversationId,recallContext,settings.memoryLimit,settings.memoryTokenBudget)));
     }
+    timeline.mark("memory-retrieval");
   } else {
     ({memories,arcs}=await asUser(account.id,(client)=>relevantContinuity(client,account.id,row.character_id,conversationId,recallContext,settings.memoryLimit,settings.memoryTokenBudget)));
+    timeline.mark("memory-retrieval");
   }
 
   // With the layer off, the writer prompt is byte-identical to today's: no
@@ -333,8 +384,12 @@ export async function POST(request: Request) {
   };
   let upstream: ReadableStream<Uint8Array>;
   const requestStartedAt = Date.now();
+  timeline.mark("provider-request-started");
   try {
     upstream = await streamWriterCompletion(selection,completionMessages,writerFunding,completionOptions);
+    // The provider accepted the request and handed back a stream. Everything
+    // after this mark is the model thinking; everything before it is ours.
+    timeline.mark("provider-accepted");
   } catch (error) {
     // The operator gets the status, the route and the upstream body; the
     // reader gets one sentence. These are two different strings on purpose —
@@ -345,12 +400,21 @@ export async function POST(request: Request) {
       : error);
     return Response.json({ error: writerErrorMessage(error, writerFunding) }, { status: publicErrorStatus(error) });
   }
+  /*
+   * Analytics, not a precondition.
+   *
+   * This is one more database round trip sitting directly between the finished
+   * prompt and the provider request — the last thing the reader waits through
+   * before anything can start streaming — and nothing downstream reads it. It
+   * is fired and not awaited.
+   */
   if (userMessageId) {
-    await asUser(account.id, (client) => client.query(
+    void asUser(account.id, (client) => client.query(
       "UPDATE messages SET generation_started_at=COALESCE(generation_started_at,now()) WHERE id=$1 AND user_id=$2 AND role='user'",
       [userMessageId, account.id],
-    ));
+    )).catch((error) => console.error("Generation start stamp failed", error));
   }
+  timeline.mark("prompt-built");
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -429,7 +493,7 @@ export async function POST(request: Request) {
                 if (typeof choice?.finish_reason === "string") signals.finishReason = choice.finish_reason;
                 if (typeof choice?.delta?.reasoning === "string" && choice.delta.reasoning) signals.reasoningSeen = true;
                 const delta = choice?.delta?.content;
-                if (typeof delta === "string" && delta) { if(ttftMs===undefined)ttftMs=Math.max(0,Date.now()-startedAt); assistant += delta; send({ type: "delta", content: delta }); }
+                if (typeof delta === "string" && delta) { if(ttftMs===undefined){ttftMs=Math.max(0,Date.now()-startedAt);timeline.mark("first-token");} assistant += delta; send({ type: "delta", content: delta }); }
                 if (data?.usage) usage = {
                   ...data.usage,
                   provider_request_id: providerRequestId,
@@ -517,6 +581,32 @@ export async function POST(request: Request) {
          * what keeps a creator's private definition out of it — there is no
          * field here a prompt could leak through.
          */
+        /*
+         * The exact transcript turns this generation was handed.
+         *
+         * `fitted.messages` is what survived budgeting, taken from the tail of
+         * `history`, so the same slice of `history` names them — with the
+         * revision each turn carried at the time. Ids alone were never enough:
+         * the inline editor rewrites message content in place, and selecting a
+         * different option replaces it, so an id would resolve to whatever that
+         * turn says today rather than what this writer actually read.
+         */
+        const suppliedTranscript = history.slice(Math.max(0, history.length - fitted.messages.length));
+        const generationRecord = {
+          action,
+          memoryVersions: memories.map((memory) => ({ id: memory.id, v: memory.contentVersion ?? 1 })),
+          transcriptVersions: suppliedTranscript.map((message) => ({ id: message.id, v: message.contentVersion ?? 1 })),
+          arcIds, canonIds: coreCanon.map((entry) => entry.id),
+          sceneStateId: sceneState?.id ?? null,
+          retrievalRunId: retrievalRunId || null,
+          transcriptMessages: fitted.messages.length,
+          transcriptTokens: fitted.plan.promptTokens,
+          transcriptTrimmed: fitted.dropped ?? 0,
+          summaryUsed: Boolean(currentSummary.trim()),
+          summaryCharacters: currentSummary.length,
+          continuityPlacement: placement,
+        };
+
         const contextProvenance = {
           version: 1 as const,
           transcript: {
@@ -538,12 +628,20 @@ export async function POST(request: Request) {
         // rather than after it. Holding it until the database round trips
         // finished left the text sitting on screen for seconds with its
         // controls still hidden, which read as a freeze.
+        timeline.mark("stream-complete");
         send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, ...(isAdminAccount(account)?{memoriesUsed: memoryIds, arcsUsed: arcIds, usage}: {}) });
 
         try {
           // One statement per transaction: each extra round trip to a pooled
           // remote database is latency the reader would otherwise wait through.
           if (regenerateTarget) {
+            /*
+             * The message-level columns keep describing the CURRENTLY SELECTED
+             * variant, which is what they have always meant and what the older
+             * clients read. They are a denormalised convenience now; the row in
+             * message_generations below is the record that cannot be overwritten
+             * by the next regeneration.
+             */
             await asUser(account.id, (client) => client.query(
               `WITH saved AS (
                  UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[],context_provenance=$8::jsonb
@@ -563,6 +661,26 @@ export async function POST(request: Request) {
               [assistantId,conversationId,account.id,assistant,JSON.stringify(variants),memoryIds,arcIds,JSON.stringify(contextProvenance)],
             ));
           }
+          /*
+           * ONE IMMUTABLE ROW PER GENERATION.
+           *
+           * Written after the message so the foreign key resolves, and outside
+           * the branch above because the record is the same either way: what
+           * differs is only which variant index it claims. Regenerate appends,
+           * so the variant it produced is the last one; a send or a continue
+           * always writes variant 0 of a brand-new message.
+           *
+           * A failure here loses provenance for one reply and must not lose the
+           * reply, so it is logged rather than surfaced — the inspector reports
+           * "not recorded" for it, which is the truth.
+           */
+          await asUser(account.id, (client) => recordGeneration(client, {
+            ...generationRecord,
+            messageId: assistantId,
+            conversationId,
+            userId: account.id,
+            variantIndex: selectedVariant,
+          })).catch((error) => console.error("Generation provenance not recorded", error));
         } catch (error) {
           // The reader was already told the reply finished, so a failed write
           // has to be reported rather than swallowed: the text on their screen
@@ -570,6 +688,23 @@ export async function POST(request: Request) {
           console.error("Reply persistence failed", error);
           send({ type: "error", error: "That reply could not be saved. Reload the chat before continuing." });
         }
+
+        timeline.mark("persisted");
+        /*
+         * The timeline, emitted once the reply is on screen and saved.
+         *
+         * This is the artifact that answers "where did the minute go" — every
+         * stage from auth to persistence with its own duration, and the slowest
+         * one named. Stage names and numbers only; see request-timing.ts.
+         */
+        logTimeline(timeline, {
+          conversationId, action,
+          provider: selection.providerId, model: selection.modelId,
+          upstreamProvider: upstreamProvider ?? null,
+          ttftMs: ttftMs ?? null,
+          promptTokens: (usage as LLMUsage | null)?.prompt_tokens ?? null,
+          completionTokens: (usage as LLMUsage | null)?.completion_tokens ?? null,
+        });
 
         // Accounting must not hold the accepted-message event (and therefore
         // the post-stream controls) behind another database round trip.

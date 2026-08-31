@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { afterEach,describe,expect,it,vi } from "vitest";
+import { providerHeadersTimeoutMs } from "@/lib/openrouter";
 import { completionWithUsage,embeddingWithUsage,streamCompletion } from "@/lib/llm";
 import { ProviderError } from "@/lib/provider-errors";
 
@@ -159,5 +161,69 @@ describe("OpenRouter provider", () => {
     const result = await embeddingWithUsage(["memory","query"]);
     expect(result.embeddings).toEqual([[0.1,0.2],[0.3,0.4]]);
     expect(result.usage).toMatchObject({ provider_request_id:"emb-1",actual_model:"qwen/qwen3-embedding-8b" });
+  });
+});
+
+/**
+ * THE UNBOUNDED WAIT.
+ *
+ * `fetch` was given only the caller's own abort signal — the browser hanging up
+ * — so an upstream that accepted the connection and then said nothing held the
+ * request until the platform's 120-second ceiling killed the function. That is
+ * the reported "close to a minute": not a model thinking, one dead host holding
+ * a chat hostage while other hosts served the same model.
+ *
+ * The deadline is on the HEADERS phase only. A reply that is streaming is never
+ * cut off however long it takes, because a long reply is not a fault.
+ */
+describe("a silent upstream does not hold the chat", () => {
+  afterEach(() => { delete process.env.PROVIDER_HEADERS_TIMEOUT_MS; });
+
+  it("gives up on a host that never sends headers and tries another", async () => {
+    enable();
+    process.env.PROVIDER_HEADERS_TIMEOUT_MS = "40";
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+        });
+      }
+      return Response.json({ choices: [{ message: { content: "Recovered." } }] });
+    }));
+
+    const started = Date.now();
+    const result = await completionWithUsage({ providerId: "openrouter", modelId: "passion-fruit" }, [{ role: "user", content: "hello" }]);
+    expect(result.content).toBe("Recovered.");
+    expect(calls).toBeGreaterThan(1);
+    // Bounded by the deadline plus backoff, not by the platform ceiling.
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("still lets the caller hanging up abort the request outright", async () => {
+    enable();
+    process.env.PROVIDER_HEADERS_TIMEOUT_MS = "10000";
+    const controller = new AbortController();
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+    })));
+
+    const pending = completionWithUsage({ providerId: "openrouter", modelId: "passion-fruit" }, [{ role: "user", content: "hello" }], { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+  });
+
+  it("clears the deadline the moment headers arrive, so a long reply is never cut off", () => {
+    const source = readFileSync("src/lib/openrouter.ts", "utf8");
+    const fetchCall = source.indexOf("await fetch(`${baseUrl()}/chat/completions`");
+    expect(fetchCall).toBeGreaterThan(-1);
+    expect(source.slice(fetchCall, fetchCall + 400)).toContain("clearTimeout(deadline)");
+  });
+
+  it("defaults to a bound that is clearly outside normal provider behaviour", () => {
+    expect(providerHeadersTimeoutMs()).toBe(20_000);
+    process.env.PROVIDER_HEADERS_TIMEOUT_MS = "5000";
+    expect(providerHeadersTimeoutMs()).toBe(5_000);
   });
 });

@@ -28,11 +28,23 @@ import styles from "./shell.module.css";
  * true; its content would be a confident, wrong answer.
  */
 
+/**
+ * How an item stands relative to what the writer was actually handed.
+ *
+ * These four are the only honest answers, and "not recorded" is one of them: a
+ * reply written before per-generation provenance existed cannot have its
+ * context reconstructed, and showing today's text as though it were history is
+ * the failure this panel exists to avoid.
+ */
+type HistoricalState = "as_supplied" | "edited_since" | "removed_since" | "not_recorded";
+
 type ContextItem =
-  | { kind: "memory"; id: string; available: true; content: string; memoryKind: string; status: string; importance: number; resolution: string; origin: string; scope: "chat" | "creation" }
+  | { kind: "memory"; id: string; available: true; content: string; memoryKind: string; status: string; importance: number; resolution: string; origin: string; scope: "chat" | "creation"; historicalState?: HistoricalState }
   | { kind: "arc"; id: string; available: true; summary: string; startMessageCount: number; endMessageCount: number }
   | { kind: "canon"; id: string; available: true; content: string; category: string; importance: number; status: string }
-  | { kind: "memory" | "arc" | "canon"; id: string; available: false };
+  | { kind: "memory" | "arc" | "canon"; id: string; available: false; historicalState?: HistoricalState };
+
+type TranscriptTurn = { id: string; role: string; content: string; historicalState: HistoricalState };
 
 type SceneFields = {
   storyDay?: number | null;
@@ -44,7 +56,10 @@ type SceneFields = {
 
 type ContextDetail = {
   items: ContextItem[];
-  transcript: { recorded: boolean; messages?: number; firstMessageId?: string | null; estimatedTokens?: number; trimmedToFit?: number };
+  transcript: { recorded: boolean; messages?: number; firstMessageId?: string | null; estimatedTokens?: number; trimmedToFit?: number; turns?: TranscriptTurn[] };
+  variantIndex?: number;
+  variants?: number;
+  provenanceRecorded?: boolean;
   scene: { available: boolean; fields?: SceneFields };
   summary: { recorded: boolean; used?: boolean; characters?: number };
   counts: { memories: number; arcs: number; canon: number; unavailable: number; total: number };
@@ -65,17 +80,35 @@ function sceneLine(fields?: SceneFields) {
   return [day, when, place].filter(Boolean).join(" — ");
 }
 
+/** The one-word note beside an item whose state has moved on. */
+function stateNote(state?: HistoricalState) {
+  if (state === "edited_since") return "edited since — shown as it was";
+  if (state === "removed_since") return "removed since";
+  if (state === "not_recorded") return "version not recorded";
+  return "";
+}
+
 export function ContextInspector({ message, onClose }: { message: Message; onClose: () => void }) {
   const [detail, setDetail] = useState<ContextDetail | null>(null);
   const [failed, setFailed] = useState(false);
 
+  /*
+   * Asked about the variant on screen, not about the message.
+   *
+   * Regenerate keeps every attempt as a variant of one row, so "what did this
+   * reply read" is a question about a GENERATION. Without the variant the
+   * server would answer for whichever attempt is selected, which is right only
+   * by coincidence when the reader is looking at an older option.
+   */
+  const variant = message.selectedVariant;
+
   useEffect(() => {
     let live = true;
-    api<ContextDetail>(`/api/messages/${message.id}/recall`)
+    api<ContextDetail>(`/api/messages/${message.id}/recall?variant=${variant}`)
       .then((data) => { if (live) setDetail(data); })
       .catch(() => { if (live) setFailed(true); });
     return () => { live = false; };
-  }, [message.id]);
+  }, [message.id, variant]);
 
   /*
    * Narrowed by hand because the "no longer available" variant deliberately
@@ -100,6 +133,14 @@ export function ContextInspector({ message, onClose }: { message: Message; onClo
         Every reply is written from the creation&apos;s own profile plus the story context below. This is what was carried into this one.
       </p>
 
+      {detail.provenanceRecorded === false && <p className={styles.fieldHint}>
+        Provenance was not recorded for this variant. It was written before Afterglow kept a per-reply record, so the sections below show only what the reply itself stored — nothing here has been reconstructed after the fact.
+      </p>}
+
+      {(detail.variants ?? 1) > 1 && <p className={styles.fieldHint}>
+        This is option {(detail.variantIndex ?? 0) + 1} of {detail.variants}. Each option was written from its own context; switch options to see theirs.
+      </p>}
+
       <section className={styles.memoryDerived}>
         <h3><MessagesSquare size={14} aria-hidden /> Recent conversation</h3>
         {detail.transcript.recorded
@@ -108,6 +149,13 @@ export function ContextInspector({ message, onClose }: { message: Message; onClo
             {detail.transcript.trimmedToFit ? ` ${detail.transcript.trimmedToFit} older ${detail.transcript.trimmedToFit === 1 ? "message was" : "messages were"} left out to fit the writer's context.` : ""}
           </p>
           : <p className={styles.fieldHint}>This reply predates context recording, so how much transcript it saw was never written down.</p>}
+        {detail.transcript.turns?.length ? <ul className={styles.contextTurns}>
+          {detail.transcript.turns.map((turn) => <li key={turn.id} data-state={turn.historicalState}>
+            <b>{turn.role === "user" ? "You" : "Reply"}</b>
+            <span>{turn.content.length > 220 ? `${turn.content.slice(0, 220).trimEnd()}…` : turn.content}</span>
+            {stateNote(turn.historicalState) && <em>{stateNote(turn.historicalState)}</em>}
+          </li>)}
+        </ul> : null}
       </section>
 
       {detail.summary.recorded && <section className={styles.memoryDerived}>
@@ -138,8 +186,8 @@ export function ContextInspector({ message, onClose }: { message: Message; onClo
           ? <p className={styles.fieldHint}>Nothing was drawn from the permanent archive for this reply — the recent conversation carried it.</p>
           : <ul>{memories.map((item) => <li key={item.id}>
             {item.available
-              ? <><b>{item.memoryKind.replace("_", " ")}</b>{item.content}{item.resolution ? ` (Resolved: ${item.resolution})` : ""}</>
-              : <>This memory was recalled for the reply and has since been edited or removed. It is listed so the count always matches what was used.</>}
+              ? <><b>{item.memoryKind.replace("_", " ")}</b>{item.content}{item.resolution ? ` (Resolved: ${item.resolution})` : ""}{stateNote(item.historicalState) && <em className={styles.contextStateNote}>{stateNote(item.historicalState)}</em>}</>
+              : <>This memory was recalled for the reply and its text is no longer stored. It is listed so the count always matches what was used.</>}
           </li>)}</ul>}
       </section>
 

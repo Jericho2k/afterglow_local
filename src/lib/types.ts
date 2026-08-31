@@ -341,6 +341,18 @@ export type Message = {
   selectedVariant: number;
   memoryIds: string[];
   arcIds: string[];
+  /**
+   * Which revision of this turn's text the row currently holds.
+   *
+   * Message content is mutable — the inline editor rewrites it, and selecting a
+   * different option replaces it — so a generation that recorded "this was the
+   * transcript" has to record a version alongside each id or it will end up
+   * describing text written after the fact. See src/lib/provenance.ts.
+   *
+   * Absent on a message the browser has just made optimistically and on test
+   * fixtures, which have no server revision yet; absent means 1.
+   */
+  contentVersion?: number;
   createdAt: string;
 };
 
@@ -362,6 +374,19 @@ export type Memory = {
   lastRecalledAt: string | null;
   recallCount: number;
   sourceMessageCount: number;
+  /**
+   * When this memory last earned its place on RELEVANCE ALONE, in messages.
+   *
+   * Deliberately not `lastRecalledAt`, which the protected tier writes on every
+   * turn and which therefore cannot be evidence that a protected memory still
+   * matters. See `isStaleCommitment`. Absent means never.
+   */
+  lastRelevanceMatchCount?: number;
+  /**
+   * Which revision of the text this row holds; see src/lib/provenance.ts.
+   * Absent means 1, the revision a memory has until it is first edited.
+   */
+  contentVersion?: number;
   /**
    * Who wrote this memory.
    *

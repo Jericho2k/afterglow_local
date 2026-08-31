@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { composerPlaceholder, composerNameLimit } from "@/lib/creation";
+import { declarationsFor } from "./helpers/css";
 
 /**
  * Where a reader finds their memories, and what the composer says.
@@ -86,7 +87,36 @@ describe("the composer placeholder", () => {
 describe("the composer's + button", () => {
   it("sits where Send sits, so a growing textarea cannot move it", () => {
     // `.composer` is align-items:flex-end; the plus was align-self:center.
-    expect(globals).toContain(".composer-plus{flex:0 0 38px;width:38px;height:38px;display:grid;place-items:center;align-self:flex-end;");
+    const plus = declarationsFor(globals, ".composer-plus");
+    expect(plus["align-self"]).toBe("flex-end");
+    expect(plus["place-items"]).toBe("center");
+  });
+
+  /*
+   * IT ALSO HAS TO LOOK LIKE IT SITS THERE.
+   *
+   * The composer's horizontal padding was asymmetric — 16px on the left from
+   * before a control lived there, 10px on the right — so + carried six more
+   * pixels of air than Send, and was a pixel smaller besides. With a control at
+   * each end that reads as a misalignment however stable the position is.
+   */
+  it("has exactly the resting size and inset that Send has", () => {
+    const plus = declarationsFor(globals, ".composer-plus");
+    const send = declarationsFor(globals, ".send-button");
+    expect(plus.width).toBe(send.width);
+    expect(plus.height).toBe(send.height);
+    expect(plus["border-radius"]).toBe(send["border-radius"]);
+    expect(plus.flex).toBe(send.flex);
+    expect(send["align-self"]).toBe("flex-end");
+  });
+
+  it("is inset symmetrically, rather than corrected with a one-off offset", () => {
+    const composer = declarationsFor(globals, ".composer");
+    const sides = composer.padding.trim().split(/\s+/);
+    // One value, or matching left and right in the two/four-value forms.
+    const [top, right = top, , left = right] = sides;
+    expect(left).toBe(right);
+    expect(top).toBe(right);
   });
 });
 
@@ -97,10 +127,45 @@ describe("the shell owns the viewport", () => {
     expect(shell).toContain('root.classList.remove("shell-locked")');
   });
 
-  it("gives the phone drawer the whole viewport and its own scrolling", () => {
-    expect(globals).toContain(".sidebar.open{display:flex;position:fixed;inset:0;width:100vw;max-width:100vw");
-    expect(globals).toContain("overflow-y:auto;overscroll-behavior:contain");
+  /*
+   * A DRAWER, NOT A PAGE.
+   *
+   * It covered the whole viewport, which made it read as somewhere the reader
+   * had navigated to rather than a panel over the story they were still in. It
+   * is partial width again, flush to the left edge with no gap, and the screen
+   * behind stays visible under the scrim.
+   */
+  it("gives the phone drawer part of the viewport, flush to its edge", () => {
+    const drawer = declarationsFor(globals, ".sidebar.open");
+    expect(drawer.position).toBe("fixed");
+    // Pinned top, bottom and left; the right edge is where it stops.
+    expect(drawer.inset).toBe("0 auto 0 0");
+    expect(drawer.width).toMatch(/^min\(\d\d?vw,\s*\d+px\)$/);
+    const [, viewportShare] = drawer.width.match(/(\d+)vw/) ?? [];
+    expect(Number(viewportShare)).toBeGreaterThanOrEqual(80);
+    expect(Number(viewportShare)).toBeLessThanOrEqual(90);
+  });
+
+  it("scrolls inside itself and slides rather than appearing", () => {
+    const drawer = declarationsFor(globals, ".sidebar.open");
+    expect(drawer["overflow-y"]).toBe("auto");
+    expect(drawer["overscroll-behavior"]).toBe("contain");
     expect(globals).toContain("@keyframes sidebar-in");
+  });
+
+  it("respects the safe area on the edge it is flush against", () => {
+    const drawer = declarationsFor(globals, ".sidebar.open");
+    expect(drawer.padding).toContain("env(safe-area-inset-left)");
+    expect(drawer.padding).toContain("env(safe-area-inset-top)");
+    expect(drawer.padding).toContain("env(safe-area-inset-bottom)");
+  });
+
+  it("darkens and blurs the screen behind instead of replacing it", () => {
+    const scrim = declarationsFor(globals, ".sidebar-scrim");
+    expect(scrim.position).toBe("fixed");
+    expect(scrim.inset).toBe("0");
+    expect(scrim.background).toMatch(/rgba\(/);
+    expect(scrim["backdrop-filter"]).toContain("blur");
   });
 
   it("puts a scrim under the drawer that swallows the touch behind it", () => {
@@ -112,7 +177,7 @@ describe("the shell owns the viewport", () => {
   it("collapses and restores the desktop sidebar from the same control", () => {
     expect(shell).toContain("if (isPhone()) setSidebarOpen(true);");
     expect(shell).toContain("else setSidebarCollapsed((value) => !value);");
-    expect(globals).toContain(".app-shell.sidebar-collapsed{grid-template-columns:0 1fr}");
+    expect(declarationsFor(globals, ".app-shell.sidebar-collapsed")["grid-template-columns"]).toBe("0 minmax(0,1fr)");
     expect(globals).toContain("transition:grid-template-columns .24s");
   });
 

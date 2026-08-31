@@ -459,8 +459,21 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
         </div>
       </div>}
 
+      {/*
+        * Estimated means estimated.
+        *
+        * OpenRouter reports the real charge for each generation and that figure
+        * is used as-is. DeepSeek is billed direct and its price now depends on
+        * when the request landed — the same tokens cost twice as much inside a
+        * peak window as outside it — so a single number here is arithmetic, not
+        * a bill. It is deliberately the PEAK figure: over-stating spend is
+        * recoverable, under-stating it is the one that surprises somebody.
+        */}
       <p className={styles.fieldHint} style={{ marginTop: 12 }}>
-        Prices as of {usage.pricingAsOf}. Cached input is charged at a fraction of fresh input, so a high cache hit rate on a long conversation is where the saving is.
+        Prices as of {usage.pricingAsOf}. Figures for models billed through OpenRouter are the charges it reported. Figures for DeepSeek are <b>estimated at its peak rate</b>, because its price depends on the time of day a request lands and the actual split is not reported per request — off-peak requests cost about half as much, so real spend sits at or below what is shown.
+      </p>
+      <p className={styles.fieldHint}>
+        Cached input is charged at a fraction of fresh input, so a high cache hit rate on a long conversation is where the saving is.
       </p>
     </section>}
 

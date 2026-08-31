@@ -9,8 +9,15 @@ describe("usage accounting", () => {
       prompt_cache_hit_tokens: 1_000_000,
       prompt_cache_miss_tokens: 1_000_000,
     };
-    expect(estimateUsageCostUsd("deepseek-v4-flash",usage)).toBeCloseTo(0.4228,10);
-    expect(estimateUsageCostUsd("deepseek-v4-pro",usage)).toBeCloseTo(1.308625,10);
+    /*
+     * The peak end of DeepSeek's time-of-day tariff, which is what a single
+     * figure means for a model whose price depends on when the request landed.
+     * See tests/deepseek-tariff.test.ts for the range and the reasoning.
+     */
+    // Flash peak: 1M cached at 0.014 + 1M fresh at 0.44 + 1M out at 1.32.
+    expect(estimateUsageCostUsd("deepseek-v4-flash",usage)).toBeCloseTo(1.774,10);
+    // Pro peak: 1M cached at 0.044 + 1M fresh at 1.32 + 1M out at 3.96.
+    expect(estimateUsageCostUsd("deepseek-v4-pro",usage)).toBeCloseTo(5.324,10);
   });
 
   it("derives cache misses when the provider omits that optional counter", () => {

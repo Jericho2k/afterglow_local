@@ -285,6 +285,7 @@ export const messageUpdateSchema = z.object({
   messageId: z.string().uuid().optional(),
   conversationId: z.string().uuid().optional(),
   messagePosition: z.number().int().min(1).optional(),
+  messageFingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 }).refine((value) => typeof value.content === "string" || value.variantIndex !== undefined, "Provide edited content or a variant index");
 
 export const conversationUpdateSchema = z.object({

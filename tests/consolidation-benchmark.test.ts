@@ -74,6 +74,9 @@ const pricing = { cacheHit: 0.0028, cacheMiss: 0.14, output: 0.28 };
 /** A consolidation answer is roughly this size whatever the window was. */
 const completionTokens = 900;
 const interval = 10;
+/** The writer's default transcript window, which the pending rails protect. */
+const contextMessages = 30;
+const contextTokenBudget = 12_000;
 
 type Call = { promptTokens: number; cacheablePrefix: number; size: number };
 
@@ -122,7 +125,9 @@ function replayNew(messages: Message[], backlog: number) {
   return replay(messages, (from, delta, first) => {
     const candidates = messages.slice(from, from + Math.min(maxBatchRows(), Math.max(1, delta)));
     const pendingTokens = candidates.reduce((sum, message) => sum + estimateTokens(message.content) + 8, 0);
-    if (!consolidationTrigger({ delta, interval, pendingTokens }).due) return null;
+    // Driven with the writer's real window, because the rails that keep a
+    // message from falling out of it are derived from exactly that.
+    if (!consolidationTrigger({ delta, interval, pendingTokens, contextMessages, contextTokenBudget }).due) return null;
     const batch = planConsolidationBatch(candidates);
     if (!batch.size) return null;
     const input = consolidationInput(summary, batch.messages, "You", newCommitments);
@@ -163,7 +168,7 @@ describe("consolidation cost", () => {
       // next messages — so what matters is that the residue stays small and
       // that the new rule's is bounded by its own pending ceiling.
       expect(row.before.pending).toBeLessThan(interval);
-      expect(row.after.pending).toBeLessThanOrEqual(maxPendingMessages());
+      expect(row.after.pending).toBeLessThanOrEqual(maxPendingMessages(contextMessages));
       expect(row.after.consolidated).toBeGreaterThan(row.workload.messages * 0.6);
     }
   });
@@ -181,7 +186,7 @@ describe("consolidation cost", () => {
     }
   });
 
-  it("spends fewer calls on a story of short messages", () => {
+  it("spends fewer calls and far fewer tokens on a story of short messages", () => {
     const short = rows.find((row) => row.workload.id === "short")!;
     expect(short.after.calls).toBeLessThan(short.before.calls);
     expect(short.after.totalTokens).toBeLessThan(short.before.totalTokens);
@@ -196,8 +201,65 @@ describe("consolidation cost", () => {
     }
   });
 
-  it("is cheaper per workload than the rule it replaces", () => {
-    for (const row of rows) expect(row.after.costUsd).toBeLessThanOrEqual(row.before.costUsd);
+  /*
+   * WHAT THIS RULE IS ALLOWED TO COST.
+   *
+   * The batching rule was landed as a saving, and on every workload where the
+   * transcript is the binding constraint it still is. It is no longer a saving
+   * everywhere, and the reason is deliberate: the pending ceiling used to be a
+   * flat 60 messages against a writer window of 30, which bought some of that
+   * saving by letting up to 29 accepted messages sit in neither the transcript
+   * nor memory. Closing that hole means consolidating a story of short messages
+   * sooner, and consolidating sooner costs calls.
+   *
+   * So the claim under test is the honest one: cheaper where it was cheap for
+   * real reasons, and never wildly more expensive anywhere. A regression past
+   * this bound is a bug; the short-workload increase is the price of the
+   * invariant and is stated rather than hidden.
+   */
+  it("stays close to or below the rule it replaces, and is cheaper where it matters", () => {
+    for (const row of rows) {
+      expect(row.after.costUsd).toBeLessThanOrEqual(row.before.costUsd * 1.35);
+    }
+    for (const id of ["short", "normal", "long", "backlog"]) {
+      const row = rows.find((item) => item.workload.id === id)!;
+      expect(row.after.costUsd).toBeLessThanOrEqual(row.before.costUsd);
+    }
+  });
+
+  /*
+   * THE ONE WORKLOAD THAT GOT MORE EXPENSIVE, AND WHY IT HAD TO.
+   *
+   * NOVEL is 16,000-character replies — roughly 4,000 tokens each — against the
+   * default 12,000-token transcript budget. The writer's window therefore holds
+   * about three of them. Consolidating every ten messages, as the old rule did,
+   * means seven of those ten have already left the transcript by the time memory
+   * hears about them; the reader experiences that as the writer forgetting the
+   * scene it wrote two replies ago.
+   *
+   * There is no cheap fix for that shape of story. Either the transcript budget
+   * goes up, or consolidation runs often enough to catch each message before it
+   * falls out. The rail chooses the second, and the resulting +20% is the honest
+   * price of the invariant rather than a regression to tune away. Per CALL the
+   * new rule is still half the cost; there are simply more of them.
+   */
+  it("pays for continuity on novel-length replies rather than dropping messages", () => {
+    const novel = rows.find((row) => row.workload.id === "novel")!;
+    expect(novel.after.costUsd).toBeGreaterThan(novel.before.costUsd);
+    expect(novel.after.costUsd).toBeLessThanOrEqual(novel.before.costUsd * 1.35);
+    // Each call is much smaller and much cheaper; the increase is call count.
+    expect(novel.after.costPerCall).toBeLessThan(novel.before.costPerCall * 0.6);
+    expect(novel.after.tokensPerCall).toBeLessThan(novel.before.tokensPerCall * 0.6);
+    // And the residue is inside the writer's window, which is the whole point.
+    expect(novel.after.pending).toBeLessThanOrEqual(contextMessages);
+  });
+
+  it("never leaves a message outside the transcript and unconsolidated", () => {
+    for (const row of rows) {
+      // The residue after the last call is the only unconsolidated material,
+      // and it has to be small enough to still be in the writer's window.
+      expect(row.after.pending).toBeLessThanOrEqual(contextMessages);
+    }
   });
 
   it("makes the stable instructions reusable after the first call", () => {
@@ -225,6 +287,6 @@ describe("consolidation cost", () => {
       lines.push("");
     }
     lines.push("Extraction quality — memories found, arc and summary fidelity, commitment resolution — is a question about the model and needs a paid comparison run. It is not measured here.");
-    console.log(lines.join("\n"));
+    process.stdout.write(`\n${lines.join("\n")}\n`);
   });
 });

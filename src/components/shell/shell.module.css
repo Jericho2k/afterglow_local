@@ -97,6 +97,8 @@
 
 .tabs {
   display: flex;
+  /* A scrolling tab strip must not widen its parent to fit its own tabs. */
+  min-width: 0; max-width: 100%;
   gap: 6px;
   margin: 0 0 20px;
   padding: 4px;
@@ -130,7 +132,7 @@
 /* ------------------------------------------------------------ cards --- */
 
 .card {
-  min-width: 0;
+  width: 100%; min-width: 0; max-width: 100%;
   border: 1px solid var(--edge);
   border-radius: 18px;
   background: var(--surface);
@@ -150,7 +152,7 @@
   font-style: normal; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums;
 }
 
-.stack { display: grid; gap: 12px; min-width: 0; }
+.stack { display: grid; gap: 12px; min-width: 0; max-width: 100%; }
 .stack > * { min-width: 0; }
 /* Model slugs, provider ids and persona names are identifiers, and an
    identifier is exactly the kind of string that has no break opportunity. */
@@ -312,12 +314,18 @@
 
 /* ----------------------------------------------------------- fields --- */
 
-.field { display: flex; flex-direction: column; gap: 7px; }
+.field { display: flex; flex-direction: column; gap: 7px; min-width: 0; max-width: 100%; }
 .fieldLabel { font-size: 11.5px; font-weight: 600; color: var(--muted); }
-.fieldHint { min-width: 0; font-size: 11px; line-height: 1.5; color: var(--faint); overflow-wrap: anywhere; }
+.fieldHint { min-width: 0; max-width: 100%; font-size: 11px; line-height: 1.5; color: var(--faint); overflow-wrap: anywhere; }
 
 .input, .textarea, .select {
-  width: 100%;
+  /*
+   * `width: 100%` is not enough inside a flex or grid parent: a form control
+   * carries an intrinsic minimum from its `size` attribute, so it refuses to
+   * shrink below roughly twenty characters and pushes the sheet wider than the
+   * phone. `min-width: 0` is what actually lets it fit.
+   */
+  width: 100%; min-width: 0; max-width: 100%;
   border: 1px solid var(--edge);
   border-radius: 12px;
   background: #100c12;
@@ -459,16 +467,29 @@
 
 .sheetBody {
   flex: 1; min-width: 0; min-height: 0;
-  overflow-x: hidden;
+  width: 100%; max-width: 100%;
+  /*
+   * `clip` rather than `hidden`.
+   *
+   * `overflow-x: hidden` makes the element a scroll container in that axis:
+   * programmatically scrollable, and it traps `position: sticky` descendants.
+   * `clip` says what is meant — anything overhanging is not drawn — without any
+   * of that. It is the right primitive for containment.
+   */
+  overflow-x: clip;
   overflow-y: auto;
   padding: 16px;
   display: grid; gap: 14px;
   align-content: start;
 }
+/* One rule, so nothing inside the sheet has to remember to be shrinkable. */
+.sheetBody > * { min-width: 0; max-width: 100%; }
 .sheetBody > * { min-width: 0; }
 
 .sheetFooter {
-  display: flex; gap: 9px;
+  /* Two long button labels wrap onto a second row rather than overflowing. */
+  display: flex; flex-wrap: wrap; gap: 9px;
+  min-width: 0; max-width: 100%;
   padding: 12px 16px max(12px, env(safe-area-inset-bottom));
   border-top: 1px solid var(--edge);
   background: rgba(12, 9, 14, .7);
@@ -569,7 +590,7 @@
 
 /* Writer-only OpenRouter funding. Secret input and saved metadata are separate
    surfaces so a connected state never needs to decrypt or repopulate a key. */
-.byokIntro { margin: 0 0 13px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.byokIntro { min-width: 0; max-width: 100%; overflow-wrap: anywhere; margin: 0 0 13px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
 .byokPanel { display: grid; gap: 14px; min-width: 0; }
 .byokStatusRow { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .byokProviderMark {
@@ -583,8 +604,8 @@
 .byokStatusCopy small { color: var(--faint); overflow-wrap: anywhere; }
 .byokConnect { display: grid; gap: 8px; min-width: 0; }
 .byokActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; min-width: 0; }
-.byokActions > * { max-width: 100%; }
-.fundingChoices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.byokActions > * { min-width: 0; max-width: 100%; }
+.fundingChoices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; max-width: 100%; }
 .fundingChoices button {
   min-width: 0; min-height: 64px; display: grid; align-content: center; gap: 4px;
   border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
@@ -595,9 +616,9 @@
 .fundingChoices button[disabled] { opacity: .5; cursor: not-allowed; }
 .fundingChoices strong { font-size: 12.5px; }
 .fundingChoices small { min-width: 0; color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
-.byokDisclosure { margin: 14px 0 0; color: var(--faint); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.byokUnavailable { border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
-.removeConfirm { display: grid; gap: 8px; border: 1px solid rgba(238,104,137,.28); border-radius: 13px; background: rgba(238,104,137,.07); padding: 12px; }
+.byokDisclosure { min-width: 0; max-width: 100%; margin: 14px 0 0; color: var(--faint); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.byokUnavailable { min-width: 0; max-width: 100%; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.removeConfirm { display: grid; gap: 8px; min-width: 0; max-width: 100%; border: 1px solid rgba(238,104,137,.28); border-radius: 13px; background: rgba(238,104,137,.07); padding: 12px; }
 .removeConfirm strong { font-size: 13px; }
 .removeConfirm p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .fundingBreakdown { display: grid; gap: 7px; margin-top: 12px; }
@@ -606,6 +627,11 @@
 .fundingBreakdown b { flex: none; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 @media (max-width: 430px) {
+  /* The narrowest phones get their space back from the chrome, not the content. */
+  .sheetBody { padding: 12px; gap: 12px; }
+  .card { padding: 14px; border-radius: 16px; }
+  .sheetFooter { padding-inline: 12px; }
+  .sheetFooter > * { flex: 1 1 130px; min-width: 0; }
   .fundingChoices { grid-template-columns: 1fr; }
   .byokActions { justify-content: stretch; }
   .byokActions > * { flex: 1 1 140px; }
@@ -912,106 +938,219 @@
  * text node wraps: a memory can be one word or three hundred, and a durable
  * fact that arrives as an unbroken URL must not be able to widen the sheet.
  */
-.memoryIntro {
-  display: flex; align-items: flex-start; gap: 9px;
-  margin: 0;
-  border: 1px solid var(--edge);
-  border-radius: 13px;
-  background: rgba(255, 255, 255, .022);
-  padding: 12px;
-  color: var(--muted); font-size: 12px; line-height: 1.55;
-}
-.memoryIntro svg { flex: none; margin-top: 2px; color: var(--rose2); }
+/*
+ * THE MEMORY SURFACE, REBUILT IN THE CURRENT MATERIAL.
+ *
+ * This screen was still first-generation: flat white-alpha cards on a flat
+ * ground, every memory identical to every other, uppercase text doing the work
+ * that structure should do, and controls that read as a settings form rather
+ * than as an archive. Everything around it — the chat, Settings, the Studio —
+ * had moved to the near-black ground with its warm violet undertone, restrained
+ * glass and rounded controls, so opening Memory felt like leaving the app.
+ *
+ * Nothing about what a memory MEANS changes here. The semantics — supersession
+ * rather than deletion, atoms editable and derived layers not, pinning, kind,
+ * importance, scope — are exactly as they were. What changes is that they are
+ * now legible at a glance instead of being seven identical grey lines.
+ *
+ * The one structural idea: a memory's KIND is its identity, so it carries a
+ * tinted pill and a matching left rail. Scanning for "what did it decide about
+ * boundaries" stops being a reading exercise.
+ */
 
-.memoryListHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.memoryIntro {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin: 0;
+  border: 1px solid rgba(232, 121, 169, .16);
+  border-radius: 15px;
+  background:
+    linear-gradient(180deg, rgba(232, 121, 169, .07), rgba(138, 92, 246, .045)),
+    rgba(255, 255, 255, .015);
+  padding: 13px 14px;
+  color: var(--muted); font-size: 12.5px; line-height: 1.6;
+}
+.memoryIntro svg { flex: none; margin-top: 2px; color: var(--rose2, var(--accent)); }
+
+.memoryListHead {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 4px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--edge);
+}
 .memoryListHead h3, .memoryDerived h3 {
+  display: flex; align-items: center; gap: 8px;
   margin: 0;
   font-family: var(--font-serif), Georgia, serif;
-  font-size: 16px; font-weight: 600;
+  font-size: 17px; font-weight: 600; letter-spacing: -.01em;
 }
-.memoryToggle {
-  display: flex; align-items: center; gap: 7px;
-  color: var(--faint); font-size: 11px; white-space: nowrap; cursor: pointer;
-}
+.memoryListHead h3 svg, .memoryDerived h3 svg { color: var(--accent); opacity: .8; }
 
-.memoryList { list-style: none; display: grid; gap: 10px; margin: 0; padding: 0; }
+/* A real control rather than a bare checkbox floating beside a heading. */
+.memoryToggle {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-height: 32px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .022);
+  padding: 0 12px;
+  color: var(--faint); font-size: 11px; white-space: nowrap; cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.memoryToggle:hover { color: var(--ink); border-color: rgba(232, 121, 169, .28); }
+.memoryToggle input { accent-color: var(--accent); margin: 0; }
+
+.memoryList { list-style: none; display: grid; gap: 11px; margin: 0; padding: 0; }
 
 .memoryItem {
+  position: relative;
   min-width: 0;
-  display: grid; gap: 8px;
+  display: grid; gap: 9px;
+  overflow: hidden;
   border: 1px solid var(--edge);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, .022);
-  padding: 12px;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .028), rgba(255, 255, 255, .012)),
+    var(--surface, #141017);
+  padding: 13px 14px 13px 16px;
+  transition: border-color .15s ease, transform .15s ease;
 }
-.memoryItemRemoved { opacity: .55; }
+/* The kind rail. Coloured per kind below; neutral until one is named. */
+.memoryItem::before {
+  content: "";
+  position: absolute; inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--kind-tint, rgba(255, 255, 255, .07));
+}
+.memoryItem:hover { border-color: rgba(232, 121, 169, .2); }
+.memoryItemRemoved { opacity: .5; }
+.memoryItemRemoved::before { background: rgba(255, 255, 255, .06); }
+/* A pinned memory is the reader's own instruction, so it says so structurally. */
+.memoryItemPinned {
+  border-color: rgba(232, 121, 169, .28);
+  background:
+    linear-gradient(180deg, rgba(232, 121, 169, .06), rgba(255, 255, 255, .012)),
+    var(--surface, #141017);
+}
 
 .memoryMeta {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  color: var(--faint); font-size: 10.5px;
 }
-.memoryMeta > span { display: inline-flex; align-items: center; gap: 4px; }
-.memoryMeta > span + span::before { content: "·"; margin-right: 6px; }
-.memoryPinned { color: var(--rose2); }
+/* The old rule joined these with typographic dots, which turned seven facts
+   into one run-on line. They are discrete chips now. */
+.memoryMeta > span {
+  display: inline-flex; align-items: center; gap: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .04);
+  padding: 3px 8px;
+  letter-spacing: .01em;
+}
+.memoryKind {
+  color: var(--kind-ink, var(--muted)) !important;
+  background: var(--kind-wash, rgba(255, 255, 255, .05)) !important;
+  font-weight: 600;
+}
+.memoryPinned { color: #22161d !important; background: var(--accent) !important; font-weight: 600; }
+.memoryScope { color: var(--faint); }
+
+/*
+ * Kind tinting.
+ *
+ * Six hues across the app's own violet-to-rose range rather than a rainbow: the
+ * point is to make kinds distinguishable at a glance, not to decorate. Anything
+ * unrecognised keeps the neutral rail, which is why the fallbacks above exist.
+ */
+.kindIdentity { --kind-tint: #8a5cf6; --kind-ink: #c7b0fb; --kind-wash: rgba(138, 92, 246, .16); }
+.kindRelationship { --kind-tint: #e879a9; --kind-ink: #f5a8c6; --kind-wash: rgba(232, 121, 169, .16); }
+.kindEvent { --kind-tint: #5c9df6; --kind-ink: #a8c8f7; --kind-wash: rgba(92, 157, 246, .15); }
+.kindPromise { --kind-tint: #f0a65c; --kind-ink: #f6c99a; --kind-wash: rgba(240, 166, 92, .15); }
+.kindPreference { --kind-tint: #5fc9a8; --kind-ink: #9fdec9; --kind-wash: rgba(95, 201, 168, .15); }
+.kindBoundary { --kind-tint: #ee6889; --kind-ink: #f4a2b6; --kind-wash: rgba(238, 104, 137, .16); }
+.kindOpenLoop { --kind-tint: #b58cf0; --kind-ink: #d5bcf7; --kind-wash: rgba(181, 140, 240, .15); }
 
 /* `overflow-wrap: anywhere` is what stops one long token widening the sheet. */
 .memoryText, .memorySummary {
   margin: 0;
-  font-size: 13.5px; line-height: 1.6;
+  color: var(--ink);
+  font-size: 13.5px; line-height: 1.62;
   overflow-wrap: anywhere; word-break: break-word;
 }
-.memoryKeywords { margin: 0; color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
+.memorySummary { color: var(--muted); }
+.memoryKeywords {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  margin: 0;
+  color: var(--faint); font-size: 10.5px; overflow-wrap: anywhere;
+}
 
-.memoryActions { display: flex; flex-wrap: wrap; gap: 6px; }
+.memoryActions { display: flex; flex-wrap: wrap; gap: 7px; }
 .memoryActions button {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 6px;
   /* 34px keeps every control inside a comfortable touch target on a phone. */
   min-height: 34px;
   border: 1px solid var(--edge);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, .03);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .028);
   color: var(--muted);
-  padding: 0 10px;
-  font-size: 11px; cursor: pointer;
+  padding: 0 11px;
+  font-size: 11.5px; cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
 }
-.memoryActions button:hover:not(:disabled) { color: var(--ink); border-color: rgba(232, 121, 169, .3); }
+.memoryActions button:hover:not(:disabled) { color: var(--ink); border-color: rgba(232, 121, 169, .32); background: rgba(232, 121, 169, .07); }
 .memoryActions button:disabled { opacity: .5; cursor: not-allowed; }
 .memoryDanger { color: #ef9bb1 !important; border-color: rgba(238, 104, 137, .25) !important; }
+.memoryDanger:hover:not(:disabled) { background: rgba(238, 104, 137, .1) !important; border-color: rgba(238, 104, 137, .42) !important; }
 
 .memoryEditor {
-  display: grid; gap: 9px;
-  border: 1px solid rgba(232, 121, 169, .26);
-  border-radius: 14px;
-  background: rgba(232, 121, 169, .05);
-  padding: 12px;
+  display: grid; gap: 10px;
+  border: 1px solid rgba(232, 121, 169, .28);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(232, 121, 169, .08), rgba(138, 92, 246, .04)),
+    var(--surface-raised, #191320);
+  padding: 14px;
 }
 .memoryTextarea {
   width: 100%; min-width: 0;
   resize: vertical;
   border: 1px solid var(--edge);
-  border-radius: 11px;
-  background: rgba(6, 5, 7, .35);
+  border-radius: 12px;
+  background: rgba(6, 5, 7, .4);
   color: var(--ink);
-  padding: 10px 11px;
+  padding: 11px 12px;
   font-size: 13.5px; line-height: 1.55;
 }
 .memoryTextarea:focus, .memoryTextarea:focus-visible { outline: none; border-color: rgba(232, 121, 169, .45); }
 /* `minmax(0, 1fr)` rather than `1fr`: a select with a long label must shrink. */
-.memoryEditorRow { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); gap: 9px; }
+.memoryEditorRow { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); gap: 10px; }
 .memoryEditorActions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
+/*
+ * Derived layers — canon, the rolling summary, chapters — read as reference
+ * rather than as things to act on, so they sit on a quieter ground with no
+ * hover state and no controls.
+ */
 .memoryDerived {
   min-width: 0;
-  display: grid; gap: 7px;
+  display: grid; gap: 9px;
   border: 1px solid var(--edge);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, .018);
-  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .016);
+  padding: 14px;
 }
-.memoryDerived ul { list-style: none; display: grid; gap: 7px; margin: 0; padding: 0; }
+
+@media (max-width: 480px) {
+  /* One column of comfortable targets; nothing crowds at the narrow end. */
+  .memoryItem { padding: 12px 12px 12px 15px; }
+  .memoryActions { gap: 6px; }
+  .memoryActions button { flex: 1 1 auto; justify-content: center; min-height: 38px; }
+  .memoryListHead { flex-wrap: wrap; }
+  .memoryEditorActions button { flex: 1 1 auto; justify-content: center; }
+}
+
+.memoryDerived ul { list-style: none; display: grid; gap: 8px; margin: 0; padding: 0; }
 .memoryDerived li {
   min-width: 0;
-  color: var(--muted); font-size: 12.5px; line-height: 1.55;
+  color: var(--muted); font-size: 12.5px; line-height: 1.58;
   overflow-wrap: anywhere; word-break: break-word;
 }
 .memoryDerived li b {
@@ -1038,3 +1177,33 @@
 }
 .memoryDerived h3 { display: flex; align-items: center; gap: 7px; }
 .memoryDerived h3 svg { color: var(--rose2); flex: none; }
+
+/*
+ * The exact transcript turns one generation was handed.
+ *
+ * Distinct from `.memoryDerived li` because these are quotations rather than
+ * facts: a turn that has been edited since is shown AS IT WAS, and the note
+ * saying so has to sit close enough to the text that the two are read together.
+ */
+.contextTurns { list-style: none; display: grid; gap: 6px; margin: 0; padding: 0; }
+.contextTurns li {
+  min-width: 0;
+  display: grid; gap: 2px;
+  border-left: 2px solid var(--edge);
+  padding: 4px 0 4px 9px;
+  color: var(--muted); font-size: 12px; line-height: 1.5;
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.contextTurns li b {
+  color: var(--rose2); font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+/* A turn whose text has moved on since the writer read it. */
+.contextTurns li[data-state="edited_since"] { border-left-color: var(--rose2); }
+.contextTurns li[data-state="removed_since"] { opacity: .62; }
+.contextTurns li em, .contextStateNote {
+  display: block;
+  color: var(--rose2); font-size: 10px; font-style: normal;
+  letter-spacing: .04em; opacity: .85;
+}
+.contextStateNote { margin-top: 2px; }

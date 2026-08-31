@@ -210,7 +210,31 @@ async function transcriptPage(client: PoolClient, userId: string, conversationId
     );
   const hasMoreBefore = rows.rows.length > limit;
   const page = (hasMoreBefore ? rows.rows.slice(0, limit) : rows.rows).reverse();
-  return { rows: page, hasMoreBefore };
+  return { rows: page, hasMoreBefore, windowStartPosition: await windowStartPosition(client, userId, conversationId, hasMoreBefore, page[0]) };
+}
+
+/**
+ * How many messages precede the window, so an index within it can be turned
+ * back into a position within the STORY.
+ *
+ * The client renders a window and knows only where a message sits inside it.
+ * Every mutation that names its target by position — edit, delete-from-here,
+ * variant selection — has to send a position counted from the beginning of the
+ * conversation, or the server resolves it against the wrong end of a long
+ * story. This is the offset that makes that conversion possible, and it is
+ * returned with every page.
+ *
+ * Zero whenever the window starts at the beginning, which is the common case
+ * and costs no query at all: `hasMoreBefore` already answers it.
+ */
+async function windowStartPosition(client: PoolClient, userId: string, conversationId: string, hasMoreBefore: boolean, first?: Record<string, unknown>) {
+  if (!hasMoreBefore || !first) return 0;
+  const result = await client.query(
+    `SELECT COUNT(*)::int preceding FROM messages
+     WHERE conversation_id=$1 AND user_id=$2 AND (created_at < $3 OR (created_at = $3 AND id < $4))`,
+    [conversationId, userId, first.created_at, first.id],
+  );
+  return Number(result.rows[0]?.preceding ?? 0);
 }
 
 export async function GET(request: Request) {
@@ -267,6 +291,7 @@ export async function GET(request: Request) {
       conversations, conversation,
       messages: page.rows.map(messageFromRow).map((message)=>messageForViewer(message,includeDiagnostics)),
       hasMoreBefore: page.hasMoreBefore,
+      windowStartPosition: page.windowStartPosition,
     };
   });
 

@@ -9,7 +9,7 @@ import { estimateTokens } from "./context";
 import { providerModelId, taskModelSelection } from "./provider";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled } from "./memory-flags";
-import { isStaleCommitment, protectedTierBudget, protectedTierLimit, recencyScore } from "./memory-scoring";
+import { isStaleCommitment, protectedTierBudget, protectedTierLimit, recencyScore, storyPositionFrom, type StoryPosition } from "./memory-scoring";
 import { consolidationTrigger, maxBatchRows, planConsolidationBatch } from "./consolidation-batch";
 import { invalidateSceneStatesAfter, sceneSpanBetween, sceneStampAt } from "./scene-state-store";
 import type { PoolClient } from "pg";
@@ -44,12 +44,20 @@ export async function invalidateDerivedContinuity(client: PoolClient, conversati
   }
   const countResult = await client.query("SELECT COUNT(*) count FROM messages WHERE conversation_id=$1",[conversationId]);
   const messageCount = Number(countResult.rows[0].count);
+  /*
+   * The intra-message cursor is reset alongside the message count.
+   *
+   * It is an offset INTO a specific message, and a branch or an edit can change
+   * or remove that message. Rewinding the count while leaving the offset would
+   * resume reading a long message from a character position that belongs to
+   * text that no longer exists there.
+   */
   if (v2Enabled) await client.query(
-    "UPDATE conversations SET message_count=$1,summary='',last_consolidated_count=$2,last_curated_message_count=LEAST(last_curated_message_count,$5),canon_version=canon_version+1,updated_at=now() WHERE id=$3 AND user_id=$4",
+    "UPDATE conversations SET message_count=$1,summary='',last_consolidated_count=$2,last_consolidated_offset=0,last_curated_message_count=LEAST(last_curated_message_count,$5),canon_version=canon_version+1,updated_at=now() WHERE id=$3 AND user_id=$4",
     [messageCount,Math.max(0,messageCount - 50),conversationId,userId,position],
   );
   else await client.query(
-    "UPDATE conversations SET message_count=$1,summary='',last_consolidated_count=$2,updated_at=now() WHERE id=$3 AND ($4::uuid IS NULL OR user_id=$4)",
+    "UPDATE conversations SET message_count=$1,summary='',last_consolidated_count=$2,last_consolidated_offset=0,updated_at=now() WHERE id=$3 AND ($4::uuid IS NULL OR user_id=$4)",
     [messageCount,Math.max(0,messageCount - 50),conversationId,owner],
   );
 }
@@ -69,7 +77,15 @@ function memoryCost(memory: Memory) {
   return estimateTokens(`${memory.content} ${memory.resolution}`) + 16;
 }
 
-export function rankMemories(memories: Memory[], input: string, limit = 8, tokenBudget = 6000, now = Date.now()) {
+/**
+ * `at` is where the story has reached, in the story's own units.
+ *
+ * It replaces the wall clock this ranker used to age memories by. When a caller
+ * cannot supply it, the archive's own newest position stands in; see
+ * `storyPositionFrom` for why that errs on the side of remembering.
+ */
+export function rankMemories(memories: Memory[], input: string, limit = 8, tokenBudget = 6000, at?: StoryPosition) {
+  const position = at ?? storyPositionFrom(memories);
   const inputTerms = terms(input);
   const ranked = memories
     .map((memory) => {
@@ -79,10 +95,10 @@ export function rankMemories(memories: Memory[], input: string, limit = 8, token
       const phraseHits = memory.keywords.filter((key) => input.toLowerCase().includes(key.toLowerCase())).length;
       // Staleness and decay are shared with the V2 ranker so the two paths
       // cannot disagree about how a memory ages; see src/lib/memory-scoring.ts.
-      const stale = isStaleCommitment(memory, now);
+      const stale = isStaleCommitment(memory, position);
       const activeBoost = memory.status === "active" && protectedKinds.has(memory.kind) && !stale ? 18 : 0;
       const kindBoost = essentialKinds.has(memory.kind) ? 7 : memory.kind === "event" ? 2 : 0;
-      const score = phraseHits * 24 + overlap * 5 + memory.importance * 3 + activeBoost + kindBoost + recencyScore(memory, now);
+      const score = phraseHits * 24 + overlap * 5 + memory.importance * 3 + activeBoost + kindBoost + recencyScore(memory, position);
       return { memory, score, overlap, phraseHits, stale };
     })
     .filter(({ memory }) => memory.status !== "superseded")
@@ -196,12 +212,12 @@ export function rankArcs(arcs: MemoryArc[], input: string, limit = 4, tokenBudge
  * apply across every *account* chatting with a shared public character, which
  * is why the owner filter is not optional here.
  */
-export async function relevantMemories(client: PoolClient, userId: string, characterId: string, conversationId: string, input: string, limit = 8, tokenBudget = 6000) {
+export async function relevantMemories(client: PoolClient, userId: string, characterId: string, conversationId: string, input: string, limit = 8, tokenBudget = 6000, at?: StoryPosition) {
   const result = await client.query(
     "SELECT * FROM memories WHERE user_id = $3 AND character_id = $1 AND (conversation_id = $2 OR conversation_id IS NULL) ORDER BY pinned DESC, created_at DESC",
     [characterId,conversationId,userId],
   );
-  return rankMemories(result.rows.map(memoryFromRow), input, limit, tokenBudget);
+  return rankMemories(result.rows.map(memoryFromRow), input, limit, tokenBudget, at);
 }
 
 export async function relevantContinuity(client: PoolClient, userId: string, characterId: string, conversationId: string, input: string, limit = 8, tokenBudget = 6000) {
@@ -292,14 +308,31 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
        * ~8K-token call; they wait for the story to accumulate, or for the
        * pending-message ceiling.
        */
-      const trigger = consolidationTrigger({ delta, interval: settings.consolidationInterval, pendingTokens, force });
+      const trigger = consolidationTrigger({
+        delta, interval: settings.consolidationInterval, pendingTokens, force,
+        // The rails that keep an accepted message from falling out of the
+        // writer's transcript before it has been consolidated are derived from
+        // that transcript, so the trigger has to be told how wide it is.
+        contextMessages: settings.contextMessages, contextTokenBudget: settings.contextTokenBudget,
+      });
       if (!trigger.due) return null;
 
       // The batch is a chronological PREFIX of what is unseen, so if
       // maintenance ever falls behind no older accepted turn is skipped and the
       // position pointer advances by exactly the number of rows read.
-      const batch = planConsolidationBatch(candidates);
-      if (!batch.size) return null;
+      const startOffset = Number(conversation.last_consolidated_offset || 0);
+      const batch = planConsolidationBatch(candidates, { startOffset });
+      if (!batch.messages.length) {
+        if (batch.size) {
+          // An offset that has already consumed its message: step past the row
+          // rather than looping on an empty tail.
+          await client.query(
+            "UPDATE conversations SET last_consolidated_count=GREATEST(last_consolidated_count,$1),last_consolidated_offset=0,updated_at=now() WHERE id=$2 AND user_id=$3",
+            [previousCount + batch.size, conversationId, userId],
+          );
+        }
+        return null;
+      }
       const messages = batch.messages;
       const batchEnd = previousCount + batch.size;
       const activeResult = await client.query(
@@ -321,7 +354,7 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
     if (!prepared) return false;
     const { settings, conversation, batchEnd, messages, activeCommitments, batch } = prepared;
     const previousCount = Number(conversation.last_consolidated_count || 0);
-    if (batch.clipped) console.warn("[memory] a single message exceeded the consolidation window and was abridged (marked in the prompt)", JSON.stringify({ conversationId, batchEnd }));
+    if (batch.chunk) console.info("[memory] reading one oversized message in chunks", JSON.stringify({ conversationId, ...batch.chunk }));
 
     const { providerId,modelId } = taskModelSelection("memory_consolidation");
     const rpEngineId = String(conversation.rp_engine_id || settings.roleplayPreset);
@@ -342,9 +375,19 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
 
     const createdRecords = await asUser(userId, async (client) => {
       const records: Array<{type:"memory"|"arc";id:string;content:string}> = [];
+      /*
+       * The position pointer and the intra-message cursor move together.
+       *
+       * A pass that read a whole number of messages advances the count and
+       * clears the offset. A pass that read one chunk of an oversized message
+       * advances ONLY the offset — its `size` is zero, so `batchEnd` is
+       * unchanged — and the row stays unconsolidated until its final chunk has
+       * been read. Persisting both in the same statement is what makes a crash
+       * between chunks resume rather than skip.
+       */
       await client.query(
-        "UPDATE conversations SET summary = $1, last_consolidated_count = GREATEST(last_consolidated_count,$2), updated_at = now() WHERE id = $3 AND user_id = $4",
-        [data.summary!.slice(0, 12000), batchEnd, conversationId, userId],
+        "UPDATE conversations SET summary = $1, last_consolidated_count = GREATEST(last_consolidated_count,$2), last_consolidated_offset = $5, updated_at = now() WHERE id = $3 AND user_id = $4",
+        [data.summary!.slice(0, 12000), batchEnd, conversationId, userId, batch.nextOffset],
       );
       // Whatever Scene State observed across this window is stamped onto the
       // derived rows, so a recalled event can later be presented with the day

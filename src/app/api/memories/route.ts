@@ -154,11 +154,37 @@ export async function PATCH(request: Request) {
   if (!parsed.success) return Response.json({ error: "Invalid memory" }, { status: 400 });
   const m = parsed.data;
   const updated = await asUser(account.id, async (client) => {
-    const before = await client.query("SELECT content FROM memories WHERE id=$1 AND user_id=$2",[id,account.id]);
+    const before = await client.query("SELECT * FROM memories WHERE id=$1 AND user_id=$2",[id,account.id]);
     if (!before.rowCount) return null;
+    const previous = before.rows[0];
+    const rewritten = String(previous.content) !== m.content;
+    /*
+     * AN EDIT MAY NOT REWRITE WHAT PAST REPLIES READ.
+     *
+     * Every reply that recalled this memory recorded the version it was handed.
+     * Changing the text in place would make all of them claim the writer read
+     * wording that did not exist yet — a confident, wrong answer to the one
+     * question the Context inspector exists to answer.
+     *
+     * So the version being replaced is archived first, and the counter moves.
+     * A generation holding the old version resolves to the archived text and is
+     * labelled "edited since"; one holding the new version reads the row.
+     * Storing only the SUPERSEDED text keeps this free for the overwhelming
+     * majority of memories, which are never edited at all.
+     */
+    if (rewritten) {
+      await client.query(
+        "INSERT INTO memory_versions (id,memory_id,user_id,version,content,kind,importance,keywords) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (memory_id,version) DO NOTHING",
+        [randomUUID(),id,account.id,Number(previous.content_version || 1),previous.content,previous.kind,previous.importance,previous.keywords],
+      );
+    }
     const result = await client.query(
-      "UPDATE memories SET content=$1,kind=$2,importance=$3,keywords=$4,pinned=$5,status=$6,resolution=$7,resolved_at=CASE WHEN $6='resolved' THEN COALESCE(resolved_at,now()) ELSE NULL END,superseded_at=CASE WHEN $6='superseded' THEN COALESCE(superseded_at,now()) ELSE NULL END,updated_at=now() WHERE id=$8 AND user_id=$9 RETURNING *",
-      [m.content,m.kind,m.importance,m.keywords,m.pinned,m.status,m.resolution,id,account.id],
+      `UPDATE memories SET content=$1,kind=$2,importance=$3,keywords=$4,pinned=$5,status=$6,resolution=$7,
+       content_version=content_version + CASE WHEN $10 THEN 1 ELSE 0 END,
+       resolved_at=CASE WHEN $6='resolved' THEN COALESCE(resolved_at,now()) ELSE NULL END,
+       superseded_at=CASE WHEN $6='superseded' THEN COALESCE(superseded_at,now()) ELSE NULL END,
+       updated_at=now() WHERE id=$8 AND user_id=$9 RETURNING *`,
+      [m.content,m.kind,m.importance,m.keywords,m.pinned,m.status,m.resolution,id,account.id,rewritten],
     );
     /*
      * An edited memory must not be found by its OLD meaning.
@@ -171,7 +197,7 @@ export async function PATCH(request: Request) {
      * ordinary backfill re-embeds the new text, which it does on its own
      * because the content hash no longer matches.
      */
-    return { result, contentChanged: String(before.rows[0].content) !== m.content };
+    return { result, contentChanged: rewritten };
   });
   if (!updated?.result.rowCount) return Response.json({ error: "Memory not found" }, { status: 404 });
   if (updated.contentChanged) await forgetMemoryEmbedding(account.id, id);

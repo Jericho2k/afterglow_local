@@ -8,7 +8,7 @@ import { providerModelId, taskModelSelection } from "./provider";
 import { recordUsageEvent } from "./usage";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled, memorySemanticEnabled } from "./memory-flags";
-import { isStaleCommitment, protectedTierBudget, protectedTierLimit, recencyScore } from "./memory-scoring";
+import { isStaleCommitment, pinnedTierBudget, pinnedTierLimit, protectedTierBudget, protectedTierLimit, recencyScore, storyPositionFrom, type StoryPosition } from "./memory-scoring";
 import type { CoreCanonEntry, Memory, MemoryArc, Message, MemoryKind } from "./types";
 
 const stopWords = new Set(["the","and","that","this","with","from","have","your","you","are","was","for","but","not","they","she","him","her","his","our"]);
@@ -138,18 +138,29 @@ function lexicalComponents(content: string, keywords: string[], input: string) {
  * Nothing about a boundary changed: boundaries are never stale and never lose
  * their slot. That is the durability the tier exists for.
  */
-export function hybridRankMemories(memories: Memory[], input: string, semanticScores: Map<string,number>, limit = 8, tokenBudget = 4200, now = Date.now()) {
+export function hybridRankMemories(memories: Memory[], input: string, semanticScores: Map<string,number>, limit = 8, tokenBudget = 4200, at?: StoryPosition) {
+  const position = at ?? storyPositionFrom(memories);
   const scored = memories.filter((memory) => memory.status !== "superseded").map((memory) => {
     const lexical = lexicalComponents(memory.content,memory.keywords,input);
     const semantic = Math.max(0,Math.min(1,semanticScores.get(memory.id) ?? 0));
     const importance = memory.importance * 3;
     const kindStatus = (essentialKinds.has(memory.kind) ? 7 : memory.kind === "event" ? 2 : 0) + (memory.status === "active" ? 2 : -2);
-    const stale = isStaleCommitment(memory,now);
+    const stale = isStaleCommitment(memory,position);
     const protectedPinned = (memory.pinned ? 35 : 0) + (memory.status === "active" && protectedKinds.has(memory.kind) && !stale ? 20 : 0);
-    const recency = recencyScore(memory,now);
+    const recency = recencyScore(memory,position);
     const final = semantic * 45 + lexical.score + importance + kindStatus + protectedPinned + recency;
+    /*
+     * WHY A MEMORY IS HERE, AND WHICH REASONS COUNT AS ITS OWN.
+     *
+     * `independentlyRelevant` is the subset that is NOT a consequence of the
+     * guarantee: the query matched it. Only that refreshes a commitment's
+     * relevance clock. Counting "protected" here would close the loop the
+     * protected tier already has — it recalls its own members every turn, and
+     * would then read that recall back as evidence they still matter.
+     */
+    const independentlyRelevant = semantic >= .25 || lexical.score > 0;
     const reason = [semantic >= .25 ? "semantic" : "",lexical.score > 0 ? "lexical" : "",memory.pinned ? "pinned" : "",protectedKinds.has(memory.kind) && memory.status === "active" && !stale ? "protected" : "",stale ? "stale_commitment" : "",memory.importance >= 4 ? "important" : ""].filter(Boolean);
-    return { memory, semantic, lexical:lexical.score, importance, kindStatus, protectedPinned, recency, final, reason, stale };
+    return { memory, semantic, lexical:lexical.score, importance, kindStatus, protectedPinned, recency, final, reason, stale, independentlyRelevant };
   }).sort((a,b) => b.final - a.final || a.memory.id.localeCompare(b.memory.id));
 
   const selected: Memory[] = []; let used = 0; let dynamic = 0;
@@ -161,9 +172,31 @@ export function hybridRankMemories(memories: Memory[], input: string, semanticSc
     if (selected.length && used + cost > tokenBudget) { rejected.set(row.memory.id,"token_budget"); return false; }
     selected.push(row.memory); used += cost; return true;
   };
-  // A pinned memory is the reader's own instruction and outranks every budget
-  // rule below it, exactly as before.
-  scored.filter((row) => row.memory.pinned).forEach((row) => add(row,true));
+  /*
+   * PINNED IS A RESERVE, NOT A BLANK CHEQUE.
+   *
+   * Pinned memories used to be added here before any budget rule and with no
+   * ceiling of their own, so a reader who pinned a dozen long memories left
+   * retrieval nothing at all to work with — and then reported that the
+   * character had stopped noticing what was happening in front of it. A
+   * guarantee that can take the whole episodic budget is not a guarantee, it is
+   * a takeover.
+   *
+   * Pinning is still the strongest signal in the ranker: it is the reader's own
+   * explicit instruction, it gets the largest single reserve, and a pinned
+   * memory beyond that reserve still competes for a dynamic slot carrying a +35
+   * bonus, which it very nearly always wins. What it can no longer do is starve
+   * relevance outright.
+   */
+  const pinnedBudget = pinnedTierBudget(tokenBudget);
+  let pinnedTokens = 0; let pinnedCount = 0;
+  for (const row of scored) {
+    if (!row.memory.pinned) continue;
+    if (pinnedCount >= pinnedTierLimit) { rejected.set(row.memory.id,"pinned_tier_full"); continue; }
+    const cost = estimateTokens(`${row.memory.content} ${row.memory.resolution}`) + 16;
+    if (pinnedCount > 0 && pinnedTokens + cost > pinnedBudget) { rejected.set(row.memory.id,"pinned_tier_full"); continue; }
+    if (add(row,true)) { pinnedCount += 1; pinnedTokens += cost; }
+  }
   const guaranteedBudget = protectedTierBudget(tokenBudget);
   let guaranteedTokens = 0; let guaranteedCount = 0;
   for (const row of scored) {
@@ -182,8 +215,17 @@ export function hybridRankMemories(memories: Memory[], input: string, semanticSc
     if (add(row)) dynamic += 1;
   }
   const ids = new Set(selected.map((memory) => memory.id));
+  /*
+   * The memories that earned their place on the query alone.
+   *
+   * This is what refreshes a commitment's relevance clock, and deliberately
+   * nothing else: a promise included only because it was protected must not be
+   * able to prove, by its own inclusion, that it is still live.
+   */
+  const relevanceMatched = scored.filter((row) => row.independentlyRelevant && ids.has(row.memory.id)).map((row) => row.memory.id);
   return {
     selected,
+    relevanceMatched,
     details: scored.slice(0,80).map((row):RetrievalScoreDetail => ({ type:"memory",id:row.memory.id,kind:row.memory.kind,status:row.memory.status,semantic:row.semantic,lexical:row.lexical,importance:row.importance,kindStatus:row.kindStatus,protectedPinned:row.protectedPinned,recency:row.recency,final:row.final,selected:ids.has(row.memory.id),reason:row.reason,rejection:ids.has(row.memory.id)?"":(rejected.get(row.memory.id)??(dynamic>=limit?"slot_limit":"")) })),
   };
 }
@@ -239,8 +281,27 @@ async function semanticScores(userId: string, conversationId: string, characterI
   });
 }
 
-export async function retrieveContinuityV2(input: { userId:string;characterId:string;conversationId:string;query:string;messageId?:string|null;limit?:number;tokenBudget?:number }) : Promise<RetrievalV2Result> {
+export async function retrieveContinuityV2(input: { userId:string;characterId:string;conversationId:string;query:string;messageId?:string|null;limit?:number;tokenBudget?:number;at?:StoryPosition }) : Promise<RetrievalV2Result> {
   const started = Date.now(); const tokenBudget = Math.max(1000,input.tokenBudget ?? 6000);
+  /*
+   * THE ARCHIVE READ AND THE EMBEDDING CALL DO NOT DEPEND ON EACH OTHER.
+   *
+   * They used to run one after the other: read every memory, arc and canon
+   * entry for the story, and only then send the query off to be embedded and
+   * scored. That is a database round trip AND a provider round trip in series,
+   * on the critical path of every reply, for two pieces of work that share
+   * nothing — the embedding is computed from the query text alone.
+   *
+   * Started together, the pair costs the slower of the two rather than the sum.
+   * The semantic side is allowed to fail on its own without taking retrieval
+   * down with it, exactly as before; the lexical ranker is the fallback.
+   */
+  const semanticStart = memorySemanticEnabled()
+    ? semanticScores(input.userId,input.conversationId,input.characterId,input.query)
+      .then((scores) => ({ scores, available: true as const, reason: "" }))
+      .catch((error) => ({ scores: { memories:new Map<string,number>(),arcs:new Map<string,number>() }, available: false as const, reason: error instanceof Error ? error.message.slice(0,240) : "Semantic retrieval unavailable" }))
+    : Promise.resolve({ scores: { memories:new Map<string,number>(),arcs:new Map<string,number>() }, available: false as const, reason: "Semantic retrieval disabled" });
+
   const archive = await asUser(input.userId,async (client) => {
     const [memoryResult,arcResult,canonResult] = await Promise.all([
       client.query("SELECT * FROM memories WHERE user_id=$3 AND character_id=$1 AND (conversation_id=$2 OR conversation_id IS NULL) ORDER BY pinned DESC,created_at DESC",[input.characterId,input.conversationId,input.userId]),
@@ -255,15 +316,23 @@ export async function retrieveContinuityV2(input: { userId:string;characterId:st
   const remaining = Math.max(500,tokenBudget - coreTokens);
   const arcBudget = Math.min(1600,Math.max(400,Math.floor(remaining * .25)));
   const episodicBudget = Math.max(500,remaining - arcBudget);
-  let semanticAvailable = false; let fallbackReason = ""; let semantic = { memories:new Map<string,number>(),arcs:new Map<string,number>() };
-  if (memorySemanticEnabled()) {
-    try { semantic = await semanticScores(input.userId,input.conversationId,input.characterId,input.query); semanticAvailable = true; }
-    catch (error) { fallbackReason = error instanceof Error ? error.message.slice(0,240) : "Semantic retrieval unavailable"; }
-  } else fallbackReason = "Semantic retrieval disabled";
+  const semanticResult = await semanticStart;
+  const semanticAvailable = semanticResult.available;
+  const fallbackReason = semanticResult.reason;
+  const semantic = semanticResult.scores;
 
+  /*
+   * Where the story has reached, which is what aging is measured against.
+   *
+   * Supplied by the caller when it knows (the chat route has the conversation
+   * row and the live scene); otherwise derived from the archive. Never the wall
+   * clock: a story can sit untouched for months while no fictional time passes
+   * at all.
+   */
+  const position = input.at ?? storyPositionFrom(archive.memories);
   const rankedMemories = semanticAvailable
-    ? hybridRankMemories(archive.memories,input.query,semantic.memories,input.limit ?? 8,episodicBudget)
-    : { selected:rankMemories(archive.memories,input.query,input.limit ?? 8,episodicBudget),details:[] as RetrievalScoreDetail[] };
+    ? hybridRankMemories(archive.memories,input.query,semantic.memories,input.limit ?? 8,episodicBudget,position)
+    : { selected:rankMemories(archive.memories,input.query,input.limit ?? 8,episodicBudget,position),relevanceMatched:[] as string[],details:[] as RetrievalScoreDetail[] };
   const rankedArcs = semanticAvailable
     ? hybridRankArcs(archive.arcs,input.query,semantic.arcs,4,arcBudget)
     : { selected:rankArcs(archive.arcs,input.query,4,arcBudget),details:[] as RetrievalScoreDetail[] };
@@ -271,8 +340,28 @@ export async function retrieveContinuityV2(input: { userId:string;characterId:st
   const arcTokens = rankedArcs.selected.reduce((sum,arc) => sum + estimateTokens(arc.summary) + 12,0);
   const runId = randomUUID();
   const diagnostics = { runId,semanticAvailable,fallbackReason,totalStoredMemories:archive.memories.length,coreCanonTokens:coreTokens,episodicTokens,arcTokens,scores:[...rankedMemories.details,...rankedArcs.details] };
-  await asUser(input.userId,async (client) => {
+  /*
+   * Recall stamps and the diagnostics row are written BEHIND the result.
+   *
+   * Nothing in the reply depends on them, and awaiting them put two more
+   * database round trips between a finished retrieval and the provider request
+   * the reader is waiting on. A failure is logged, as before.
+   */
+  void asUser(input.userId,async (client) => {
     if (rankedMemories.selected.length) await client.query("UPDATE memories SET last_recalled_at=now(),recall_count=recall_count+1 WHERE id=ANY($1::uuid[]) AND user_id=$2",[rankedMemories.selected.map((memory) => memory.id),input.userId]);
+    /*
+     * The relevance clock, written only for memories the QUERY matched.
+     *
+     * `last_recalled_at` above is written for everything that was included,
+     * protected slots and all, which is exactly why it cannot be the staleness
+     * signal — the guarantee would keep manufacturing its own justification.
+     * This column is the one retrieval does not write on behalf of the tier.
+     */
+    const matched = (rankedMemories as { relevanceMatched?: string[] }).relevanceMatched ?? [];
+    if (matched.length) await client.query(
+      "UPDATE memories SET last_relevance_match_count=GREATEST(last_relevance_match_count,$3) WHERE id=ANY($1::uuid[]) AND user_id=$2",
+      [matched,input.userId,position.messageCount],
+    );
     await client.query(
       `INSERT INTO memory_retrieval_runs
        (id,conversation_id,user_id,message_id,retrieval_version,semantic_available,fallback_reason,total_stored_memories,core_canon_tokens,retrieved_episodic_tokens,arc_tokens,recalled_memory_ids,recalled_arc_ids,score_details,latency_ms)
