@@ -1,4 +1,4 @@
-import type { ModelCatalog, ModelDefinition, ProviderDefinition, RoleplayEngineDefinition, RoleplayEngineId } from "./types";
+import type { ModelCatalog, ModelCategory, ModelDefinition, ProviderDefinition, RoleplayEngineDefinition, RoleplayEngineId } from "./types";
 import { engineDefinitions } from "./engines";
 import type { ModelVerbosity } from "./response-length";
 
@@ -38,6 +38,23 @@ export type ProviderCostCeiling = {
   completionUsdPerMillion: number;
 };
 
+/**
+ * The privacy floor a model's requests are sent with.
+ *
+ * Both fields map onto OpenRouter provider preferences, so the filtering
+ * happens where the endpoint catalogue lives rather than being re-derived from
+ * a table here that would go stale. They are NOT the same guarantee and are
+ * therefore separate: `dataCollection: "deny"` means the endpoint does not use
+ * the prompt to train a future model, while `zdr` means it does not retain the
+ * prompt at rest at all. An endpoint can satisfy either without the other.
+ */
+export type ModelDataPolicy = {
+  /** `deny` excludes endpoints that store prompts non-transiently to train on. */
+  dataCollection: "allow" | "deny";
+  /** True routes only to endpoints with a zero-data-retention policy. */
+  zdr?: boolean;
+};
+
 export type ModelCapabilities = {
   /** Prompt plus completion, in tokens. Undefined means unverified. */
   contextTokens?: number;
@@ -73,18 +90,65 @@ export type ModelCapabilities = {
    */
   costCeiling?: ProviderCostCeiling;
   /**
-   * Endpoints known to serve this model at an acceptable price and with
-   * prompt-cache support.
+   * THE APPROVED PRODUCTION POOL: endpoints that are BOTH inside the price
+   * envelope AND explicitly cache-capable for prompt reads.
    *
-   * ADVISORY BY DEFAULT, and deliberately so: it becomes a hard `provider.only`
-   * restriction only when an operator sets `ENFORCE_PROVIDER_ALLOWLIST`. A
-   * slug that is wrong or has been renamed upstream turns `only` into a total
-   * outage for the model, and these slugs could not be checked against
-   * OpenRouter's live catalogue from the build environment — see the note on
-   * the GLM entry. `costCeiling` above guards the same thing without depending
-   * on any string being right.
+   * `costCeiling` alone is not enough, and the reason is the whole point of
+   * Afterglow's routing. An endpoint can satisfy a fresh-input and output price
+   * ceiling while offering no discounted cache reads at all — and a roleplay
+   * turn resends the character, world, persona and rules unchanged, so the
+   * cached-read rate is most of what a conversation actually pays. A host that
+   * is cheap on paper and charges fresh prices for every repeated byte is
+   * dearer in practice than a host that lists higher and reads from cache.
+   *
+   * So membership requires both properties, and this list — not the ceiling —
+   * is what `provider.only` carries in `cost_guarded` mode. The ceiling stays
+   * on as defence in depth, because a pool member that re-prices upward must
+   * still fall out.
+   *
+   * The residual risk is the one the previous sprint named: a slug that is
+   * wrong or renamed upstream turns `only` into an outage for the model rather
+   * than a degraded route. Two escape hatches answer it without a deploy —
+   * `PROVIDER_POOL_OVERRIDE` replaces one model's pool, and
+   * `ENFORCE_PROVIDER_POOL=false` puts the pool back to advisory with the
+   * ceiling still guarding spend.
    */
-  affordableProviders?: string[];
+  cacheCapableProviders?: string[];
+  /**
+   * What this model's traffic may let an upstream host do with a prompt.
+   *
+   * Roleplay transcripts are private conversations, and OpenRouter's own
+   * documentation is explicit that whether a prompt is trained on, and how long
+   * it is retained, is governed by the DOWNSTREAM provider's policy rather than
+   * by OpenRouter's. It is also explicit that free endpoints have their own
+   * account-level settings — including endpoints that may PUBLISH prompts —
+   * which is precisely the class of route that must never quietly become a
+   * normal chat model here.
+   *
+   * Expressed per model rather than globally because the answer genuinely
+   * differs: a paid flagship can afford `deny` with no loss of availability,
+   * while an experimental free route may have no compliant endpoint at all and
+   * has to be labelled instead of silently served.
+   */
+  dataPolicy?: ModelDataPolicy;
+  /**
+   * What to send for `reasoning` when the ENGINE has not asked for it.
+   *
+   * Three states again, and the middle one is not a denial: `undefined` keeps
+   * today's behaviour (say nothing, take the endpoint's default), `"off"`
+   * declines reasoning explicitly, `"on"` asks for it. It exists because
+   * "the endpoint accepts the parameter" and "reasoning is a good idea for
+   * roleplay on this model" are different facts, and only the first one was
+   * previously expressible.
+   *
+   * `"off"` is declared per model rather than set globally because the answer
+   * genuinely differs. On GLM 5.3 Flash it is the difference between a reply
+   * that starts in a second and one that starts in tens of seconds, since the
+   * model reasons before it speaks; on a model with no such habit it buys
+   * nothing. A deployment-wide `RP_REASONING=off` still overrides everything,
+   * and an engine that explicitly wants thinking still wins over this.
+   */
+  reasoningDefault?: "on" | "off";
   /**
    * How much this model writes when nothing stops it.
    *
@@ -122,6 +186,8 @@ const knownModels: InternalModelDefinition[] = [
     label: "DeepSeek V4 Flash",
     description: "Fast, economical roleplay for everyday conversations.",
     supportsThinking: true,
+    category: "economy",
+    free: false,
     // DeepSeek's own endpoint, whose published limits are not part of the
     // OpenRouter catalogue this file was checked against. Left unverified
     // rather than guessed; budgeting simply does not constrain it.
@@ -134,6 +200,8 @@ const knownModels: InternalModelDefinition[] = [
     label: "DeepSeek V4 Pro",
     description: "Higher-detail writing and stronger handling of complex scenes.",
     supportsThinking: true,
+    category: "recommended",
+    free: false,
     capabilities: { thinking: true, jsonMode: true, promptCaching: true },
   },
   {
@@ -143,7 +211,17 @@ const knownModels: InternalModelDefinition[] = [
     label: "MiniMax M2-her",
     description: "Dialogue-first roleplay model for expressive, character-driven conversations.",
     supportsThinking: false,
-    capabilities: { thinking: false, jsonMode: true, promptCaching: true },
+    /*
+     * Promoted to Recommended on community evidence rather than on a benchmark
+     * this deployment ran. See docs/model-lineup-2026-08.md: the one repeated,
+     * independent signal in the whole research pass is that the M2 "Her"
+     * configuration holds a persona across very long conversations where
+     * general-purpose models start bleeding character. That is the single axis
+     * Afterglow cares most about, and it is already in the catalogue.
+     */
+    category: "recommended",
+    free: false,
+    capabilities: { thinking: false, jsonMode: true, promptCaching: true, dataPolicy: { dataCollection: "deny" } },
   },
   /*
    * Moonshot's long-context writers.
@@ -170,7 +248,9 @@ const knownModels: InternalModelDefinition[] = [
     label: "MoonshotAI Kimi K2.5",
     description: "Long-context comparison writer with strong scene comprehension and planning.",
     supportsThinking: true,
-    capabilities: { thinking: true, jsonMode: true, promptCaching: true },
+    category: "experimental",
+    free: false,
+    capabilities: { thinking: true, jsonMode: true, promptCaching: true, dataPolicy: { dataCollection: "deny" } },
   },
   {
     id: "kimi-k2.6",
@@ -179,59 +259,223 @@ const knownModels: InternalModelDefinition[] = [
     label: "MoonshotAI Kimi K2.6",
     description: "Moonshot's newer long-context writer. Same strengths as K2.5 with a larger context window.",
     supportsThinking: true,
-    capabilities: { thinking: true, jsonMode: true, promptCaching: true },
+    category: "experimental",
+    free: false,
+    capabilities: { thinking: true, jsonMode: true, promptCaching: true, dataPolicy: { dataCollection: "deny" } },
   },
   /*
-   * GLM 4.7, and the one model in this catalogue that declares a price ceiling.
+   * GLM 4.7 — the premium writer, and the model whose routing this deployment
+   * has spent two sprints getting honest.
    *
-   * WHY IT NEEDS ONE. Eight or so upstream hosts serve this slug at prices that
-   * differ by a factor of several, and a month of production traffic landed on
-   * four of them. The model page's headline price is the CHEAPEST endpoint's
-   * price; what a conversation actually pays is whichever host OpenRouter's
-   * price-weighted load balancer happened to pick for it, which is a different
-   * number and is not bounded by anything.
+   * WHY IT NEEDS A POOL AND NOT ONLY A CEILING. Several upstream hosts serve
+   * this slug at prices that differ by a factor of several, and a month of
+   * production traffic landed on four of them. `max_price` bounds what an
+   * endpoint may LIST; it says nothing about whether that endpoint discounts a
+   * prompt-cache read. A roleplay turn resends the character, world, persona
+   * and rules unchanged, so cached reads are most of the bill — an endpoint
+   * that is under the ceiling and charges fresh prices for every repeated byte
+   * defeats the entire objective while passing the guard.
    *
-   * The rates below were reported by the operator from OpenRouter's live
-   * catalogue and corroborated for DeepInfra by secondary sources, per million
-   * tokens, fresh / cached / output:
+   * So the approved production pool is the set that is BOTH affordable AND
+   * cache-capable, and in `cost_guarded` mode it is sent as `provider.only`.
+   * The ceiling stays on underneath it: a pool member that re-prices upward
+   * still falls out without anybody editing this file.
+   *
+   * THE POOL, and how far it is verified. `deepinfra`, `novita` and `z-ai` are
+   * the three endpoints this deployment has priced, and OpenRouter's own model
+   * page for `z-ai/glm-4.7` lists DeepInfra, NovitaAI and Z.ai among the hosts
+   * serving it (alongside AtlasCloud, Venice, Google Vertex and Mancer, which
+   * this pool deliberately excludes). That check was made through a web search
+   * index on 2026-08-31, NOT against the live API: this environment's egress
+   * policy denies openrouter.ai outright, so no request to the catalogue or to
+   * `/api/v1/models` was possible. Per-endpoint cache-read pricing therefore
+   * remains OPERATOR-REPORTED rather than machine-verified — see
+   * docs/glm-cost-routing.md, which records exactly what was and was not
+   * checked, and scripts/provider-pool-audit.mjs, which verifies the whole pool
+   * from a deployment that does have a key.
+   *
+   * Per million tokens, fresh / cached / output, as reported by the operator:
    *
    *   DeepInfra   0.40 / 0.08  / 1.75
    *   Novita      0.54 / 0.099 / 1.98
    *   Z.AI        0.60 / 0.11  / 2.20
    *
-   * DeepInfra is cheaper than Z.AI on all three lines, so at EQUAL cache hit
-   * rates it is the cheaper home for a conversation. That is the whole argument
-   * for the ceiling; it is not an argument for pinning DeepInfra, because a pin
-   * would override the session stickiness that keeps a conversation's cache
-   * warm and would take GLM down whenever one host is unhealthy.
-   *
-   * WHERE THE NUMBERS COME FROM. 0.65 and 2.25 sit just above Z.AI, the
-   * dearest of the three endpoints worth keeping, and below the ~2.65/M output
-   * endpoints that prompted this. Three healthy hosts stay eligible, so the
-   * ceiling costs no reliability; it removes only the endpoints that are
-   * dominated on price by hosts already serving this traffic.
-   *
-   * OPERATORS: the slugs in `affordableProviders` are the OpenRouter provider
-   * slugs `deepinfra`, `novita` and `z-ai`, which are documented slugs but
-   * could NOT be confirmed against this model's live endpoint list from the
-   * build environment, which has no egress to openrouter.ai. They are advisory
-   * until `ENFORCE_PROVIDER_ALLOWLIST` is set; confirm them first, because a
-   * wrong slug in `provider.only` means every GLM request fails. The ceiling
-   * needs no such confirmation and is what production relies on.
+   * NO `preferredProviders`. The pool is deliberately unordered so that
+   * whichever member a conversation is already warm on stays warm: OpenRouter
+   * documents that `provider.order` turns its own sticky routing off, and
+   * cached input is roughly a fifth of fresh input, so ordering the pool would
+   * buy a cheaper list price by discarding the cache that makes the real price
+   * cheap.
    */
   {
     id: "glm-4.7",
     providerId: "openrouter",
     providerModelId: "z-ai/glm-4.7",
-    label: "Z.ai GLM 4.7",
-    description: "General comparison writer with stable multi-step reasoning and long context.",
+    label: "GLM 4.7 Premium",
+    description: "Afterglow's flagship writer: stable multi-step reasoning, long context, and the strongest continuity in the lineup.",
     supportsThinking: true,
+    category: "recommended",
+    free: false,
     capabilities: {
+      contextTokens: 204_800,
+      maxOutputTokens: 131_072,
       thinking: true,
       jsonMode: true,
       promptCaching: true,
       costCeiling: { promptUsdPerMillion: 0.65, completionUsdPerMillion: 2.25 },
-      affordableProviders: ["deepinfra", "novita", "z-ai"],
+      cacheCapableProviders: ["deepinfra", "novita", "z-ai"],
+      dataPolicy: { dataCollection: "deny" },
+    },
+  },
+  /*
+   * GLM 5.3 FLASH — the cheaper-writer candidate, offered as TWO SERVING
+   * PROFILES of one model.
+   *
+   * From the reader's side these are not two models and must never be
+   * presented as two characters: same weights, same slug, same story. What
+   * differs is the endpoint underneath, and endpoints for this model differ
+   * enough to be worth choosing between — one class of host is extremely cheap
+   * and streams slowly, another costs more and streams fast. So the product
+   * distinction is "Economy" or "Fast", which is about experience, and the
+   * vendor names stay in `preferredProviders` where readers never see them.
+   *
+   * WHAT IS VERIFIED AND WHAT IS NOT. The slug `z-ai/glm-5.3-flash` is current,
+   * the model is served by roughly twenty OpenRouter endpoints including
+   * Relace, and list pricing sits near $0.15/M in and $0.50/M out with a
+   * temporary launch discount around half that in force until 2026-09-09 —
+   * all read from a web search index on 2026-08-31, because egress to
+   * openrouter.ai is denied here. NOTHING per-endpoint was verifiable: the
+   * brief's premise that Relace is the cheap-and-slow route and Makora the
+   * dear-and-fast one could NOT be confirmed, and no benchmark could be run
+   * without a key. `scripts/serving-profile-benchmark.mjs` exists to settle it,
+   * and until it has been run the two profiles below carry the SAME price
+   * ceiling and differ only in which endpoints they prefer.
+   *
+   * The ceiling is deliberately set from the LIST price, not from the
+   * discounted one. Building the product on a promotional rate that expires in
+   * nine days would mean every route silently falling out of its own guard on
+   * 2026-09-10.
+   *
+   * REASONING DEFAULTS OFF for this model, and that is the one behavioural
+   * claim here with real evidence behind it: independent measurement of GLM 5.3
+   * Flash on a reasoning-heavy suite reported a median time-to-first-token in
+   * the tens of seconds because the model reasons before it speaks. A reader
+   * mid-scene will not wait that long, and coding-oriented reasoning is not
+   * known to help roleplay at all. `thinking: true` below says the endpoint
+   * ACCEPTS the parameter; `reasoningDefault` says what to send.
+   */
+  {
+    id: "glm-5.3-flash",
+    providerId: "openrouter",
+    providerModelId: "z-ai/glm-5.3-flash",
+    label: "GLM 5.3 Flash",
+    description: "The newer, much cheaper GLM. Long context and quick replies for everyday stories.",
+    supportsThinking: true,
+    category: "recommended",
+    speedProfile: "fast",
+    free: false,
+    capabilities: {
+      contextTokens: 1_310_720,
+      maxOutputTokens: 131_072,
+      thinking: true,
+      jsonMode: true,
+      promptCaching: true,
+      costCeiling: { promptUsdPerMillion: 0.20, completionUsdPerMillion: 0.60 },
+      cacheCapableProviders: ["z-ai", "novita", "deepinfra", "gmicloud", "makora"],
+      dataPolicy: { dataCollection: "deny" },
+      reasoningDefault: "off",
+    },
+  },
+  {
+    id: "glm-5.3-flash-economy",
+    providerId: "openrouter",
+    providerModelId: "z-ai/glm-5.3-flash",
+    label: "GLM 5.3 Flash — Economy",
+    description: "The same writer as GLM 5.3 Flash, served as cheaply as possible. Replies may start and stream more slowly.",
+    supportsThinking: true,
+    category: "economy",
+    speedProfile: "economy",
+    free: false,
+    notice: "Cheapest routing. Replies can be slower to start.",
+    capabilities: {
+      contextTokens: 1_310_720,
+      maxOutputTokens: 131_072,
+      thinking: true,
+      jsonMode: true,
+      promptCaching: true,
+      costCeiling: { promptUsdPerMillion: 0.20, completionUsdPerMillion: 0.60 },
+      cacheCapableProviders: ["relace", "z-ai", "novita", "deepinfra"],
+      preferredProviders: ["relace"],
+      dataPolicy: { dataCollection: "deny" },
+      reasoningDefault: "off",
+    },
+  },
+  /*
+   * LING 3.0 FLASH — the ultra-cheap writer, and the funded free-tier fallback
+   * candidate.
+   *
+   * A 124B mixture-of-experts model with roughly 5B parameters active per
+   * token, listed near $0.021/M in and $0.063/M out with a 262,144-token
+   * context and a 32,768-token output ceiling. That is around a twentieth of
+   * GLM 4.7's fresh input rate, which is what makes it interesting as the
+   * thing Afterglow funds when free capacity runs out.
+   *
+   * IT IS NOT A FLAGSHIP AND MUST NOT BE PROMOTED LIKE ONE. The community
+   * research pass found no RP signal for it whatsoever — not bad reports, no
+   * reports — so its category is Economy on price alone and its RP quality is
+   * an open question that tests/eval/writer-models.test.ts is set up to answer.
+   *
+   * The `:free` endpoint is a SEPARATE route with separate latency, throughput
+   * and privacy properties, and lives in the curated free catalogue rather than
+   * here; see src/lib/free-models.ts.
+   */
+  {
+    id: "ling-3.0-flash",
+    providerId: "openrouter",
+    providerModelId: "inclusionai/ling-3.0-flash",
+    label: "Ling 3.0 Flash",
+    description: "Very inexpensive writer with a large context window. Good for long, everyday stories.",
+    supportsThinking: false,
+    category: "economy",
+    free: false,
+    capabilities: {
+      contextTokens: 262_144,
+      maxOutputTokens: 32_768,
+      thinking: false,
+      jsonMode: true,
+      promptCaching: true,
+      costCeiling: { promptUsdPerMillion: 0.10, completionUsdPerMillion: 0.30 },
+      dataPolicy: { dataCollection: "deny" },
+    },
+  },
+  /*
+   * QWEN3.8 FLASH — an experimental comparison writer, and nothing more yet.
+   *
+   * Listed near $0.15/M in and $0.47/M out with a cache-read rate around
+   * $0.016/M and a one-million-token context. Alibaba positions it for coding,
+   * agentic workflows and document analysis; strong benchmarks in those
+   * categories say nothing about whether it can hold a character for ninety
+   * turns, and this catalogue does not promote a model on results from a
+   * different job. Experimental until the RP evaluation has run.
+   */
+  {
+    id: "qwen3.8-flash",
+    providerId: "openrouter",
+    providerModelId: "qwen/qwen3.8-flash",
+    label: "Qwen3.8 Flash",
+    description: "Experimental comparison writer with a very large context window.",
+    supportsThinking: true,
+    category: "experimental",
+    free: false,
+    capabilities: {
+      contextTokens: 1_000_000,
+      maxOutputTokens: 131_072,
+      thinking: true,
+      jsonMode: true,
+      promptCaching: true,
+      costCeiling: { promptUsdPerMillion: 0.20, completionUsdPerMillion: 0.60 },
+      dataPolicy: { dataCollection: "deny" },
+      reasoningDefault: "off",
     },
   },
   /*
@@ -261,6 +505,8 @@ const knownModels: InternalModelDefinition[] = [
     label: "MiMo V2.5 — Long Memory",
     description: "Xiaomi's omnimodal writer. Very large context and strong cache economics for long, continuous stories.",
     supportsThinking: true,
+    category: "economy",
+    free: false,
     capabilities: {
       contextTokens: 1_048_576,
       maxOutputTokens: 131_072,
@@ -268,6 +514,7 @@ const knownModels: InternalModelDefinition[] = [
       jsonMode: true,
       promptCaching: true,
       preferredProviders: ["xiaomi"],
+      dataPolicy: { dataCollection: "deny" },
       // Measured against the response-length modes: MiMo answers Concise with
       // a full scene unless the ceiling is stated as a limit. See
       // scripts/response-length-benchmark.mjs.
@@ -281,6 +528,8 @@ const knownModels: InternalModelDefinition[] = [
     label: "MiMo V2.5 Pro — Long Memory",
     description: "Xiaomi's flagship writer. The same very large context with stronger reasoning for complex, long-running plots.",
     supportsThinking: true,
+    category: "recommended",
+    free: false,
     capabilities: {
       contextTokens: 1_048_576,
       maxOutputTokens: 131_072,
@@ -288,6 +537,7 @@ const knownModels: InternalModelDefinition[] = [
       jsonMode: true,
       promptCaching: true,
       preferredProviders: ["xiaomi"],
+      dataPolicy: { dataCollection: "deny" },
       verbosity: "expansive",
     },
   },
@@ -298,6 +548,8 @@ const knownModels: InternalModelDefinition[] = [
     label: "Midnight Cherry — Cinematic RP",
     description: "Creative, nuanced prose with coherent scene flow and storytelling emphasis.",
     supportsThinking: false,
+    category: "experimental",
+    free: false,
     /*
      * The small one, and the reason this whole block exists.
      *
@@ -315,6 +567,8 @@ const knownModels: InternalModelDefinition[] = [
     label: "Passion Fruit — Unbound NSFW",
     description: "Uncensored creative roleplay with strong recall and prompt adherence.",
     supportsThinking: false,
+    category: "experimental",
+    free: false,
     capabilities: { contextTokens: 131_072, maxOutputTokens: 131_072, thinking: false, jsonMode: false, promptCaching: false },
   },
   {
@@ -324,7 +578,76 @@ const knownModels: InternalModelDefinition[] = [
     label: "Wild Peach — Expressive RP",
     description: "Lighter expressive writer tuned for vivid vocabulary and engaging prose.",
     supportsThinking: false,
+    category: "experimental",
+    free: false,
     capabilities: { contextTokens: 65_536, maxOutputTokens: 65_536, thinking: false, jsonMode: false, promptCaching: false },
+  },
+  /*
+   * THE CURATED FREE ROUTES.
+   *
+   * They are ordinary catalogue entries because everything else about them —
+   * budgeting, context fitting, retirement handling, the picker — has to work
+   * exactly as it does for a paid model. What is different about them is
+   * declared, not implied: `free: true` routes the request through the shared
+   * free-tier ledger in src/lib/free-tier.ts, and their availability is owned
+   * by src/lib/free-models.ts rather than by this file, because free endpoints
+   * come and go weekly and removing a dead one must never require a deploy.
+   *
+   * THE PRIVACY FLOOR IS NOT NEGOTIABLE HERE. OpenRouter's account settings
+   * distinguish free endpoints that may train on inputs from free endpoints
+   * that may PUBLISH prompts, which means "it costs nothing" and "it is safe to
+   * put a private roleplay through it" are entirely separate questions. Every
+   * route below therefore carries `dataCollection: "deny"`, so a free endpoint
+   * that trains on prompts is excluded by OpenRouter's own filter rather than
+   * by a table here that would go stale. A route with no compliant endpoint
+   * fails honestly instead of quietly training on somebody's story.
+   *
+   * SLUGS ARE INDICATIVE. `inclusionai/ling-3.0-flash:free` was confirmed
+   * through a search index on 2026-08-31; `minimax/minimax-m2.5:free` likewise.
+   * The MiniMax M2.7/M3 and Nemotron 3 Ultra free endpoints named in the brief
+   * could NOT be confirmed to exist as `:free` routes and are therefore absent
+   * rather than guessed at — a wrong slug here is a route that 404s for every
+   * reader on the free tier. `scripts/free-route-screen.mjs` discovers and
+   * screens the live list from a deployment that has a key; the server-owned
+   * config layer then enables what passes, with no deploy.
+   */
+  {
+    id: "ling-3.0-flash-free",
+    providerId: "openrouter",
+    providerModelId: "inclusionai/ling-3.0-flash:free",
+    label: "Ling 3.0 Flash (Free)",
+    description: "A free writer with a large context window. Shared capacity, so it is not always available.",
+    supportsThinking: false,
+    category: "free",
+    free: true,
+    notice: "Free shared capacity. Availability depends on the provider.",
+    capabilities: {
+      contextTokens: 262_144,
+      maxOutputTokens: 32_768,
+      thinking: false,
+      jsonMode: true,
+      promptCaching: false,
+      dataPolicy: { dataCollection: "deny" },
+    },
+  },
+  {
+    id: "minimax-m2.5-free",
+    providerId: "openrouter",
+    providerModelId: "minimax/minimax-m2.5:free",
+    label: "MiniMax M2.5 (Free)",
+    description: "A free general writer from the MiniMax family. Shared capacity, so it is not always available.",
+    supportsThinking: false,
+    category: "free",
+    free: true,
+    notice: "Free shared capacity. Availability depends on the provider.",
+    capabilities: {
+      contextTokens: 196_608,
+      maxOutputTokens: 32_768,
+      thinking: false,
+      jsonMode: true,
+      promptCaching: false,
+      dataPolicy: { dataCollection: "deny" },
+    },
   },
 ];
 
@@ -362,7 +685,26 @@ function publicModel(model: InternalModelDefinition): ModelDefinition {
     label:model.label,
     description:model.description,
     supportsThinking:model.supportsThinking,
+    category:model.category,
+    ...(model.speedProfile ? { speedProfile: model.speedProfile } : {}),
+    free:model.free,
+    ...(model.notice ? { notice: model.notice } : {}),
   };
+}
+
+/** Every catalogue entry, including ones this deployment has not enabled. */
+export function catalogModelIds() {
+  return knownModels.map((model) => model.id);
+}
+
+/** Whether this catalogue id is a curated free route. */
+export function isFreeModel(modelId: string) {
+  return knownModels.find((model) => model.id === modelId)?.free ?? false;
+}
+
+/** The product shelf this model sits on. Unknown models are experimental. */
+export function modelCategory(modelId: string): ModelCategory {
+  return knownModels.find((model) => model.id === modelId)?.category ?? "experimental";
 }
 
 export function allowedModels() {
@@ -383,6 +725,10 @@ export function availableModels(): ModelDefinition[] {
     label: id,
     description: "Deployment-configured DeepSeek-compatible model.",
     supportsThinking: true,
+    // A model nobody in this file has ever seen is not "recommended", and it
+    // is certainly not free. Experimental is the honest shelf for it.
+    category: "experimental" as const,
+    free: false,
     };
   });
 }
@@ -481,7 +827,7 @@ export function pinnedProviderFor(modelId: string) {
 export type ProviderRoutingPolicy = {
   /** Endpoints to try first, in order. Never the only ones allowed. */
   order?: string[];
-  /** The benchmark pin, or an enforced allowlist: these and nothing else. */
+  /** The benchmark pin, or the approved pool: these and nothing else. */
   only?: string[];
   /** Endpoints already known to have failed this request. */
   ignore?: string[];
@@ -489,6 +835,10 @@ export type ProviderRoutingPolicy = {
   sort?: "throughput" | "price" | "latency";
   /** Per-million ceilings an endpoint must be under to be eligible. */
   maxPrice?: { prompt: number; completion: number };
+  /** `deny` excludes endpoints that may train on the prompt. */
+  dataCollection?: "allow" | "deny";
+  /** True restricts routing to zero-data-retention endpoints. */
+  zdr?: boolean;
 };
 
 /**
@@ -530,14 +880,78 @@ export function routingMode(): RoutingMode {
 }
 
 /**
- * Whether a declared `affordableProviders` list becomes a hard restriction.
+ * Whether a model's approved pool is a hard `provider.only` restriction.
  *
- * Off by default. See the note on `affordableProviders`: an unverified slug in
- * `provider.only` is an outage, and the price ceiling guards the same thing
- * without depending on a string.
+ * ON BY DEFAULT NOW, and that is the correction. The previous sprint made the
+ * pool advisory and leaned on `max_price` as the production guard, which is not
+ * sufficient by itself: an endpoint can satisfy a fresh-input and output
+ * ceiling while discounting nothing on a prompt-cache read, and cached reads
+ * are most of what a long roleplay actually pays for. The guard would pass and
+ * the objective would be missed.
+ *
+ * The risk that argued for advisory has not gone away — a wrong or renamed slug
+ * in `provider.only` is an outage rather than a degraded route — so it is
+ * answered with escape hatches instead of with a weaker default:
+ * `ENFORCE_PROVIDER_POOL=false` returns the pool to advisory with the ceiling
+ * still in force, and `PROVIDER_POOL_OVERRIDE` replaces one model's pool
+ * outright. Both take effect without a deploy.
  */
-function allowlistEnforced() {
-  return process.env.ENFORCE_PROVIDER_ALLOWLIST === "true";
+function poolEnforced() {
+  return process.env.ENFORCE_PROVIDER_POOL !== "false";
+}
+
+/**
+ * An operator's replacement pool for one model, from the environment.
+ *
+ * Format: `PROVIDER_POOL_OVERRIDE=glm-4.7:deepinfra|novita` (comma separated
+ * for several models). This is the three-in-the-morning control: a provider is
+ * renamed or starts failing, and the pool can be corrected from a dashboard
+ * rather than from a release.
+ */
+function poolOverrideFor(modelId: string) {
+  const configured = process.env.PROVIDER_POOL_OVERRIDE?.trim();
+  if (!configured) return null;
+  for (const entry of configured.split(",")) {
+    const separator = entry.indexOf(":");
+    if (separator < 1) continue;
+    if (entry.slice(0, separator).trim() !== modelId) continue;
+    const slugs = entry.slice(separator + 1).split("|").map((value) => value.trim()).filter((value) => safeId(value));
+    return slugs.length ? slugs : null;
+  }
+  return null;
+}
+
+/**
+ * The approved production pool for one model: affordable AND cache-capable.
+ *
+ * Exported because it is the thing an operator has to be able to read back —
+ * the routing diagnostic and `scripts/provider-pool-audit.mjs` both report it,
+ * and a pool nobody can inspect is a pool nobody can trust.
+ */
+export function approvedProviderPool(modelId: string) {
+  const override = poolOverrideFor(modelId);
+  if (override) return override;
+  return knownModels.find((model) => model.id === modelId)?.capabilities.cacheCapableProviders?.filter((value) => safeId(value)) ?? [];
+}
+
+/**
+ * Whether an expensive route may be reached when every approved one has failed.
+ *
+ * DEFAULT FALSE, and this is the second correction. The previous sprint let the
+ * final attempt lift the price ceiling on the argument that one dear generation
+ * beats a failed turn mid-scene. That argument is real but it is an OPERATOR'S
+ * to make, not a default: silently converting a provider outage into
+ * unexpectedly expensive spend is exactly the failure mode the cost work exists
+ * to prevent, and it happens at the moment nobody is watching.
+ *
+ * So in `cost_guarded` every attempt stays the same model, inside the approved
+ * pool, under the ceiling; when they are all exhausted the reader is told the
+ * model is temporarily unavailable, which is true. Benchmark mode bypasses the
+ * restriction deliberately, because measuring an endpoint means being able to
+ * reach it.
+ */
+export function emergencyExpensiveFallbackEnabled() {
+  return process.env.GLM_ALLOW_EMERGENCY_EXPENSIVE_FALLBACK === "true";
 }
 
 /** The cost policy in force for one model, or null when there is none. */
@@ -547,12 +961,36 @@ export function costPolicyFor(modelId: string) {
   const capabilities = knownModels.find((model) => model.id === modelId)?.capabilities;
   const ceiling = capabilities?.costCeiling;
   if (!ceiling) return null;
-  const allowlist = allowlistEnforced() ? capabilities?.affordableProviders?.filter((value) => safeId(value)) : undefined;
+  const pool = poolEnforced() ? approvedProviderPool(modelId) : [];
   return {
     maxPrice: { prompt: ceiling.promptUsdPerMillion, completion: ceiling.completionUsdPerMillion },
-    ...(allowlist?.length ? { only: allowlist } : {}),
+    ...(pool.length ? { only: pool } : {}),
     sortByPrice: mode === "cost_optimized",
   };
+}
+
+/**
+ * The privacy floor for one model's requests, or null when it declares none.
+ *
+ * Sent to OpenRouter as provider preferences rather than enforced by comparing
+ * provider names here, for the same reason the price ceiling is: OpenRouter
+ * owns the endpoint catalogue, and a table in this file would be wrong the
+ * first time a provider changed its policy.
+ */
+export function dataPolicyFor(modelId: string) {
+  return knownModels.find((model) => model.id === modelId)?.capabilities.dataPolicy ?? null;
+}
+
+/**
+ * What to send for `reasoning` on one model when the engine has not asked.
+ *
+ * `RP_REASONING=off` is a deployment-wide override and still wins; otherwise a
+ * model that declares a default gets it, and a model that declares none keeps
+ * today's behaviour of saying nothing at all.
+ */
+export function defaultReasoningFor(modelId: string): "on" | "off" | null {
+  if (process.env.RP_REASONING?.trim() === "off") return "off";
+  return knownModels.find((model) => model.id === modelId)?.capabilities.reasoningDefault ?? null;
 }
 
 /**
@@ -580,20 +1018,39 @@ export function providerPolicyFor(
   const preferred = knownModels.find((model) => model.id === modelId)?.capabilities.preferredProviders ?? [];
   const ignore = failedProviders.filter((value) => safeId(value));
   /*
-   * THE CEILING IS DROPPED ON THE LAST ATTEMPT, AND ONLY THERE.
+   * THE CEILING AND THE POOL SURVIVE EVERY ATTEMPT.
    *
-   * Two earlier attempts have already been spent inside the affordable set, so
-   * reaching here means every endpoint under the ceiling either failed or went
-   * quiet. At that point the choice is a dearer endpoint or no reply at all,
-   * and one expensive generation is a far smaller harm to a reader mid-scene
-   * than a failed turn. It stays a genuine emergency: it cannot be reached
-   * without two prior failures, and it never substitutes a different MODEL.
+   * They used to be dropped on the last one, on the argument that two attempts
+   * had already been spent inside the affordable set and one dear generation
+   * beats a failed turn mid-scene. The argument is sound and the DEFAULT was
+   * wrong: it converted a provider outage — the moment nobody is watching —
+   * into unbounded spend, silently, with no operator decision anywhere in it.
+   *
+   * So the emergency route still exists and now has to be asked for:
+   * `GLM_ALLOW_EMERGENCY_EXPENSIVE_FALLBACK=true`. Benchmark mode also
+   * bypasses, because measuring an endpoint means being able to reach it. With
+   * neither, every attempt is the same model, inside the approved pool, under
+   * the ceiling — and when they are all exhausted the honest answer is that the
+   * model is temporarily unavailable, which is what the reader is told.
    */
-  const cost = options.finalAttempt ? null : costPolicyFor(modelId);
-  const guard = cost ? { maxPrice: cost.maxPrice, ...(cost.only ? { only: cost.only } : {}) } : {};
+  const emergency = options.finalAttempt && (emergencyExpensiveFallbackEnabled() || routingMode() === "benchmark");
+  const cost = emergency ? null : costPolicyFor(modelId);
+  const privacy = dataPolicyFor(modelId);
+  const guard = {
+    ...(cost ? { maxPrice: cost.maxPrice, ...(cost.only ? { only: cost.only } : {}) } : {}),
+    /*
+     * The privacy floor is NOT an economic guard and is never lifted.
+     *
+     * An emergency that is allowed to spend more money is not thereby allowed
+     * to send a private roleplay to an endpoint that trains on it. These two
+     * policies travel together in the request and separately in the reasoning.
+     */
+    ...(privacy ? { dataCollection: privacy.dataCollection, ...(privacy.zdr ? { zdr: true } : {}) } : {}),
+  };
+  const hasGuard = Object.keys(guard).length > 0;
 
   if (attempt === 0) {
-    if (!preferred.length && !ignore.length && !cost) return null;
+    if (!preferred.length && !ignore.length && !hasGuard) return null;
     return {
       ...(preferred.length ? { order: preferred } : {}),
       ...(ignore.length ? { ignore } : {}),

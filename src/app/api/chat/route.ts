@@ -22,7 +22,12 @@ import { responseLengthPlan } from "@/lib/response-length";
 import { contextExceededMessage, fitConversation } from "@/lib/context-budget";
 import { inferenceSessionId } from "@/lib/inference-session";
 import { ProviderError, classifyProviderFailure, logProviderDiagnostic, publicErrorMessage, publicErrorStatus } from "@/lib/provider-errors";
-import { ByokError, preflightWriterFunding, resolveWriterFunding, type InferenceFunding } from "@/lib/byok";
+import { ByokError, type InferenceFunding } from "@/lib/byok";
+import { acceptFundedFallback, credentialFor, planWriterFunding, settleWriterFunding, type WriterFundingPlan } from "@/lib/writer-funding";
+import { freeTierConfig } from "@/lib/free-tier";
+import { routeGenerationAllowed } from "@/lib/curated-routes";
+import { recordRouteOutcome } from "@/lib/route-health";
+import { isFreeModel } from "@/lib/provider";
 
 /** An error a provider delivered inside the stream rather than as a status. */
 type StreamFailure = { message: string; code?: number } | null;
@@ -57,7 +62,7 @@ export async function POST(request: Request) {
   const ipLimited = checkRateLimit(`chat-ip:${clientIp(request)}`, 120, 60_000); if (ipLimited) return ipLimited;
   const parsed = chatSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Invalid message" }, { status: 400 });
-  const { conversationId, content, action } = parsed.data;
+  const { conversationId, content, action, acceptFundedFallback: fundedFallbackAccepted } = parsed.data;
   if (action === "send" && !content) return Response.json({ error: "Message cannot be empty" }, { status: 400 });
 
   // Phase one: resolve and validate everything the prompt needs, inside a
@@ -151,17 +156,90 @@ export async function POST(request: Request) {
     }, { status: 409 });
   }
 
-  // Funding is preflighted before a Send persists the user's turn. This check
-  // reads only preference/existence metadata, not ciphertext, so the secret can
-  // still be decrypted immediately before the outgoing writer call.
-  let fundingIntent: Awaited<ReturnType<typeof preflightWriterFunding>>;
+  /*
+   * A CURATED ROUTE CAN BE WITHDRAWN BETWEEN CHOOSING IT AND USING IT.
+   *
+   * The picker's answer is minutes old and a free endpoint's lifetime is
+   * measured in hours. Asked here, before the reader's turn is persisted, so a
+   * route the server has since disabled produces the same calm "choose another
+   * model" the retirement path produces rather than a failure mid-stream.
+   */
+  if (isFreeModel(selection.modelId)) {
+    const routeState = await routeGenerationAllowed(selection.modelId);
+    if (!routeState.allowed) {
+      return Response.json({
+        error: routeState.reason === "disabled"
+          ? "This free model is no longer offered. Choose another model in chat tools — your story, memories and settings are untouched."
+          : "This free model is temporarily unavailable. Choose another model in chat tools, or try again shortly.",
+        reason: "model_unavailable",
+      }, { status: 409 });
+    }
+  }
+
+  /*
+   * WHO PAYS, DECIDED ONCE, BEFORE A SEND PERSISTS THE READER'S TURN.
+   *
+   * Four possible answers and four different consequences — which credential is
+   * sent, which ledger is debited, what a failure gives back, what a refusal
+   * says — all resolved in src/lib/writer-funding.ts rather than here. A free
+   * route reserves its slot from the shared daily pool at this point, so two
+   * readers cannot both take the last one, and the reservation is settled after
+   * the stream ends whichever way it ends.
+   *
+   * Nothing here reads or decrypts a secret column: that still happens
+   * immediately before the outgoing request, further down.
+   */
+  let fundingPlan: WriterFundingPlan;
   try {
-    fundingIntent = await preflightWriterFunding(account.id, "rp_generation", selection);
+    /*
+     * The reader may have already been asked and already said yes.
+     *
+     * `acceptFundedFallback` means the previous turn was refused with a funded
+     * writer named, and this request is the answer. The guards run again rather
+     * than being trusted from the earlier decision — the budget may have gone
+     * in the seconds between — and the slot is taken only now.
+     */
+    const decision = fundedFallbackAccepted && isFreeModel(selection.modelId)
+      ? await acceptFundedFallback({ userId: account.id, modelId: freeTierConfig().fundedModelId ?? "" })
+      : await planWriterFunding({ userId: account.id, selection });
     timeline.mark("funding-preflight");
+    if (decision.kind === "refused") {
+      /*
+       * The free tier's refusal is a PRODUCT answer, not an error.
+       *
+       * It carries what the reader can do about it — wait for the reset,
+       * connect their own key, choose a paid model, or accept a writer
+       * Afterglow will fund — and the funded option is named rather than taken,
+       * because changing somebody's writer is their decision to make.
+       */
+      return Response.json({
+        error: decision.message,
+        reason: "free_capacity_exhausted",
+        remedies: decision.remedies,
+        ...(decision.fundedModelId ? { fundedModelId: decision.fundedModelId } : {}),
+        resetsAt: decision.resetsAt,
+      }, { status: 429 });
+    }
+    fundingPlan = decision;
   } catch (error) {
     if (error instanceof ByokError) return Response.json({ error: error.message, reason: error.code }, { status: 409 });
     throw error;
   }
+  /*
+   * The funding plan may name a different model from the one the conversation
+   * stores — only ever when a deployment has set the funded fallback to `auto`,
+   * and only ever toward the one model that deployment named. It is reported in
+   * the response and written to the ledger; it is never silent.
+   */
+  selection = fundingPlan.selection;
+  const fundingSource = fundingPlan.kind;
+  /** Settle exactly once, whichever way this request ends. */
+  let fundingSettled = false;
+  const settleFunding = async (ran: boolean) => {
+    if (fundingSettled) return;
+    fundingSettled = true;
+    await settleWriterFunding(fundingPlan, ran);
+  };
 
   // Memory maintenance is deliberately not on the reply's critical path. The
   // recent transcript already carries the newest accepted turns, while the
@@ -339,6 +417,8 @@ export async function POST(request: Request) {
       conversationId, provider: selection.providerId, model: selection.modelId,
       detail: `prompt ${fitted.plan.promptTokens} tokens exceeds ${capabilities.contextTokens} context by ${fitted.plan.overflowTokens}`,
     }));
+    // Nothing was generated, so nothing was spent: the free-tier slot goes back.
+    await settleFunding(false);
     return Response.json({ error: contextExceededMessage, reason: "context_exceeded" }, { status: 409 });
   }
   if (fitted.dropped) {
@@ -351,15 +431,21 @@ export async function POST(request: Request) {
   }
   const completionMessages = writerMessages(writerPrompt, fitted.messages, placement);
   let writerFunding: InferenceFunding = { type: "afterglow" };
-  if (fundingIntent.type === "byok") {
-    try {
-      // The ciphertext is read and decrypted only now: after context assembly,
-      // directly before the request that needs it. Nothing stores the result.
-      writerFunding = await resolveWriterFunding(account.id, "rp_generation", selection);
-    } catch (error) {
-      if (error instanceof ByokError) return Response.json({ error: error.message, reason: error.code }, { status: error.code === "server_configuration" ? 503 : 409 });
-      throw error;
+  try {
+    // The ciphertext is read and decrypted only now: after context assembly,
+    // directly before the request that needs it. Nothing stores the result.
+    // For every funding kind but BYOK this resolves to platform funding without
+    // touching a secret column at all.
+    writerFunding = await credentialFor(account.id, fundingPlan);
+  } catch (error) {
+    if (error instanceof ByokError) {
+      // A reservation taken for a request that is about to be refused has to go
+      // back, or a configuration fault would quietly eat the reader's day.
+      await settleFunding(false);
+      return Response.json({ error: error.message, reason: error.code }, { status: error.code === "server_configuration" ? 503 : 409 });
     }
+    await settleFunding(false);
+    throw error;
   }
   // Response Length owns the output envelope as well as the directive. The
   // account's `maxTokens` is the Natural baseline the other two scale from, so
@@ -415,6 +501,17 @@ export async function POST(request: Request) {
     logProviderDiagnostic("rp generation failed before streaming", error instanceof ProviderError
       ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId })
       : error);
+    /*
+     * The request never reached a model, so the reader gets their allowance
+     * back — and the route gets a failure recorded against it, separating a
+     * capacity refusal from a fault so a busy free endpoint reads as busy
+     * rather than as broken.
+     */
+    await settleFunding(false);
+    void recordRouteOutcome({
+      modelId: selection.modelId, ok: false,
+      capacity: error instanceof ProviderError && error.category === "rate_limited",
+    });
     return Response.json({ error: writerErrorMessage(error, writerFunding) }, { status: publicErrorStatus(error) });
   }
   /*
@@ -477,7 +574,7 @@ export async function POST(request: Request) {
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       const recordAttemptUsage = async () => {
         if (!usage) return;
-        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, fundingSource: writerFunding.type, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
+        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, fundingSource, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
       };
       const consume = async (stream: ReadableStream<Uint8Array>,startedAt: number) => {
         const reader = stream.getReader();
@@ -737,6 +834,23 @@ export async function POST(request: Request) {
         // Accounting must not hold the accepted-message event (and therefore
         // the post-stream controls) behind another database round trip.
         void recordAttemptUsage().catch((error)=>console.error("Usage accounting failed",error));
+        /*
+         * The generation ran and produced a reply, so the free-tier slot is
+         * spent — the platform's upstream allowance was genuinely consumed and
+         * no ledger entry can give that back.
+         *
+         * Health is recorded from the same facts the reply already carries:
+         * time to first token, and how many tokens arrived over how long. That
+         * is what lets a free route be reported as slow without anybody running
+         * a separate probe against it.
+         */
+        void settleFunding(true).catch((error) => console.error("Free-tier settlement failed", error));
+        void recordRouteOutcome({
+          modelId: selection.modelId, ok: true,
+          ttftMs: ttftMs ?? null,
+          outputTokens: (usage as LLMUsage | null)?.completion_tokens ?? null,
+          generationMs: (usage as LLMUsage | null)?.latency_ms ?? null,
+        });
         controller.close();
         void (async () => {
           // Scene State first: consolidation stamps the memories it creates
@@ -752,6 +866,20 @@ export async function POST(request: Request) {
         logProviderDiagnostic("rp generation failed mid-stream", error instanceof ProviderError
           ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, upstreamProvider })
           : error);
+        /*
+         * WHETHER THE SLOT COMES BACK DEPENDS ON WHETHER A MODEL RAN.
+         *
+         * A failure with no text is a request that never produced a generation,
+         * and the reader gets their allowance back. A failure AFTER prose has
+         * streamed is not refundable: the tokens were produced and the
+         * platform's allowance was spent, and crediting it back would make the
+         * ledger disagree with what OpenRouter has already counted.
+         */
+        void settleFunding(Boolean(assistant.trim())).catch((settleError) => console.error("Free-tier settlement failed", settleError));
+        void recordRouteOutcome({
+          modelId: selection.modelId, ok: false,
+          capacity: error instanceof ProviderError && error.category === "rate_limited",
+        });
         send({ type: "error", error: writerErrorMessage(error, writerFunding) });
         controller.close();
       }

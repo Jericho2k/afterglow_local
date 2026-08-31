@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { costPolicyFor, modelCapabilities, providerPolicyFor, routingMode } from "@/lib/provider";
+import { approvedProviderPool, costPolicyFor, emergencyExpensiveFallbackEnabled, modelCapabilities, providerPolicyFor, routingMode } from "@/lib/provider";
 import { completionWithUsage } from "@/lib/llm";
 
 /**
@@ -53,7 +53,21 @@ describe("what actually reaches OpenRouter", () => {
     await completionWithUsage({ providerId: "openrouter", modelId: "glm-4.7" }, [{ role: "user", content: "Hi" }], { modelId: "glm-4.7", sessionId: "abc123" });
 
     expect(bodies[0].model).toBe("z-ai/glm-4.7");
-    expect(bodies[0].provider).toEqual({ allow_fallbacks: true, max_price: { prompt: 0.65, completion: 2.25 } });
+    /*
+     * THREE GUARDS IN ONE BLOCK, and each answers a question the others cannot.
+     *
+     * `only` is the approved pool: endpoints verified to be BOTH affordable AND
+     * cache-capable. `max_price` is defence in depth, so a pool member that
+     * re-prices upward still falls out without anybody editing the catalogue.
+     * `data_collection` is the privacy floor, which is not an economic guard
+     * and is never traded against one.
+     */
+    expect(bodies[0].provider).toEqual({
+      only: ["deepinfra", "novita", "z-ai"],
+      allow_fallbacks: true,
+      max_price: { prompt: 0.65, completion: 2.25 },
+      data_collection: "deny",
+    });
     // The two halves of the design travel together: the ceiling bounds WHICH
     // hosts are eligible, the session keeps the conversation on whichever one
     // it landed on. Neither works alone.
@@ -90,7 +104,7 @@ describe("what actually reaches OpenRouter", () => {
     expect(bodies[2].reasoning).toEqual({ enabled: false });
   });
 
-  it("sends no provider block at all when an operator reverts to auto", async () => {
+  it("sends no cost policy at all when an operator reverts to auto", async () => {
     enableOpenRouter();
     vi.stubEnv("PROVIDER_ROUTING_MODE", "auto");
     const bodies: Array<Record<string, unknown>> = [];
@@ -100,7 +114,16 @@ describe("what actually reaches OpenRouter", () => {
     }));
 
     await completionWithUsage({ providerId: "openrouter", modelId: "glm-4.7" }, [{ role: "user", content: "Hi" }], { modelId: "glm-4.7" });
-    expect(bodies[0].provider).toBeUndefined();
+    /*
+     * NO POOL, NO CEILING — AND THE PRIVACY FLOOR STAYS.
+     *
+     * The kill switch reverts the routing experiment, which is a decision about
+     * money and availability. It is not consent, given on every reader's
+     * behalf at three in the morning, to have their transcripts trained on. A
+     * revert that also switched that off would be a trap laid for whoever pulls
+     * it under pressure.
+     */
+    expect(bodies[0].provider).toEqual({ allow_fallbacks: true, data_collection: "deny" });
   });
 });
 
@@ -119,8 +142,10 @@ describe("the GLM cost ceiling", () => {
     // The guard is per-model data, so adding it to GLM must not have changed
     // how anything else is routed.
     expect(costPolicyFor("midnight-cherry")).toBeNull();
+    // Midnight Cherry declares neither a ceiling nor a privacy floor, so it is
+    // routed exactly as it was before any of this existed.
     expect(providerPolicyFor("midnight-cherry", 0, [])).toBeNull();
-    expect(providerPolicyFor("mimo-v2.5", 0, [])).toEqual({ order: ["xiaomi"], allowFallbacks: true });
+    expect(providerPolicyFor("mimo-v2.5", 0, [])).toEqual({ order: ["xiaomi"], allowFallbacks: true, dataCollection: "deny" });
   });
 });
 
@@ -142,7 +167,18 @@ describe("the warm path", () => {
      */
     expect(policy?.order).toBeUndefined();
     expect(policy?.sort).toBeUndefined();
-    expect(policy?.only).toBeUndefined();
+    /*
+     * `only` IS SENT, AND `order` IS NOT, AND THE DIFFERENCE IS THE DESIGN.
+     *
+     * OpenRouter documents that naming an explicit `provider.order` turns its
+     * own sticky routing off — which would throw away the warm cache that makes
+     * a long conversation cheap. Restricting the CANDIDATE SET with `only`
+     * bounds which endpoints may be chosen without stating a preference between
+     * them, so whichever pool member a conversation is already warm on stays
+     * warm. Two adjacent fields, opposite effects on the thing that costs
+     * money.
+     */
+    expect(policy?.only).toEqual(["deepinfra", "novita", "z-ai"]);
   });
 
   it("asks for the cheapest endpoint outright only in cost_optimized", () => {
@@ -155,6 +191,7 @@ describe("recovery stays inside the affordable set", () => {
   it("keeps the ceiling on a retry, and still routes away from the failed host", () => {
     const retry = providerPolicyFor("glm-4.7", 1, ["z-ai"]);
     expect(retry?.ignore).toEqual(["z-ai"]);
+    expect(retry?.only).toEqual(["deepinfra", "novita", "z-ai"]);
     // The bug this closes: `sort: throughput` with no ceiling could answer a
     // timeout by moving the conversation to the most expensive host serving the
     // slug, at the moment nobody was watching, and stickiness would keep it
@@ -176,14 +213,47 @@ describe("recovery stays inside the affordable set", () => {
     }
   });
 
-  it("lifts the ceiling only on the final attempt, as an emergency", () => {
-    // Two attempts have already been spent inside the affordable set, so
-    // reaching here means every endpoint under the ceiling failed or went
-    // quiet. One dear generation beats a failed turn mid-scene.
+  it("keeps the ceiling and the pool on the FINAL attempt too", () => {
+    /*
+     * THE CORRECTION. The previous sprint let the last attempt lift the price
+     * ceiling, on the argument that one dear generation beats a failed turn
+     * mid-scene. The argument is real; the DEFAULT was wrong. It converted a
+     * provider outage — which happens at the hour nobody is watching — into
+     * unbounded spend with no operator decision anywhere in it.
+     *
+     * So every attempt now stays the same model, inside the approved pool,
+     * under the ceiling, and an exhausted pool produces an honest "temporarily
+     * unavailable" rather than a surprise on the invoice.
+     */
     const last = providerPolicyFor("glm-4.7", 2, ["deepinfra", "novita"], { finalAttempt: true });
-    expect(last?.maxPrice).toBeUndefined();
+    expect(last?.maxPrice).toEqual({ prompt: 0.65, completion: 2.25 });
+    expect(last?.only).toEqual(["deepinfra", "novita", "z-ai"]);
     expect(last?.ignore).toEqual(["deepinfra", "novita"]);
     expect(last?.allowFallbacks).toBe(true);
+  });
+
+  it("defaults the emergency expensive fallback to off", () => {
+    expect(emergencyExpensiveFallbackEnabled()).toBe(false);
+    // A typo, an empty string or the word "yes" are all not-true, and a guard
+    // that spends money must only be lifted by the exact word that lifts it.
+    vi.stubEnv("GLM_ALLOW_EMERGENCY_EXPENSIVE_FALLBACK", "yes");
+    expect(emergencyExpensiveFallbackEnabled()).toBe(false);
+  });
+
+  it("lifts the ceiling on the final attempt only when an operator has asked", () => {
+    vi.stubEnv("GLM_ALLOW_EMERGENCY_EXPENSIVE_FALLBACK", "true");
+    const last = providerPolicyFor("glm-4.7", 2, ["deepinfra"], { finalAttempt: true });
+    expect(last?.maxPrice).toBeUndefined();
+    expect(last?.only).toBeUndefined();
+    /*
+     * AND EVEN THEN, NOT THE PRIVACY FLOOR.
+     *
+     * An emergency that is permitted to spend more money is not thereby
+     * permitted to send somebody's private roleplay to an endpoint that trains
+     * on it. The two policies travel together in the request and separately in
+     * the reasoning, and only one of them is economic.
+     */
+    expect(last?.dataCollection).toBe("deny");
   });
 });
 
@@ -198,27 +268,68 @@ describe("the kill switch", () => {
 
   it("reverts to the pre-sprint behaviour without a deploy", () => {
     vi.stubEnv("PROVIDER_ROUTING_MODE", "auto");
-    // Byte-for-byte what GLM got before: no policy at all on the warm path.
-    expect(providerPolicyFor("glm-4.7", 0, [])).toBeNull();
-    expect(providerPolicyFor("glm-4.7", 1, ["z-ai"])).toEqual({ ignore: ["z-ai"], allowFallbacks: true, sort: "throughput" });
+    /*
+     * `auto` reverts the COST policy and nothing else.
+     *
+     * The privacy floor stays, and that is deliberate: an operator reverting a
+     * routing experiment at three in the morning is making a decision about
+     * money and availability, not consenting on every reader's behalf to have
+     * their transcripts trained on. A kill switch that also switched that off
+     * would be a trap.
+     */
+    expect(providerPolicyFor("glm-4.7", 0, [])).toEqual({ allowFallbacks: true, dataCollection: "deny" });
+    expect(providerPolicyFor("glm-4.7", 1, ["z-ai"])).toEqual({ ignore: ["z-ai"], allowFallbacks: true, sort: "throughput", dataCollection: "deny" });
   });
 });
 
-describe("the provider allowlist", () => {
-  it("stays advisory until an operator has verified the slugs", () => {
-    // These could not be checked against OpenRouter's live endpoint list from
-    // the build environment, and a wrong slug in `provider.only` is not a
-    // degraded route — it is every GLM request failing.
-    expect(modelCapabilities("openrouter", "glm-4.7").affordableProviders).toEqual(["deepinfra", "novita", "z-ai"]);
-    expect(providerPolicyFor("glm-4.7", 0, [])?.only).toBeUndefined();
+describe("the approved provider pool", () => {
+  it("requires cache capability, not only affordability", () => {
+    /*
+     * WHY THE POOL EXISTS AT ALL, stated as a test so it cannot be quietly
+     * dropped back to a ceiling.
+     *
+     * `max_price` bounds what an endpoint may LIST. It says nothing about
+     * whether that endpoint discounts a prompt-cache read — and a roleplay turn
+     * resends the character, world, persona and rules unchanged, so cached
+     * reads are most of the bill. An endpoint that passes the ceiling and
+     * charges fresh prices for every repeated byte defeats the whole objective
+     * while satisfying the guard.
+     */
+    expect(modelCapabilities("openrouter", "glm-4.7").cacheCapableProviders).toEqual(["deepinfra", "novita", "z-ai"]);
+    expect(approvedProviderPool("glm-4.7")).toEqual(["deepinfra", "novita", "z-ai"]);
   });
 
-  it("becomes a hard restriction when one has", () => {
-    vi.stubEnv("ENFORCE_PROVIDER_ALLOWLIST", "true");
-    const policy = providerPolicyFor("glm-4.7", 0, []);
-    expect(policy?.only).toEqual(["deepinfra", "novita", "z-ai"]);
-    // Belt and braces: the ceiling stays on, so a re-priced endpoint inside the
-    // allowlist is still excluded.
-    expect(policy?.maxPrice).toBeDefined();
+  it("is enforced by default, and revertible without a deploy", () => {
+    expect(providerPolicyFor("glm-4.7", 0, [])?.only).toEqual(["deepinfra", "novita", "z-ai"]);
+    /*
+     * The risk the previous sprint named has not gone away: a slug that is
+     * wrong or renamed upstream turns `only` into an outage rather than a
+     * degraded route. It is answered with an escape hatch instead of a weaker
+     * default — the pool goes advisory and the ceiling still guards spend.
+     */
+    vi.stubEnv("ENFORCE_PROVIDER_POOL", "false");
+    const advisory = providerPolicyFor("glm-4.7", 0, []);
+    expect(advisory?.only).toBeUndefined();
+    expect(advisory?.maxPrice).toEqual({ prompt: 0.65, completion: 2.25 });
+  });
+
+  it("lets an operator replace one model's pool from the environment", () => {
+    // The three-in-the-morning control: a provider is renamed or starts
+    // failing, and the pool is corrected from a dashboard rather than a release.
+    vi.stubEnv("PROVIDER_POOL_OVERRIDE", "glm-4.7:deepinfra|novita");
+    expect(approvedProviderPool("glm-4.7")).toEqual(["deepinfra", "novita"]);
+    expect(providerPolicyFor("glm-4.7", 0, [])?.only).toEqual(["deepinfra", "novita"]);
+    // An override for another model does not touch this one.
+    vi.stubEnv("PROVIDER_POOL_OVERRIDE", "mimo-v2.5:xiaomi");
+    expect(approvedProviderPool("glm-4.7")).toEqual(["deepinfra", "novita", "z-ai"]);
+  });
+
+  it("refuses to route a private roleplay through an endpoint that trains on it", () => {
+    // Sent as an OpenRouter provider preference rather than enforced by
+    // comparing provider names here, so the filter keeps working when a
+    // provider changes its policy — which is a thing that happens without
+    // anybody telling us.
+    expect(providerPolicyFor("glm-4.7", 0, [])?.dataCollection).toBe("deny");
+    expect(providerPolicyFor("glm-4.7", 1, ["z-ai"])?.dataCollection).toBe("deny");
   });
 });

@@ -6,6 +6,26 @@ import type { ResponseLength } from "./types";
 export type UsageKind = "chat" | "regenerate" | "continue" | "memory_consolidation" | "memory_curation" | "scene_state" | "character_generation" | "embedding";
 
 /**
+ * Who paid for one generation.
+ *
+ * Five values rather than three, because the free tier introduced two funding
+ * sources that are neither ordinary platform spend nor the reader's own key,
+ * and collapsing either into `afterglow` would make the free tier's real cost
+ * unreadable in exactly the report an operator opens to find it.
+ *
+ *   afterglow        Ordinary paid inference for a paid model.
+ *   byok             The reader's own OpenRouter account. Costs Afterglow
+ *                    nothing, `:free` routes included.
+ *   shared_free      The platform account's free-model quota. Costs no money
+ *                    and does consume a scarce, shared, daily allowance.
+ *   platform_funded  Afterglow paying for an ultra-cheap writer because free
+ *                    capacity was gone. THE LINE TO WATCH: this is the only
+ *                    one where a free-tier reader generates real spend.
+ *   self_hosted      A deployment running its own inference.
+ */
+export type FundingSource = "afterglow" | "byok" | "self_hosted" | "shared_free" | "platform_funded";
+
+/**
  * WHAT A TOKEN COSTS, AND HOW SURE WE ARE.
  *
  * Historical events store their estimate at write time, so a later price change
@@ -38,7 +58,7 @@ export const pricingAsOf = "2026-08-31";
  * re-priced analysis can tell which table produced a given row, without
  * touching the row.
  */
-export const pricingVersion = 3;
+export const pricingVersion = 4;
 
 /** How a stored cost figure was arrived at. */
 export type CostBasis =
@@ -110,6 +130,41 @@ export const modelPricing: Record<string, TariffRates> = {
    * response and `recordUsageEvent` always prefers it.
    */
   "glm-4.7": { cacheHit: 0.11, cacheMiss: 0.60, output: 2.20 },
+  /*
+   * The 2026-08 lineup, priced at the DEAREST endpoint each model's ceiling
+   * admits, for the same reason GLM 4.7 is: a fallback cannot know which
+   * endpoint ran, and quoting the cheapest would understate spend precisely
+   * when the cheapest endpoint is the one that failed to report a cost.
+   *
+   * THESE ARE LIST PRICES, NOT PROMOTIONAL ONES. GLM 5.3 Flash was launched
+   * with a temporary discount of roughly half, expiring in early September
+   * 2026. Recording the discounted rate here would make every spend report
+   * quietly wrong the day it ends, and would make the free-tier projections
+   * built on it wrong from the start. The discount is reported separately in
+   * docs/model-lineup-2026-08.md and is deliberately absent from the arithmetic
+   * anything is budgeted against.
+   *
+   * All three were read from a search index on 2026-08-31, not from
+   * OpenRouter's API, which this environment cannot reach. They are fallbacks:
+   * OpenRouter reports the real charge on a healthy response and
+   * `recordUsageEvent` always prefers it.
+   */
+  "glm-5.3-flash": { cacheHit: 0.03, cacheMiss: 0.15, output: 0.50 },
+  "glm-5.3-flash-economy": { cacheHit: 0.03, cacheMiss: 0.15, output: 0.50 },
+  "ling-3.0-flash": { cacheHit: 0.0042, cacheMiss: 0.021, output: 0.063 },
+  "qwen3.8-flash": { cacheHit: 0.016, cacheMiss: 0.15, output: 0.47 },
+  /*
+   * The curated free routes cost nothing, and saying so in the table is what
+   * stops them being recorded as `unpriced`.
+   *
+   * "Unpriced" and "free" look identical in a spend total and mean opposite
+   * things: the first is a gap in the ledger and the second is a fact. A free
+   * generation is not free of CONSEQUENCE — it consumes a scarce shared daily
+   * allowance — and that scarcity is accounted for in free_tier_pool_days,
+   * which is a count of generations rather than a sum of dollars.
+   */
+  "ling-3.0-flash-free": { cacheHit: 0, cacheMiss: 0, output: 0 },
+  "minimax-m2.5-free": { cacheHit: 0, cacheMiss: 0, output: 0 },
 };
 
 export function normalizedUsage(usage: LLMUsage) {
@@ -183,7 +238,7 @@ export function isTimeOfDayPriced(model: string) {
  * caused it. Every paid call routes through here, so per-account cost, token
  * and volume reporting is a single grouped query away.
  */
-export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; providerId?: string; model: string; actualModel?: string; rpEngineId?: string; responseLength?: ResponseLength; fundingSource?: "afterglow" | "byok" | "self_hosted"; kind: UsageKind; taskRoute?: string; usage: LLMUsage }) {
+export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; providerId?: string; model: string; actualModel?: string; rpEngineId?: string; responseLength?: ResponseLength; fundingSource?: FundingSource; kind: UsageKind; taskRoute?: string; usage: LLMUsage }) {
   const usage = normalizedUsage(input.usage);
   /*
    * PROVIDER-REPORTED COST WINS, ALWAYS.

@@ -598,12 +598,56 @@ export type ProviderDefinition = {
   label: string;
 };
 
+/**
+ * The shelf a model sits on in the picker.
+ *
+ * Product language, deliberately. A reader choosing a writer is choosing an
+ * experience — "the good one", "the cheap one", "the free one", "the one we are
+ * still measuring" — and not an inference vendor, a quantisation or a
+ * provider slug. Everything infrastructural about a model stays in
+ * `ModelCapabilities`, which never reaches the browser.
+ */
+export type ModelCategory = "recommended" | "economy" | "free" | "experimental";
+
+/**
+ * Two ways to serve ONE model, told apart by experience rather than by vendor.
+ *
+ * Some models are hosted by endpoints with genuinely different characters: one
+ * costs almost nothing and streams slowly, another costs more and streams fast.
+ * That is worth offering, and the vendor's name is not worth explaining, so the
+ * distinction a reader sees is "Economy" or "Fast" and the routing that
+ * implements it lives in the catalogue.
+ */
+export type ModelSpeedProfile = "economy" | "fast";
+
 export type ModelDefinition = {
   id: string;
   providerId: string;
   label: string;
   description: string;
   supportsThinking: boolean;
+  category: ModelCategory;
+  /** Set only where one model is offered as two serving profiles. */
+  speedProfile?: ModelSpeedProfile;
+  /** Costs the reader nothing: a curated `:free` endpoint or the shared pool. */
+  free: boolean;
+  /**
+   * A short, honest note the picker shows beneath a model that needs one —
+   * a free route's shared-capacity caveat, or an experimental route's privacy
+   * disclosure. Empty when there is nothing a reader needs warning about.
+   */
+  notice?: string;
+  /**
+   * How a volatile route is behaving, for the routes where that is a real
+   * question.
+   *
+   * Present only on free routes. A paid model's availability is a provider
+   * incident handled by failover, and decorating every row with a status dot
+   * would train readers to ignore the one place the dot means something.
+   */
+  availability?: "available" | "busy" | "unavailable";
+  /** The route works but streams slowly enough to be worth choosing last. */
+  deprioritized?: boolean;
 };
 
 export type RoleplayEngineDefinition = {

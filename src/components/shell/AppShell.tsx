@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {useRouter, useSearchParams} from "next/navigation";
-import type { AppSettings, Character, Conversation, Memory, Message, ModelCatalog, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
+import type { AppSettings, Character, Conversation, Memory, Message, ModelCatalog, ModelDefinition, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
 import { api } from "@/lib/api-client";
 import { composerPlaceholder, creationKindLine, creationSubject, creationTitle, inlineTitle } from "@/lib/creation";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
@@ -1607,6 +1607,56 @@ function PersonaPicker({ personas, selectedId, onClose, onManage, onCreated, onS
   return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer persona-picker"><header><div><span className="eyebrow">This story</span><h2>Choose persona</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="picker-body"><p>Choose who you are in this chat. Changing persona does not reset its messages or memories.</p><div className="persona-picker-list">{personas.map((persona)=><button key={persona.id} className={pending===persona.id?"selected":""} onClick={()=>setPending(persona.id)}><PersonaAvatar persona={persona}/><span><strong>{persona.name}</strong><small>{persona.isDefault?"Default persona":"Available for any chat"}</small><p>{compactMessagePreview(persona.description||"No profile details yet.",150)}</p></span><b>{pending===persona.id?"✓":""}</b></button>)}</div>{creating?<div className="inline-create"><label>Persona name<input autoFocus value={name} onChange={(e)=>setName(e.target.value)}/></label><label>What should characters know?<textarea rows={6} value={description} onChange={(e)=>setDescription(e.target.value)}/></label><div><button className="secondary" onClick={()=>setCreating(false)}>Cancel</button><button className="primary" disabled={busy||!name.trim()} onClick={()=>void create()}>{busy?"Creating…":"Create persona"}</button></div></div>:<div className="picker-create-actions"><button className="secondary create-from-picker" onClick={()=>setCreating(true)}><Plus size={15} aria-hidden />Create persona</button><button className="secondary create-from-picker" onClick={onManage}><Pencil size={15} aria-hidden />Manage</button></div>}{!personas.length&&!creating&&<div className="empty-library-note">Create your first persona to tell characters who they are speaking with.</div>}{error&&<div className="form-error">{error}</div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!pending} onClick={async()=>{setBusy(true);try{await onSave(pending);}finally{setBusy(false);}}}>{busy?"Saving…":"Use persona"}</button></footer></aside></div>;
 }
 
+/**
+ * The writer models, on the four shelves a reader actually chooses between.
+ *
+ * PROVIDER INFRASTRUCTURE IS NOT A PRODUCT CATEGORY. Nothing here names an
+ * inference vendor, a quantisation or an endpoint, because none of those is a
+ * thing somebody choosing how their story is written has an opinion about.
+ * Where two endpoints for one model genuinely differ enough to matter, they are
+ * offered as "Economy" and "Fast" — which is the difference as experienced —
+ * and the vendor stays in the routing layer where it belongs.
+ *
+ * The shelves are ordered the way a reader's attention should go: the ones we
+ * recommend, then the cheap ones, then the free ones, then the ones we are
+ * still measuring. A route that is working but slow sinks within its shelf
+ * rather than disappearing, because "slower" is a trade somebody is allowed to
+ * make and "hidden" is not a trade at all.
+ */
+const modelShelves = [
+  { id: "recommended", label: "Recommended", blurb: "Our picks for most stories." },
+  { id: "economy", label: "Economy", blurb: "Cheaper writers for long, everyday play." },
+  { id: "free", label: "Free", blurb: "Shared free capacity. Availability varies." },
+  { id: "experimental", label: "Experimental", blurb: "Newer writers we are still measuring." },
+] as const;
+
+const availabilityLabel: Record<NonNullable<ModelDefinition["availability"]>, string> = {
+  available: "Available",
+  busy: "Busy",
+  unavailable: "Temporarily unavailable",
+};
+
+function WriterModelShelves({ models, value, onChange }: { models: ModelDefinition[]; value: string; onChange: (id: string) => void }) {
+  return <div className="model-shelves">{modelShelves.map((shelf)=>{
+    const shelved = models.filter((model)=>model.category===shelf.id);
+    if (!shelved.length) return null;
+    return <section key={shelf.id}><header><strong>{shelf.label}</strong><small>{shelf.blurb}</small></header><div className="model-shelf-list">{shelved.map((model)=>
+      <button key={model.id} type="button" className={model.id===value?"model-shelf-row selected":"model-shelf-row"} aria-pressed={model.id===value} onClick={()=>onChange(model.id)}>
+        <span className="model-radio" aria-hidden>{model.id===value?"●":"○"}</span>
+        <span>
+          <strong>{model.label}</strong>
+          <small>{model.description}</small>
+          {(model.free||model.speedProfile||model.availability)&&<span className="model-tags">
+            {model.free&&<em>Free</em>}
+            {model.speedProfile&&<i>{model.speedProfile==="fast"?"Fast":"Economy"}</i>}
+            {model.availability&&model.availability!=="available"&&<i>{availabilityLabel[model.availability]}</i>}
+          </span>}
+          {model.notice&&<small className="model-notice">{model.notice}</small>}
+        </span>
+      </button>)}</div></section>;
+  })}</div>;
+}
+
 function ModelPicker({ catalog, conversation, onClose, onSave }: { catalog: ModelCatalog; conversation: Conversation; onClose: () => void; onSave: (changes: Pick<Conversation,"providerId"|"modelId"|"rpEngineId">) => Promise<void> }) {
   const [engineId,setEngineId] = useState(conversation.rpEngineId); const [providerId,setProviderId] = useState(conversation.providerId); const [modelId,setModelId] = useState(conversation.modelId); const [busy,setBusy] = useState(false); const [advanced,setAdvanced] = useState(false); const [favorites,setFavorites] = useState<string[]>([]);
   const [section,setSection] = useState<"discover"|"favorites">("discover"); const [searchOpen,setSearchOpen] = useState(false); const [search,setSearch] = useState("");
@@ -1620,7 +1670,7 @@ function ModelPicker({ catalog, conversation, onClose, onSave }: { catalog: Mode
     return [engine.label,engine.description,...engine.tags].some((value)=>value.toLowerCase().includes(normalizedSearch));
   });
   function toggleFavorite(id:string){setFavorites((current)=>{const next=current.includes(id)?current.filter((item)=>item!==id):[...current,id];localStorage.setItem("afterglow_favorite_models",JSON.stringify(next));return next;});}
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer model-picker"><header><div><span className="eyebrow">How this story is written</span><h2>Roleplay engine</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="picker-body"><p>The engine decides how the roleplay is handled — pacing, escalation, initiative, how much the cast is kept apart. Your creation stays the character it is, and your world, persona, history and memory are unchanged when you switch.</p><div className={`model-navigation ${searchOpen?"searching":""}`}>{searchOpen?<><input autoFocus value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="Search engines" aria-label="Search engines"/><button className="icon-button" aria-label="Close search" onClick={()=>{setSearchOpen(false);setSearch("");}}><X size={16} aria-hidden /></button></>:<><button className={section==="discover"?"active":""} onClick={()=>setSection("discover")}>Discover</button><button className={section==="favorites"?"active":""} onClick={()=>setSection("favorites")}>Favorites</button><button className="model-search-button" aria-label="Search engines" onClick={()=>setSearchOpen(true)}><Search size={15} aria-hidden /></button></>}</div><div className="model-card-list">{engines.map((engine)=><article key={engine.id} className={engine.id===engineId?"model-card selected":"model-card"}><button className="model-card-main" onClick={()=>setEngineId(engine.id)}><span className="model-radio">{engine.id===engineId?"●":"○"}</span><span><strong>{engine.label}</strong><small>{engine.description}</small><span className="model-tags">{engine.adult&&<em>18+ RP</em>}{engine.tags.map((tag)=><i key={tag}>{tag}</i>)}</span></span></button><button className={favorites.includes(engine.id)?"model-favorite active":"model-favorite"} aria-label={favorites.includes(engine.id)?`Remove ${engine.label} from favourites`:`Favourite ${engine.label}`} onClick={()=>toggleFavorite(engine.id)}><Star size={15} fill={favorites.includes(engine.id)?"currentColor":"none"} aria-hidden /></button></article>)}</div>{!engines.length&&<div className="empty-library-note">{searchOpen?"No engines match that search.":"Favourite an engine in Discover and it will appear here."}</div>}<button className="advanced-model-toggle" onClick={()=>setAdvanced((value)=>!value)}><span><strong>Writer model</strong><small>{selectedModel?.label||conversation.modelId}</small></span><b><ChevronDown size={15} className={advanced?"flip":""} aria-hidden /></b></button>{advanced&&<div className="advanced-model-panel"><p>The engine above is Afterglow&apos;s brief for how to write. The writer model is the language model that writes to it — a different capability, not a different style.</p><SelectField label="Provider" value={providerId} onChange={(value)=>{setProviderId(value);setModelId(catalog.models.find((model)=>model.providerId===value)?.id||"");}} options={catalog.providers.map((provider)=>({value:provider.id,label:provider.label}))}/><SelectField label="Writer model" value={modelId} onChange={setModelId} options={models.map((model)=>({value:model.id,label:model.label,description:model.description}))}/></div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!selectedModel} onClick={async()=>{if(!selectedModel)return;setBusy(true);try{await onSave({providerId,modelId:selectedModel.id,rpEngineId:engineId});}finally{setBusy(false);}}}>{busy?"Switching…":"Use engine"}</button></footer></aside></div>;
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer model-picker"><header><div><span className="eyebrow">How this story is written</span><h2>Roleplay engine</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="picker-body"><p>The engine decides how the roleplay is handled — pacing, escalation, initiative, how much the cast is kept apart. Your creation stays the character it is, and your world, persona, history and memory are unchanged when you switch.</p><div className={`model-navigation ${searchOpen?"searching":""}`}>{searchOpen?<><input autoFocus value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="Search engines" aria-label="Search engines"/><button className="icon-button" aria-label="Close search" onClick={()=>{setSearchOpen(false);setSearch("");}}><X size={16} aria-hidden /></button></>:<><button className={section==="discover"?"active":""} onClick={()=>setSection("discover")}>Discover</button><button className={section==="favorites"?"active":""} onClick={()=>setSection("favorites")}>Favorites</button><button className="model-search-button" aria-label="Search engines" onClick={()=>setSearchOpen(true)}><Search size={15} aria-hidden /></button></>}</div><div className="model-card-list">{engines.map((engine)=><article key={engine.id} className={engine.id===engineId?"model-card selected":"model-card"}><button className="model-card-main" onClick={()=>setEngineId(engine.id)}><span className="model-radio">{engine.id===engineId?"●":"○"}</span><span><strong>{engine.label}</strong><small>{engine.description}</small><span className="model-tags">{engine.adult&&<em>18+ RP</em>}{engine.tags.map((tag)=><i key={tag}>{tag}</i>)}</span></span></button><button className={favorites.includes(engine.id)?"model-favorite active":"model-favorite"} aria-label={favorites.includes(engine.id)?`Remove ${engine.label} from favourites`:`Favourite ${engine.label}`} onClick={()=>toggleFavorite(engine.id)}><Star size={15} fill={favorites.includes(engine.id)?"currentColor":"none"} aria-hidden /></button></article>)}</div>{!engines.length&&<div className="empty-library-note">{searchOpen?"No engines match that search.":"Favourite an engine in Discover and it will appear here."}</div>}<button className="advanced-model-toggle" onClick={()=>setAdvanced((value)=>!value)}><span><strong>Writer model</strong><small>{selectedModel?.label||conversation.modelId}</small></span><b><ChevronDown size={15} className={advanced?"flip":""} aria-hidden /></b></button>{advanced&&<div className="advanced-model-panel"><p>The engine above is Afterglow&apos;s brief for how to write. The writer model is the language model that writes to it — a different capability, not a different style.</p><SelectField label="Provider" value={providerId} onChange={(value)=>{setProviderId(value);setModelId(catalog.models.find((model)=>model.providerId===value)?.id||"");}} options={catalog.providers.map((provider)=>({value:provider.id,label:provider.label}))}/><WriterModelShelves models={models} value={selectedModel?.id||modelId} onChange={setModelId}/></div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!selectedModel} onClick={async()=>{if(!selectedModel)return;setBusy(true);try{await onSave({providerId,modelId:selectedModel.id,rpEngineId:engineId});}finally{setBusy(false);}}}>{busy?"Switching…":"Use engine"}</button></footer></aside></div>;
 }
 
 /**

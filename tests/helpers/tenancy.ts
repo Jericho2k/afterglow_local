@@ -61,6 +61,7 @@ export const migrationFiles = [
   "0028_generation_provenance.sql",
   "0029_story_distance_aging.sql",
   "0030_provenance_parent_ownership.sql",
+  "0031_free_tier_and_curated_routes.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {
