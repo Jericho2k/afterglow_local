@@ -58,6 +58,7 @@ async function schema() {
       branch_request_id uuid,
       message_count integer NOT NULL DEFAULT 0,
       last_consolidated_count integer NOT NULL DEFAULT 0,
+      last_consolidated_offset integer NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
@@ -366,6 +367,9 @@ async function schema() {
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS branch_request_id uuid");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_curated_message_count integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS canon_version integer NOT NULL DEFAULT 0");
+  // Where inside an oversized message the next consolidation pass resumes; see
+  // migration 0027 and `planConsolidationBatch`.
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_consolidated_offset integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");

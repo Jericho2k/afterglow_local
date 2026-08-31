@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { clipMarker, consolidationTrigger, maxBatchRows, maxBatchTokens, maxPendingMessages, minBatchTokens, planConsolidationBatch } from "@/lib/consolidation-batch";
+import { chunkContinuesMarker, chunkResumeMarker, consolidationTrigger, maxBatchRows, maxBatchTokens, maxPendingMessages, minBatchTokens, planConsolidationBatch } from "@/lib/consolidation-batch";
 import { estimateTokens } from "@/lib/context";
 import type { Message } from "@/lib/types";
 
@@ -63,23 +63,65 @@ describe("chronological token-aware batching", () => {
     const batch = planConsolidationBatch(all);
     expect(batch.size).toBe(12);
     expect(batch.more).toBe(false);
-    expect(batch.clipped).toBe(false);
+    expect(batch.chunk).toBe(null);
   });
 
-  it("advances past a single message larger than the whole window, and says it abridged it", () => {
+  it("reads a single message larger than the whole window as a chunk, without consuming the row", () => {
     const giant = messages(1, 400_000);
     const batch = planConsolidationBatch([...giant, ...messages(3, 100, 1)], { maxTokens: 5_000 });
-    expect(batch.size).toBe(1);
-    expect(batch.clipped).toBe(true);
-    expect(batch.messages[0].content).toContain(clipMarker.trim());
+    // The row is NOT counted as consolidated: its tail has not been read yet.
+    expect(batch.size).toBe(0);
+    expect(batch.chunk).toMatchObject({ messageId: "m-0", from: 0, final: false });
+    expect(batch.nextOffset).toBeGreaterThan(0);
     expect(batch.tokens).toBeLessThanOrEqual(5_000);
-    // The position pointer still moves, so the story cannot wedge.
+    expect(batch.messages[0].content.endsWith(chunkContinuesMarker)).toBe(true);
     expect(batch.more).toBe(true);
   });
 
-  it("never truncates silently: a clipped message carries its marker into the prompt", () => {
-    const batch = planConsolidationBatch(messages(1, 200_000), { maxTokens: 1_000 });
-    expect(batch.messages[0].content.endsWith(clipMarker)).toBe(true);
+  it("consumes an oversized message in sequential chunks that cover all of it", () => {
+    const length = 120_000;
+    const giant = messages(1, length);
+    const covered: Array<[number, number]> = [];
+    let offset = 0;
+    let passes = 0;
+    while (passes < 200) {
+      passes += 1;
+      const batch = planConsolidationBatch(giant, { maxTokens: 5_000, startOffset: offset });
+      expect(batch.chunk).not.toBe(null);
+      covered.push([batch.chunk!.from, batch.chunk!.to]);
+      if (batch.chunk!.final) { expect(batch.size).toBe(1); expect(batch.nextOffset).toBe(0); break; }
+      expect(batch.size).toBe(0);
+      expect(batch.nextOffset).toBeGreaterThan(offset);
+      offset = batch.nextOffset;
+    }
+    // No gap: each chunk starts exactly where the last one ended.
+    expect(covered[0][0]).toBe(0);
+    for (let index = 1; index < covered.length; index += 1) expect(covered[index][0]).toBe(covered[index - 1][1]);
+    // No skipped tail.
+    expect(covered.at(-1)![1]).toBe(length);
+    // Bounded cost: it terminates in a sane number of passes.
+    expect(passes).toBeLessThan(200);
+  });
+
+  it("repeats a marked overlap so a fact straddling a boundary is not lost", () => {
+    const giant = messages(1, 60_000);
+    const second = planConsolidationBatch(giant, { maxTokens: 5_000, startOffset: 4_000 });
+    expect(second.messages[0].content).toContain(chunkResumeMarker.trim());
+    expect(second.chunk).toMatchObject({ from: 4_000 });
+  });
+
+  it("resumes where it stopped rather than restarting, so a crash cannot skip a tail", () => {
+    const giant = messages(1, 60_000);
+    const resumed = planConsolidationBatch(giant, { maxTokens: 5_000, startOffset: 20_000 });
+    expect(resumed.chunk!.from).toBe(20_000);
+    expect(resumed.chunk!.to).toBeGreaterThan(20_000);
+  });
+
+  it("starts an oversized message on its own pass rather than mixing it into a batch", () => {
+    const batch = planConsolidationBatch([...messages(3, 400, 0), ...messages(1, 400_000, 3)], { maxTokens: 5_000 });
+    expect(batch.size).toBe(3);
+    expect(batch.chunk).toBe(null);
+    expect(batch.more).toBe(true);
   });
 
   it("respects the row ceiling on a backlog of tiny messages", () => {
