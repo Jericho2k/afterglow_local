@@ -283,6 +283,25 @@ async function semanticScores(userId: string, conversationId: string, characterI
 
 export async function retrieveContinuityV2(input: { userId:string;characterId:string;conversationId:string;query:string;messageId?:string|null;limit?:number;tokenBudget?:number;at?:StoryPosition }) : Promise<RetrievalV2Result> {
   const started = Date.now(); const tokenBudget = Math.max(1000,input.tokenBudget ?? 6000);
+  /*
+   * THE ARCHIVE READ AND THE EMBEDDING CALL DO NOT DEPEND ON EACH OTHER.
+   *
+   * They used to run one after the other: read every memory, arc and canon
+   * entry for the story, and only then send the query off to be embedded and
+   * scored. That is a database round trip AND a provider round trip in series,
+   * on the critical path of every reply, for two pieces of work that share
+   * nothing — the embedding is computed from the query text alone.
+   *
+   * Started together, the pair costs the slower of the two rather than the sum.
+   * The semantic side is allowed to fail on its own without taking retrieval
+   * down with it, exactly as before; the lexical ranker is the fallback.
+   */
+  const semanticStart = memorySemanticEnabled()
+    ? semanticScores(input.userId,input.conversationId,input.characterId,input.query)
+      .then((scores) => ({ scores, available: true as const, reason: "" }))
+      .catch((error) => ({ scores: { memories:new Map<string,number>(),arcs:new Map<string,number>() }, available: false as const, reason: error instanceof Error ? error.message.slice(0,240) : "Semantic retrieval unavailable" }))
+    : Promise.resolve({ scores: { memories:new Map<string,number>(),arcs:new Map<string,number>() }, available: false as const, reason: "Semantic retrieval disabled" });
+
   const archive = await asUser(input.userId,async (client) => {
     const [memoryResult,arcResult,canonResult] = await Promise.all([
       client.query("SELECT * FROM memories WHERE user_id=$3 AND character_id=$1 AND (conversation_id=$2 OR conversation_id IS NULL) ORDER BY pinned DESC,created_at DESC",[input.characterId,input.conversationId,input.userId]),
@@ -297,11 +316,10 @@ export async function retrieveContinuityV2(input: { userId:string;characterId:st
   const remaining = Math.max(500,tokenBudget - coreTokens);
   const arcBudget = Math.min(1600,Math.max(400,Math.floor(remaining * .25)));
   const episodicBudget = Math.max(500,remaining - arcBudget);
-  let semanticAvailable = false; let fallbackReason = ""; let semantic = { memories:new Map<string,number>(),arcs:new Map<string,number>() };
-  if (memorySemanticEnabled()) {
-    try { semantic = await semanticScores(input.userId,input.conversationId,input.characterId,input.query); semanticAvailable = true; }
-    catch (error) { fallbackReason = error instanceof Error ? error.message.slice(0,240) : "Semantic retrieval unavailable"; }
-  } else fallbackReason = "Semantic retrieval disabled";
+  const semanticResult = await semanticStart;
+  const semanticAvailable = semanticResult.available;
+  const fallbackReason = semanticResult.reason;
+  const semantic = semanticResult.scores;
 
   /*
    * Where the story has reached, which is what aging is measured against.
@@ -322,7 +340,14 @@ export async function retrieveContinuityV2(input: { userId:string;characterId:st
   const arcTokens = rankedArcs.selected.reduce((sum,arc) => sum + estimateTokens(arc.summary) + 12,0);
   const runId = randomUUID();
   const diagnostics = { runId,semanticAvailable,fallbackReason,totalStoredMemories:archive.memories.length,coreCanonTokens:coreTokens,episodicTokens,arcTokens,scores:[...rankedMemories.details,...rankedArcs.details] };
-  await asUser(input.userId,async (client) => {
+  /*
+   * Recall stamps and the diagnostics row are written BEHIND the result.
+   *
+   * Nothing in the reply depends on them, and awaiting them put two more
+   * database round trips between a finished retrieval and the provider request
+   * the reader is waiting on. A failure is logged, as before.
+   */
+  void asUser(input.userId,async (client) => {
     if (rankedMemories.selected.length) await client.query("UPDATE memories SET last_recalled_at=now(),recall_count=recall_count+1 WHERE id=ANY($1::uuid[]) AND user_id=$2",[rankedMemories.selected.map((memory) => memory.id),input.userId]);
     /*
      * The relevance clock, written only for memories the QUERY matched.
