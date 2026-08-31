@@ -1,4 +1,6 @@
+import type { PoolClient } from "pg";
 import { asUser, coreCanonFromRow, memoryArcFromRow, memoryFromRow, messageFromRow, sceneStateFromRow } from "@/lib/db";
+import { generationFor, resolveVersion, versionKey, type VersionRef } from "@/lib/provenance";
 import { sceneFieldsOf } from "@/lib/scene-state";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 
@@ -38,11 +40,12 @@ import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
  * behind the administrator boundary. They answer a question about the machine;
  * the rest of this answers a question about the story.
  */
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const account = await currentAccount();
   if (!account) return unauthorized();
   const { id } = await context.params;
   const diagnostics = isAdminAccount(account);
+  const requestedVariant = Number.parseInt(new URL(request.url).searchParams.get("variant") ?? "", 10);
 
   const payload = await asUser(account.id, async (client) => {
     const messageResult = await client.query("SELECT * FROM messages WHERE id=$1 AND user_id=$2", [id, account.id]);
@@ -50,6 +53,21 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const row = messageResult.rows[0];
     const message = messageFromRow(row);
     const provenance = (row.context_provenance && typeof row.context_provenance === "object" ? row.context_provenance : {}) as Record<string, unknown>;
+
+    /*
+     * WHICH GENERATION IS BEING ASKED ABOUT.
+     *
+     * Regenerate keeps every attempt as a variant of this one row, and the
+     * columns on the row only ever described whichever attempt ran last. So the
+     * question "what did option 1 of 3 read" has to be answered from the
+     * generation record for THAT variant, not from the message.
+     *
+     * Defaults to the variant currently selected, which is the one on screen.
+     */
+    const variantIndex = Number.isInteger(requestedVariant) && requestedVariant >= 0 && requestedVariant < Math.max(1, message.variants.length)
+      ? requestedVariant
+      : message.selectedVariant;
+    const generation = await generationFor(client, account.id, message.id, variantIndex);
 
     /*
      * Explicit placeholders rather than `= ANY($1::uuid[])`.
@@ -66,10 +84,35 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       const result = await client.query(`SELECT * FROM ${table} WHERE user_id=$1 AND id IN (${placeholders})`, [account.id, ...ids]);
       return result.rows;
     };
-    const canonIds = Array.isArray(provenance.canonIds) ? provenance.canonIds.map(String).slice(0, 40) : [];
-    const memories = { rows: await byIds("memories", message.memoryIds) };
-    const arcs = { rows: await byIds("memory_arcs", message.arcIds) };
+    /*
+     * Prefer the generation record; fall back to the message's denormalised
+     * columns for a reply written before generations were recorded.
+     *
+     * The fallback is deliberately NOT a reconstruction. It reports the ids the
+     * message carried, which describe the currently-selected variant and were
+     * always true of it, and it reports the versioned parts as unrecorded rather
+     * than resolving today's text and calling it history.
+     */
+    const memoryRefs = generation ? generation.memoryVersions : message.memoryIds.map((memoryId) => ({ id: memoryId, v: 0 }));
+    const arcIds = generation ? generation.arcIds : message.arcIds;
+    const canonIds = generation
+      ? generation.canonIds.slice(0, 40)
+      : Array.isArray(provenance.canonIds) ? provenance.canonIds.map(String).slice(0, 40) : [];
+    const memories = { rows: await byIds("memories", memoryRefs.map((reference) => reference.id)) };
+    const arcs = { rows: await byIds("memory_arcs", arcIds) };
     const canon = { rows: await byIds("core_canon_entries", canonIds) };
+
+    /*
+     * The archived text of any recorded version that has since been replaced.
+     *
+     * Only versions BELOW a row's current counter can be in the archive, so the
+     * lookup is skipped entirely for the ordinary case where nothing has been
+     * edited — which is almost every reply.
+     */
+    const archivedMemories = await archivedVersions(client, account.id, "memory_versions", "memory_id", memoryRefs.filter((reference) => {
+      const current = memories.rows.find((item) => String(item.id) === reference.id);
+      return Boolean(current) && reference.v > 0 && reference.v < Number(current!.content_version || 1);
+    }));
 
     const memoryById = new Map(memories.rows.map((item) => [String(item.id), memoryFromRow(item)]));
     const arcById = new Map(arcs.rows.map((item) => [String(item.id), memoryArcFromRow(item)]));
@@ -78,19 +121,38 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     // Stored order is recall order, and every stored id produces exactly one
     // item — present or not. That equality is the whole fix.
     const items = [
-      ...message.memoryIds.map((memoryId) => {
-        const memory = memoryById.get(memoryId);
-        return memory
+      ...memoryRefs.map((reference) => {
+        const memory = memoryById.get(reference.id);
+        const current = memories.rows.find((item) => String(item.id) === reference.id);
+        /*
+         * HOW THIS MEMORY STANDS RELATIVE TO WHAT THE WRITER WAS GIVEN.
+         *
+         * `as supplied` — unchanged since. `edited since` — the reader reworded
+         * it, and the text below is the ORIGINAL, resolved from the archive.
+         * `removed since` — superseded or purged. `not recorded` — a reply from
+         * before generations were recorded, where the version is genuinely
+         * unknown and guessing would be the lie this whole change removes.
+         */
+        const historical = reference.v === 0 || !current
+          ? { content: memory?.content ?? null, state: reference.v === 0 ? "not_recorded" as const : "removed_since" as const }
+          : resolveVersion(reference, {
+            contentVersion: Number(current.content_version || 1),
+            content: String(current.content),
+            removed: String(current.status) === "superseded",
+          }, archivedMemories);
+        return memory || historical.content !== null
           ? {
-            kind: "memory" as const, id: memoryId, available: true as const,
-            content: memory.content, memoryKind: memory.kind, status: memory.status,
-            importance: memory.importance, resolution: memory.resolution,
-            origin: memory.origin ?? "consolidation",
-            scope: memory.conversationId ? ("chat" as const) : ("creation" as const),
+            kind: "memory" as const, id: reference.id, available: true as const,
+            content: historical.content ?? memory?.content ?? "",
+            historicalState: historical.state,
+            memoryKind: memory?.kind ?? "event", status: memory?.status ?? "superseded",
+            importance: memory?.importance ?? 3, resolution: memory?.resolution ?? "",
+            origin: memory?.origin ?? "consolidation",
+            scope: memory?.conversationId ? ("chat" as const) : ("creation" as const),
           }
-          : { kind: "memory" as const, id: memoryId, available: false as const };
+          : { kind: "memory" as const, id: reference.id, available: false as const, historicalState: historical.state };
       }),
-      ...message.arcIds.map((arcId) => {
+      ...arcIds.map((arcId) => {
         const arc = arcById.get(arcId);
         return arc
           ? {
@@ -119,15 +181,32 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
      * did she forget what I said an hour ago".
      */
     const storedTranscript = (provenance.transcript && typeof provenance.transcript === "object" ? provenance.transcript : null) as Record<string, unknown> | null;
-    const transcript = storedTranscript
+    const transcript = generation
       ? {
         recorded: true as const,
-        messages: Number(storedTranscript.messages || 0),
-        firstMessageId: storedTranscript.firstMessageId ? String(storedTranscript.firstMessageId) : null,
-        estimatedTokens: Number(storedTranscript.estimatedTokens || 0),
-        trimmedToFit: Number(storedTranscript.trimmedToFit || 0),
+        messages: generation.transcriptMessages,
+        firstMessageId: generation.transcriptVersions[0]?.id ?? null,
+        estimatedTokens: generation.transcriptTokens,
+        trimmedToFit: generation.transcriptTrimmed,
+        /*
+         * The exact turns, each resolved to the revision the writer was given.
+         *
+         * Message content is mutable, so an id on its own answers "what does
+         * that turn say now" rather than "what did this reply read". A turn the
+         * reader has since edited is shown as it WAS, marked `edited_since`.
+         */
+        turns: await resolvedTurns(client, account.id, generation.transcriptVersions),
       }
-      : { recorded: false as const };
+      : storedTranscript
+        ? {
+          recorded: true as const,
+          messages: Number(storedTranscript.messages || 0),
+          firstMessageId: storedTranscript.firstMessageId ? String(storedTranscript.firstMessageId) : null,
+          estimatedTokens: Number(storedTranscript.estimatedTokens || 0),
+          trimmedToFit: Number(storedTranscript.trimmedToFit || 0),
+          turns: [] as Array<{ id: string; role: string; content: string; historicalState: string }>,
+        }
+        : { recorded: false as const };
 
     /*
      * The rolling summary is reported as PRESENT AND HOW LARGE, never as text.
@@ -141,19 +220,21 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const storedSummary = (provenance.summary && typeof provenance.summary === "object" ? provenance.summary : null) as Record<string, unknown> | null;
 
     let scene: { available: boolean; fields?: ReturnType<typeof sceneFieldsOf> } = { available: false };
-    if (provenance.sceneStateId) {
+    const sceneStateId = generation?.sceneStateId ?? (provenance.sceneStateId ? String(provenance.sceneStateId) : null);
+    if (sceneStateId) {
       const sceneResult = await client.query(
         "SELECT * FROM conversation_scene_states WHERE id=$1 AND user_id=$2",
-        [String(provenance.sceneStateId), account.id],
+        [sceneStateId, account.id],
       );
       if (sceneResult.rowCount) scene = { available: true, fields: sceneFieldsOf(sceneStateFromRow(sceneResult.rows[0])) };
     }
 
     let scores: unknown[] = [];
-    if (diagnostics && provenance.retrievalRunId) {
+    const retrievalRunId = generation?.retrievalRunId ?? (provenance.retrievalRunId ? String(provenance.retrievalRunId) : null);
+    if (diagnostics && retrievalRunId) {
       const runResult = await client.query(
         "SELECT score_details,semantic_available,fallback_reason,total_stored_memories,core_canon_tokens,retrieved_episodic_tokens,arc_tokens,latency_ms FROM memory_retrieval_runs WHERE id=$1 AND user_id=$2",
-        [String(provenance.retrievalRunId), account.id],
+        [retrievalRunId, account.id],
       );
       if (runResult.rowCount) scores = [runResult.rows[0]];
     }
@@ -162,12 +243,23 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       items,
       transcript,
       scene,
-      summary: storedSummary
-        ? { recorded: true as const, used: Boolean(storedSummary.used), characters: Number(storedSummary.characters || 0) }
-        : { recorded: false as const },
+      summary: generation
+        ? { recorded: true as const, used: generation.summaryUsed, characters: generation.summaryCharacters }
+        : storedSummary
+          ? { recorded: true as const, used: Boolean(storedSummary.used), characters: Number(storedSummary.characters || 0) }
+          : { recorded: false as const },
+      variantIndex,
+      variants: Math.max(1, message.variants.length),
+      /*
+       * Whether this variant's context was recorded at all.
+       *
+       * A reply written before generations existed says so, once, rather than
+       * having every field quietly describe the newest attempt.
+       */
+      provenanceRecorded: Boolean(generation),
       counts: {
-        memories: message.memoryIds.length,
-        arcs: message.arcIds.length,
+        memories: memoryRefs.length,
+        arcs: arcIds.length,
         canon: canonIds.length,
         unavailable: items.filter((item) => !item.available).length,
         total: items.length,
@@ -178,4 +270,58 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 
   if (!payload) return Response.json({ error: "Message not found" }, { status: 404 });
   return Response.json(payload);
+}
+
+/**
+ * The archived text for a set of superseded version references.
+ *
+ * Only versions below a row's current counter were ever archived, so the caller
+ * filters to those first and this does nothing at all in the ordinary case
+ * where the reader has edited nothing.
+ */
+async function archivedVersions(client: PoolClient, userId: string, table: "memory_versions" | "message_versions", column: "memory_id" | "message_id", references: VersionRef[]) {
+  const found = new Map<string, { content: string; role?: string }>();
+  if (!references.length) return found;
+  for (const reference of references.slice(0, 80)) {
+    const result = await client.query(
+      `SELECT * FROM ${table} WHERE user_id=$1 AND ${column}=$2 AND version=$3`,
+      [userId, reference.id, reference.v],
+    );
+    if (result.rowCount) found.set(versionKey(reference), { content: String(result.rows[0].content), role: result.rows[0].role ? String(result.rows[0].role) : undefined });
+  }
+  return found;
+}
+
+/**
+ * The transcript turns a generation was given, each at the revision it was given.
+ *
+ * The reader is looking at today's transcript, so a turn they have since edited
+ * would otherwise silently claim the writer read the new wording. Bounded by the
+ * writer's own context limit, which is what bounds the recorded list.
+ */
+async function resolvedTurns(client: PoolClient, userId: string, references: VersionRef[]) {
+  if (!references.length) return [];
+  const bounded = references.slice(0, 120);
+  const placeholders = bounded.map((_reference, index) => `$${index + 2}`).join(",");
+  const rows = await client.query(
+    `SELECT id,role,content,content_version FROM messages WHERE user_id=$1 AND id IN (${placeholders})`,
+    [userId, ...bounded.map((reference) => reference.id)],
+  );
+  const current = new Map(rows.rows.map((item) => [String(item.id), item]));
+  const stale = bounded.filter((reference) => {
+    const item = current.get(reference.id);
+    return Boolean(item) && reference.v < Number(item.content_version || 1);
+  });
+  const archived = await archivedVersions(client, userId, "message_versions", "message_id", stale);
+
+  return bounded.map((reference) => {
+    const item = current.get(reference.id);
+    const resolved = resolveVersion(reference, item ? { contentVersion: Number(item.content_version || 1), content: String(item.content) } : undefined, archived);
+    return {
+      id: reference.id,
+      role: item ? String(item.role) : (archived.get(versionKey(reference))?.role ?? "assistant"),
+      content: resolved.content ?? "",
+      historicalState: resolved.state,
+    };
+  });
 }

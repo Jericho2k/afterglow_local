@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { conversationCharacter, ownedConversation } from "@/lib/access";
+import { recordGeneration } from "@/lib/provenance";
 import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
 import { streamWriterCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
@@ -517,6 +518,32 @@ export async function POST(request: Request) {
          * what keeps a creator's private definition out of it — there is no
          * field here a prompt could leak through.
          */
+        /*
+         * The exact transcript turns this generation was handed.
+         *
+         * `fitted.messages` is what survived budgeting, taken from the tail of
+         * `history`, so the same slice of `history` names them — with the
+         * revision each turn carried at the time. Ids alone were never enough:
+         * the inline editor rewrites message content in place, and selecting a
+         * different option replaces it, so an id would resolve to whatever that
+         * turn says today rather than what this writer actually read.
+         */
+        const suppliedTranscript = history.slice(Math.max(0, history.length - fitted.messages.length));
+        const generationRecord = {
+          action,
+          memoryVersions: memories.map((memory) => ({ id: memory.id, v: memory.contentVersion ?? 1 })),
+          transcriptVersions: suppliedTranscript.map((message) => ({ id: message.id, v: message.contentVersion ?? 1 })),
+          arcIds, canonIds: coreCanon.map((entry) => entry.id),
+          sceneStateId: sceneState?.id ?? null,
+          retrievalRunId: retrievalRunId || null,
+          transcriptMessages: fitted.messages.length,
+          transcriptTokens: fitted.plan.promptTokens,
+          transcriptTrimmed: fitted.dropped ?? 0,
+          summaryUsed: Boolean(currentSummary.trim()),
+          summaryCharacters: currentSummary.length,
+          continuityPlacement: placement,
+        };
+
         const contextProvenance = {
           version: 1 as const,
           transcript: {
@@ -544,6 +571,13 @@ export async function POST(request: Request) {
           // One statement per transaction: each extra round trip to a pooled
           // remote database is latency the reader would otherwise wait through.
           if (regenerateTarget) {
+            /*
+             * The message-level columns keep describing the CURRENTLY SELECTED
+             * variant, which is what they have always meant and what the older
+             * clients read. They are a denormalised convenience now; the row in
+             * message_generations below is the record that cannot be overwritten
+             * by the next regeneration.
+             */
             await asUser(account.id, (client) => client.query(
               `WITH saved AS (
                  UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[],context_provenance=$8::jsonb
@@ -563,6 +597,26 @@ export async function POST(request: Request) {
               [assistantId,conversationId,account.id,assistant,JSON.stringify(variants),memoryIds,arcIds,JSON.stringify(contextProvenance)],
             ));
           }
+          /*
+           * ONE IMMUTABLE ROW PER GENERATION.
+           *
+           * Written after the message so the foreign key resolves, and outside
+           * the branch above because the record is the same either way: what
+           * differs is only which variant index it claims. Regenerate appends,
+           * so the variant it produced is the last one; a send or a continue
+           * always writes variant 0 of a brand-new message.
+           *
+           * A failure here loses provenance for one reply and must not lose the
+           * reply, so it is logged rather than surfaced — the inspector reports
+           * "not recorded" for it, which is the truth.
+           */
+          await asUser(account.id, (client) => recordGeneration(client, {
+            ...generationRecord,
+            messageId: assistantId,
+            conversationId,
+            userId: account.id,
+            variantIndex: selectedVariant,
+          })).catch((error) => console.error("Generation provenance not recorded", error));
         } catch (error) {
           // The reader was already told the reply finished, so a failed write
           // has to be reported rather than swallowed: the text on their screen

@@ -1038,3 +1038,33 @@
 }
 .memoryDerived h3 { display: flex; align-items: center; gap: 7px; }
 .memoryDerived h3 svg { color: var(--rose2); flex: none; }
+
+/*
+ * The exact transcript turns one generation was handed.
+ *
+ * Distinct from `.memoryDerived li` because these are quotations rather than
+ * facts: a turn that has been edited since is shown AS IT WAS, and the note
+ * saying so has to sit close enough to the text that the two are read together.
+ */
+.contextTurns { list-style: none; display: grid; gap: 6px; margin: 0; padding: 0; }
+.contextTurns li {
+  min-width: 0;
+  display: grid; gap: 2px;
+  border-left: 2px solid var(--edge);
+  padding: 4px 0 4px 9px;
+  color: var(--muted); font-size: 12px; line-height: 1.5;
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.contextTurns li b {
+  color: var(--rose2); font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+/* A turn whose text has moved on since the writer read it. */
+.contextTurns li[data-state="edited_since"] { border-left-color: var(--rose2); }
+.contextTurns li[data-state="removed_since"] { opacity: .62; }
+.contextTurns li em, .contextStateNote {
+  display: block;
+  color: var(--rose2); font-size: 10px; font-style: normal;
+  letter-spacing: .04em; opacity: .85;
+}
+.contextStateNote { margin-top: 2px; }

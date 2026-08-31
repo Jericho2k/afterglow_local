@@ -137,6 +137,58 @@ async function schema() {
       latency_ms integer NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    /*
+     * One immutable row per writer generation; see migration 0028.
+     *
+     * Regenerate keeps every attempt as a variant of the SAME message row, so
+     * provenance stored on the message could only ever describe the newest
+     * attempt. This describes each of them.
+     */
+    CREATE TABLE IF NOT EXISTS message_generations (
+      id uuid PRIMARY KEY,
+      message_id uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL,
+      variant_index integer NOT NULL,
+      action text NOT NULL DEFAULT 'send',
+      memory_versions jsonb NOT NULL DEFAULT '[]'::jsonb,
+      transcript_versions jsonb NOT NULL DEFAULT '[]'::jsonb,
+      arc_ids uuid[] NOT NULL DEFAULT '{}',
+      canon_ids uuid[] NOT NULL DEFAULT '{}',
+      scene_state_id uuid,
+      retrieval_run_id uuid,
+      transcript_messages integer NOT NULL DEFAULT 0,
+      transcript_tokens integer NOT NULL DEFAULT 0,
+      transcript_trimmed integer NOT NULL DEFAULT 0,
+      summary_used boolean NOT NULL DEFAULT false,
+      summary_characters integer NOT NULL DEFAULT 0,
+      continuity_placement text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (message_id, variant_index)
+    );
+    /* The text an edit replaced, so an older generation still resolves to it. */
+    CREATE TABLE IF NOT EXISTS memory_versions (
+      id uuid PRIMARY KEY,
+      memory_id uuid NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL,
+      version integer NOT NULL,
+      content text NOT NULL,
+      kind text NOT NULL DEFAULT 'event',
+      importance smallint NOT NULL DEFAULT 3,
+      keywords text[] NOT NULL DEFAULT '{}',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (memory_id, version)
+    );
+    CREATE TABLE IF NOT EXISTS message_versions (
+      id uuid PRIMARY KEY,
+      message_id uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL,
+      version integer NOT NULL,
+      role text NOT NULL,
+      content text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (message_id, version)
+    );
     CREATE TABLE IF NOT EXISTS memory_feedback (
       id uuid PRIMARY KEY,
       user_id uuid NOT NULL,
@@ -370,6 +422,10 @@ async function schema() {
   // Where inside an oversized message the next consolidation pass resumes; see
   // migration 0027 and `planConsolidationBatch`.
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_consolidated_offset integer NOT NULL DEFAULT 0");
+  // The counter that says which archived version a recorded provenance entry
+  // refers to; see migration 0028 and src/lib/provenance.ts.
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_version integer NOT NULL DEFAULT 1");
+  await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS content_version integer NOT NULL DEFAULT 1");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
@@ -1079,7 +1135,9 @@ export function messageFromRow(row: Record<string, unknown>): Message {
   const requested = Number(row.selected_variant ?? 0);
   const selectedVariant = variants.length ? Math.min(Math.max(Number.isInteger(requested) ? requested : 0, 0), variants.length - 1) : 0;
   return { id: String(row.id), conversationId: String(row.conversation_id), role, content, variants, selectedVariant,
-    memoryIds: textArrayFromRow(row.memory_ids), arcIds: textArrayFromRow(row.memory_arc_ids), createdAt: new Date(String(row.created_at)).toISOString() };
+    memoryIds: textArrayFromRow(row.memory_ids), arcIds: textArrayFromRow(row.memory_arc_ids),
+    contentVersion: Math.max(1, Number(row.content_version || 1)),
+    createdAt: new Date(String(row.created_at)).toISOString() };
 }
 
 /** Removes memory-retrieval diagnostics from ordinary product responses. */
@@ -1102,6 +1160,7 @@ export function memoryFromRow(row: Record<string, unknown>): Memory {
     resolution: String(row.resolution || ""), resolvedAt: row.resolved_at ? new Date(String(row.resolved_at)).toISOString() : null,
     lastRecalledAt: row.last_recalled_at ? new Date(String(row.last_recalled_at)).toISOString() : null,
     recallCount: Number(row.recall_count || 0), sourceMessageCount: Number(row.source_message_count || 0),
+    contentVersion: Math.max(1, Number(row.content_version || 1)),
     scene: sceneStampFromRow(row.scene_story_day,row.scene_time_of_day,row.scene_location,row.scene_present),
     origin: (["consolidation","user","import"].includes(String(row.origin)) ? String(row.origin) : "consolidation") as Memory["origin"],
     supersededBy: row.superseded_by ? String(row.superseded_by) : null,
