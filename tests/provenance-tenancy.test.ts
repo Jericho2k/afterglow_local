@@ -32,7 +32,16 @@ describeTenancy("generation provenance is owner-scoped", () => {
   let pool: Pool;
 
   beforeAll(async () => {
-    pool = await migratedPool();
+    /*
+     * Its OWN database, not the shared one.
+     *
+     * `migratedPool()` starts by dropping and recreating the public schema, and
+     * vitest runs test files concurrently — so two suites sharing one database
+     * delete each other's fixtures halfway through, which is exactly the flake
+     * this caused before the option was used. `tenancy.test.ts` owns the
+     * default database; every other suite takes a sibling.
+     */
+    pool = await migratedPool({ database: "provenance" });
     await createAccount(pool, alice, "alice-prov@example.com");
     await createAccount(pool, bob, "bob-prov@example.com");
 
