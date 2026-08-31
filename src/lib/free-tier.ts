@@ -290,15 +290,27 @@ export function releaseFreeReservation(reservation: FreeReservation) {
  * Without this they hold capacity forever: `reserved - released` never comes
  * down and the pool looks full while nothing is running. The age threshold is
  * generous on purpose — a long generation is not an abandoned one.
+ *
+ * `before` names the cutoff outright instead of deriving it from the clock. A
+ * sweep whose boundary is "now, roughly" cannot be tested at the boundary,
+ * which is the only place a sweep is ever wrong.
  */
-export async function sweepStaleReservations(options: { olderThanMs?: number; limit?: number } = {}) {
+export async function sweepStaleReservations(options: { olderThanMs?: number; before?: Date; limit?: number } = {}) {
   const olderThanMs = options.olderThanMs ?? 15 * 60_000;
   const limit = Math.min(500, Math.max(1, options.limit ?? 200));
+  /*
+   * The cutoff is computed here rather than in SQL.
+   *
+   * `now() - make_interval(...)` says the same thing and is not portable across
+   * the parser that backs the schema tests, and a maintenance query that cannot
+   * be exercised in a test is a maintenance query nobody finds out is broken.
+   */
+  const cutoff = (options.before ?? new Date(Date.now() - olderThanMs)).toISOString();
   const stale = await query<{ id: string; user_id: string; utc_day: string; funding: FreeFunding; model_id: string }>(
     `SELECT id,user_id,utc_day,funding,model_id FROM free_tier_reservations
-      WHERE state='reserved' AND created_at < now() - make_interval(secs => $1)
+      WHERE state='reserved' AND created_at < $1
       ORDER BY created_at LIMIT $2`,
-    [Math.floor(olderThanMs / 1000), limit],
+    [cutoff, limit],
   );
   let released = 0;
   for (const row of stale.rows) {

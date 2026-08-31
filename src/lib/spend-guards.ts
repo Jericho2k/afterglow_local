@@ -131,8 +131,17 @@ export async function fundedSpendToday(day: string, userId: string) {
        FROM usage_events
        WHERE funding_source='platform_funded'
          AND task_route='rp_generation'
-         AND created_at >= $1::date AND created_at < ($1::date + 1)`,
-      [day, userId],
+         AND created_at >= $1 AND created_at < $3`,
+      /*
+       * The day boundaries are computed here rather than cast in SQL.
+       *
+       * `$1::date + 1` says the same thing and is not portable across the
+       * parser backing the schema tests — where it fails, this function returns
+       * infinity, and the funded fallback is refused for a reason that has
+       * nothing to do with money. A guard that fails closed for the wrong
+       * reason is still a guard nobody can reason about.
+       */
+      [`${day}T00:00:00.000Z`, userId, `${day}T23:59:59.999Z`],
     );
     return {
       platformUsd: Number(result.rows[0]?.platform_usd ?? 0),

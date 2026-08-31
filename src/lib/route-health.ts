@@ -135,8 +135,8 @@ export async function recordRouteOutcome(outcome: RouteOutcome) {
       `UPDATE model_route_health
           SET window_started_at=now(),successes=0,failures=0,capacity_errors=0,
               ttft_ms_total=0,ttft_samples=0,output_tokens_total=0,generation_ms_total=0
-        WHERE model_id=$1 AND window_started_at < now() - make_interval(secs => $2)`,
-      [outcome.modelId, Math.floor(windowMs / 1000)],
+        WHERE model_id=$1 AND window_started_at < $2`,
+      [outcome.modelId, new Date(Date.now() - windowMs).toISOString()],
     );
     await query(
       `UPDATE model_route_health SET
@@ -245,11 +245,21 @@ export async function routeHealth(modelIds: string[]): Promise<Map<string, Route
   const wanted = modelIds.filter((id) => id);
   if (!wanted.length) return new Map();
   try {
+    /*
+     * An explicit placeholder list rather than `= ANY($1)`.
+     *
+     * The catalogue is a handful of routes, so the statement stays small, and
+     * the array form is not portable across the in-memory parser that backs the
+     * schema tests — which quietly returns NO ROWS rather than failing. A health
+     * read that silently finds nothing is exactly the bug that would make every
+     * route look permanently healthy.
+     */
+    const placeholders = wanted.map((_, index) => `$${index + 1}`).join(",");
     const rows = await query<HealthRow>(
       `SELECT model_id,last_success_at,last_failure_at,successes,failures,capacity_errors,
               ttft_ms_total,ttft_samples,output_tokens_total,generation_ms_total
-         FROM model_route_health WHERE model_id = ANY($1)`,
-      [wanted],
+         FROM model_route_health WHERE model_id IN (${placeholders})`,
+      wanted,
     );
     return new Map(rows.rows.map((row) => [row.model_id, summarize(row)]));
   } catch (error) {
