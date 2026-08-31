@@ -163,6 +163,8 @@ export const modelPricing: Record<string, TariffRates> = {
    * allowance — and that scarcity is accounted for in free_tier_pool_days,
    * which is a count of generations rather than a sum of dollars.
    */
+  // The 0731 background candidate, at the dearest rate its ceiling admits.
+  "deepseek-v4-flash-0731": { cacheHit: 0.02, cacheMiss: 0.10, output: 0.40 },
   "ling-3.0-flash-free": { cacheHit: 0, cacheMiss: 0, output: 0 },
   "minimax-m2.5-free": { cacheHit: 0, cacheMiss: 0, output: 0 },
 };

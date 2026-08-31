@@ -583,6 +583,56 @@ const knownModels: InternalModelDefinition[] = [
     capabilities: { contextTokens: 65_536, maxOutputTokens: 65_536, thinking: false, jsonMode: false, promptCaching: false },
   },
   /*
+   * DEEPSEEK V4 FLASH 0731, VIA OPENROUTER — A MEMORY-MODEL CANDIDATE, AND A
+   * TRAP IF ANYBODY ASSUMES THE NAME MEANS WHAT IT LOOKS LIKE.
+   *
+   * Afterglow's memory consolidation runs on `deepseek/deepseek-v4-flash`
+   * through DEEPSEEK'S OWN API, and its extracted memories are the quality bar
+   * everything else is measured against. This entry is a DIFFERENT ROUTE to a
+   * DIFFERENT CHECKPOINT and is here only so a head-to-head can be run.
+   *
+   * THREE FACTS THAT MAKE THEM NOT INTERCHANGEABLE:
+   *
+   *   The undated OpenRouter slug `deepseek/deepseek-v4-flash` resolves to the
+   *   0423 revision, not to whatever DeepSeek's own endpoint currently serves.
+   *   `-0731` is a separately listed, re-post-trained GA revision.
+   *
+   *   A re-post-trained revision is a different model's behaviour under the
+   *   same family name. For a WRITER that shows up as taste; for the
+   *   CONSOLIDATOR it shows up as which facts get extracted and which open
+   *   commitments get marked resolved, and a wrongly resolved promise deletes a
+   *   thread the reader was waiting on, silently and permanently.
+   *
+   *   The route is served by around thirty upstream endpoints at prices that
+   *   differ by a lot. "Dramatically cheaper" is a statement about the cheapest
+   *   endpoint, not about the model.
+   *
+   * So it is NOT wired to any background task. `MEMORY_CONSOLIDATION_MODEL_ROUTE`
+   * still names DeepSeek's own endpoint, and moving it is a decision that
+   * requires the head-to-head in tests/eval/memory-models.test.ts to have been
+   * run and to have shown equivalence on promise resolution and hallucinated
+   * memories specifically — not on an average.
+   */
+  {
+    id: "deepseek-v4-flash-0731",
+    providerId: "openrouter",
+    providerModelId: "deepseek/deepseek-v4-flash-0731",
+    label: "DeepSeek V4 Flash 0731 (background candidate)",
+    description: "A cheaper route to a DeepSeek V4 Flash revision. Under evaluation for background memory work; not a chat writer.",
+    supportsThinking: true,
+    category: "experimental",
+    free: false,
+    capabilities: {
+      contextTokens: 1_310_720,
+      maxOutputTokens: 393_216,
+      thinking: true,
+      jsonMode: true,
+      promptCaching: true,
+      costCeiling: { promptUsdPerMillion: 0.10, completionUsdPerMillion: 0.40 },
+      dataPolicy: { dataCollection: "deny" },
+    },
+  },
+  /*
    * THE CURATED FREE ROUTES.
    *
    * They are ordinary catalogue entries because everything else about them —

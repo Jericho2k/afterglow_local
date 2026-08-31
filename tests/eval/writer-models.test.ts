@@ -47,10 +47,45 @@ const describeEval = enabled ? describe : describe.skip;
  */
 const writers = [
   { id: "mimo-v2.5", label: "MiMo V2.5" },
-  { id: "glm-4.7", label: "GLM 4.7" },
+  { id: "glm-4.7", label: "GLM 4.7 (the writer being replaced)" },
+  /*
+   * THE 2026-08 CANDIDATES.
+   *
+   * GLM 5.3 Flash appears TWICE, as its two serving profiles. That is not
+   * redundancy: the whole open question about it is whether one endpoint class
+   * is cheap-and-slow and another dear-and-fast, and a single arm routed by
+   * OpenRouter's own preference would answer neither. Both arms are the same
+   * weights and the same slug, so any quality difference between them is a
+   * finding about SERVING — quantisation, truncation, a different sampler —
+   * rather than about the model, and that is worth knowing on its own.
+   *
+   * Ling is here on price alone and Qwen3.8 Flash on curiosity: the community
+   * research pass found no roleplay signal for either, and strong benchmarks in
+   * coding and agentic work say nothing about holding a character for ninety
+   * turns. Neither is promoted on anything this file has not measured.
+   */
+  { id: "glm-5.3-flash", label: "GLM 5.3 Flash — Fast profile" },
+  { id: "glm-5.3-flash-economy", label: "GLM 5.3 Flash — Economy profile" },
+  { id: "ling-3.0-flash", label: "Ling 3.0 Flash (ultra-cheap candidate)" },
+  { id: "qwen3.8-flash", label: "Qwen3.8 Flash (experimental)" },
   { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash (incumbent)" },
   { id: "kimi-k2.6", label: "Kimi K2.6 (control)" },
 ] as const;
+
+/**
+ * THE QUESTION THIS FIELD IS ARRANGED TO ANSWER.
+ *
+ * Not "which model writes best" in the abstract — "does GLM 5.3 Flash keep
+ * enough of what makes GLM 4.7 good to replace it for most readers". So GLM 4.7
+ * is present as the incumbent to beat rather than as another candidate, Kimi is
+ * the control that separates "every model does this" from "this model does
+ * this", and the two GLM 5.3 profiles are held apart so a serving difference
+ * cannot be mistaken for a model difference.
+ *
+ * The report at the end deliberately does NOT collapse into one score. A model
+ * that is better at prose and worse at continuity is not "roughly equal", and
+ * an average would say it was.
+ */
 
 /**
  * Turns chosen to bait a false history.
@@ -87,9 +122,9 @@ function promptFor(withRule: boolean) {
   return withRule ? prompt : prompt.replace(falseHistoryRule, "");
 }
 
-type Arm = { writer: string; rule: boolean; turn: string; text: string; usage: ReturnType<typeof normalizedUsage>; ms: number; upstream?: string };
+type Arm = { writer: string; rule: boolean; turn: string; text: string; usage: ReturnType<typeof normalizedUsage>; ms: number; upstream?: string; thinking?: boolean | "off" };
 
-async function generate(writerId: string, withRule: boolean, turn: (typeof turns)[number]): Promise<Arm> {
+async function generate(writerId: string, withRule: boolean, turn: (typeof turns)[number], thinking?: boolean | "off"): Promise<Arm> {
   const { transcript } = context();
   const startedAt = Date.now();
   const response = await completionWithUsage(
@@ -101,10 +136,16 @@ async function generate(writerId: string, withRule: boolean, turn: (typeof turns
     ],
     // A stable session id per arm, so a provider that supports sticky routing
     // gets the chance to demonstrate it. H1 is partly a question about that.
-    { temperature: 0.9, maxTokens: 700, sessionId: inferenceSessionId("rp_generation", `writer-eval:${writerId}:${withRule}`) },
+    {
+      temperature: 0.9, maxTokens: 700, modelId: writerId,
+      ...(thinking === undefined ? {} : { thinking }),
+      // A stable session per ARM, including the reasoning setting: two arms
+      // sharing a session would each be measuring the other's stickiness.
+      sessionId: inferenceSessionId("rp_generation", `writer-eval:${writerId}:${withRule}:${thinking ?? "default"}`),
+    },
   );
   return {
-    writer: writerId, rule: withRule, turn: turn.id,
+    writer: writerId, rule: withRule, turn: turn.id, thinking,
     text: response.content,
     usage: normalizedUsage(response.usage ?? {}),
     ms: Date.now() - startedAt,
@@ -162,6 +203,65 @@ describeEval("writer hallucination across models", () => {
       });
       expect(verdict).toBeTruthy();
     }
+  }, 900_000);
+
+  /*
+   * SECTION E — REASONING ON VERSUS OFF, ON THE MODELS THAT CAN SWITCH IT.
+   *
+   * The catalogue already defaults GLM 5.3 Flash and Qwen3.8 Flash to no
+   * reasoning, on one piece of external evidence: independent benchmarking put
+   * GLM 5.3 Flash's median time to first token on a reasoning-heavy suite in
+   * the tens of seconds, because the model thinks before it speaks. That is a
+   * measurement of a CODING suite, and this is the arm that tells us whether it
+   * transfers — and, more importantly, whether reasoning buys any roleplay
+   * quality at all to trade against the wait.
+   *
+   * THREE STATES, NOT TWO. `undefined` takes the endpoint default, which on a
+   * hybrid reasoning model is not the same as declining — that distinction has
+   * already cost this codebase one bug, and an A/B that conflated them would be
+   * comparing "on" against "on".
+   */
+  it("runs reasoning on, off, and unstated for the switchable models", async () => {
+    const switchable = ["glm-5.3-flash", "qwen3.8-flash"] as const;
+    const arms: Arm[] = [];
+    for (const writer of switchable) {
+      for (const turn of turns.slice(0, 3)) {
+        for (const thinking of [true, "off", undefined] as const) {
+          arms.push(await generate(writer, true, turn, thinking));
+        }
+      }
+    }
+    results.push(...arms);
+
+    const lines = ["", "Reasoning A/B — same context, same turns, one parameter.", ""];
+    for (const writer of switchable) {
+      for (const thinking of [true, "off", undefined] as const) {
+        const set = arms.filter((arm) => arm.writer === writer && arm.thinking === thinking);
+        if (!set.length) continue;
+        const reasoningTokens = set.reduce((sum, arm) => sum + arm.usage.reasoningTokens, 0);
+        const output = set.reduce((sum, arm) => sum + arm.usage.completionTokens, 0);
+        const cost = set.reduce((sum, arm) => sum + (arm.usage.providerCostUsd ?? 0), 0);
+        lines.push(
+          `${writer}  reasoning=${String(thinking)}`,
+          `  avg latency ${Math.round(set.reduce((sum, arm) => sum + arm.ms, 0) / set.length)}ms`,
+          `  output ${output}  of which reasoning ${reasoningTokens} (${((reasoningTokens / Math.max(1, output)) * 100).toFixed(1)}%)`,
+          `  cost $${cost.toFixed(6)} over ${set.length} generations`,
+          `  avg reply length ${Math.round(set.reduce((sum, arm) => sum + arm.text.length, 0) / set.length)} characters`,
+          "",
+        );
+      }
+    }
+    /*
+     * WHAT TO DO WITH THE ANSWER, stated here so a reader of the output does
+     * not have to reconstruct the decision rule from the numbers: if reasoning
+     * costs latency and tokens without a judge-visible quality gain, the
+     * catalogue's `reasoningDefault: "off"` is confirmed and should stay. If it
+     * buys real quality, the default is wrong and this is the evidence to
+     * change it with.
+     */
+    lines.push("Decision rule: keep reasoningDefault:\"off\" unless the judge shows a real quality gain.", "");
+    process.stdout.write(lines.join("\n"));
+    expect(arms.length).toBeGreaterThan(0);
   }, 900_000);
 
   /*
