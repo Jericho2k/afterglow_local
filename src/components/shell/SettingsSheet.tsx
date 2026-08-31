@@ -503,9 +503,27 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
         <span className={styles.fieldLabel}>Routing &amp; cache affinity</span>
         <p className={styles.fieldHint} style={{ marginTop: 4 }}>
           Routing mode <b>{routing.routing.mode}</b>
-          {routing.routing.costCeiling ? ` · ceiling $${routing.routing.costCeiling.promptUsdPerMillion}/M in, $${routing.routing.costCeiling.completionUsdPerMillion}/M out` : ""}
+          {routing.routing.emergencyExpensiveFallback ? " · emergency expensive fallback ARMED" : ""}
           {routing.truncated ? " · window truncated, narrow the range" : ""}
         </p>
+        {/*
+          * WHAT IS GUARDING EACH MODEL, beside what it produced.
+          *
+          * Only the guarded models are listed: a row saying "no ceiling, no
+          * pool, not fundable" for every unguarded writer would bury the four
+          * that matter. The pool is shown because a price ceiling alone does
+          * not guarantee an endpoint discounts cache reads, and cached reads
+          * are most of what a long story pays for.
+          */}
+        {routing.routing.guards?.some((guard) => guard.maxPrice || guard.enforcedPool) && <ul className={styles.fieldHint} style={{ margin: "4px 0 0", paddingLeft: 16 }}>
+          {routing.routing.guards.filter((guard) => guard.maxPrice || guard.enforcedPool).map((guard) => <li key={guard.modelId}>
+            <b>{guard.modelId}</b>
+            {guard.maxPrice ? ` · ceiling $${guard.maxPrice.prompt}/M in, $${guard.maxPrice.completion}/M out` : ""}
+            {guard.enforcedPool ? ` · pool ${guard.enforcedPool.join(", ")}` : " · pool advisory"}
+            {guard.dataPolicy ? ` · ${guard.dataPolicy.dataCollection === "deny" ? "no training" : "training allowed"}` : ""}
+            {guard.fundable ? " · platform-fundable" : ""}
+          </li>)}
+        </ul>}
 
         {routing.drift.eligibleConversations > 0
           ? <p className={styles.fieldHint}>

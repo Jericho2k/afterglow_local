@@ -659,6 +659,26 @@ export type RoleplayEngineDefinition = {
   tags: string[];
 };
 
+/**
+ * What the reader has left of the free tier today.
+ *
+ * A count of THEIR remaining generations and a boolean for whether shared
+ * capacity exists at all. The platform's exact remaining figure is deliberately
+ * absent: it is a fact about Afterglow's OpenRouter account rather than about
+ * the reader, and it invites refreshing until a number goes up. Both sentences
+ * the interface needs — "free generations available today" and "today's shared
+ * free capacity has been used" — are answerable without it.
+ */
+export type FreeTierStatusView = {
+  enabled: boolean;
+  userRemaining: number;
+  userCap: number;
+  sharedCapacityAvailable: boolean;
+  fundedFallbackAvailable: boolean;
+  /** UTC midnight, so the interface can say when it comes back. */
+  resetsAt: string;
+};
+
 export type ModelCatalog = {
   providers: ProviderDefinition[];
   models: ModelDefinition[];
@@ -782,8 +802,22 @@ export type RoutingDiagnosticResponse = {
   model: string | null;
   routing: {
     mode: string;
-    costCeiling?: { promptUsdPerMillion: number; completionUsdPerMillion: number } | null;
-    enforcedAllowlist?: string[] | null;
+    /** Whether the last-attempt escape hatch above the price ceiling is armed. */
+    emergencyExpensiveFallback?: boolean;
+    /**
+     * What is actually guarding each model, read back from the server rather
+     * than remembered. A guard nobody can inspect is a guard nobody can trust,
+     * and three weeks later nobody remembers whether the ceiling was on.
+     */
+    guards?: Array<{
+      modelId: string;
+      free: boolean;
+      approvedProviders: string[];
+      maxPrice: { prompt: number; completion: number } | null;
+      enforcedPool: string[] | null;
+      dataPolicy: { dataCollection: "allow" | "deny"; zdr?: boolean } | null;
+      fundable: boolean;
+    }>;
   };
   truncated: boolean;
   generations: number;

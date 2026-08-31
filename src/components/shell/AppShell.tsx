@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {useRouter, useSearchParams} from "next/navigation";
-import type { AppSettings, Character, Conversation, Memory, Message, ModelCatalog, ModelDefinition, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
+import type { AppSettings, Character, Conversation, FreeTierStatusView, Memory, Message, ModelCatalog, ModelDefinition, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
 import { api } from "@/lib/api-client";
 import { composerPlaceholder, creationKindLine, creationSubject, creationTitle, inlineTitle } from "@/lib/creation";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
@@ -158,6 +158,7 @@ export default function AppShell() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [models, setModels] = useState<string[]>([]);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>({ providers: [], models: [], engines: [] });
+  const [freeTier, setFreeTier] = useState<FreeTierStatusView | null>(null);
   const [editing, setEditing] = useState<Character | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [recallMessage, setRecallMessage] = useState<Message | null>(null);
@@ -581,7 +582,7 @@ export default function AppShell() {
     });
     return () => listener.subscription.unsubscribe();
   }, []);
-  useEffect(() => { if (authenticated) { void loadCharacters(); void loadChatIndex().catch(() => undefined); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings; models: string[]; catalog: ModelCatalog }>("/api/settings").then((data) => { setSettings({...defaultSettings,...data.settings}); setModels(data.models ?? []); setModelCatalog(data.catalog ?? {providers:[],models:[],engines:[]}); }).catch(() => undefined); } }, [authenticated, loadCharacters, loadChatIndex, loadLibraries]);
+  useEffect(() => { if (authenticated) { void loadCharacters(); void loadChatIndex().catch(() => undefined); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings; models: string[]; catalog: ModelCatalog; freeTier?: FreeTierStatusView }>("/api/settings").then((data) => { setSettings({...defaultSettings,...data.settings}); setModels(data.models ?? []); setModelCatalog(data.catalog ?? {providers:[],models:[],engines:[]}); setFreeTier(data.freeTier ?? null); }).catch(() => undefined); } }, [authenticated, loadCharacters, loadChatIndex, loadLibraries]);
   useEffect(()=>{if(!authenticated)return;if(new URLSearchParams(window.location.search).get("verification")==="success"){setAccountNotice("Email verified — welcome to Afterglow.");const timeout=window.setTimeout(()=>setAccountNotice(""),5000);return()=>window.clearTimeout(timeout);}},[authenticated]);
   /**
    * The address the tab arrived on, applied once.
@@ -1124,7 +1125,7 @@ export default function AppShell() {
             className="sidebar-lock"
             aria-label="Sign out"
             title="Sign out"
-            onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); clearUnreadNotifications(); setSidebarOpen(false); setSettingsOpen(false); setAuthenticated(false); setProfile(null); setSettings(defaultSettings); setModels([]); setModelCatalog({providers:[],models:[],engines:[]}); }}
+            onClick={async () => { await supabaseBrowser().auth.signOut(); forgetAllStoredDrafts(); clearUnreadNotifications(); setSidebarOpen(false); setSettingsOpen(false); setAuthenticated(false); setProfile(null); setSettings(defaultSettings); setModels([]); setModelCatalog({providers:[],models:[],engines:[]}); setFreeTier(null); }}
           ><LogOut size={16} aria-hidden /></button>
         </div>
       </aside>
@@ -1278,7 +1279,7 @@ export default function AppShell() {
       {recallMessage && <ContextInspector message={recallMessage} onClose={() => setRecallMessage(null)} />}
       {storyNavigation.surface==="instructions" && conversation && <InstructionsSheet conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
       {storyNavigation.surface==="persona" && conversation && <PersonaPicker personas={personas} selectedId={conversation.personaId || activePersona?.id || null} onClose={closeStoryNavigation} onManage={() => { setStoryNavigation(closedStoryNavigation); setActiveView("personas"); }} onCreated={(persona)=>setPersonas((items)=>[persona,...items])} onSave={async (personaId) => { await updateConversationContext({personaId}); closeStoryNavigation(); }} />}
-      {storyNavigation.surface==="model" && conversation && <ModelPicker catalog={modelCatalog} conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
+      {storyNavigation.surface==="model" && conversation && <ModelPicker catalog={modelCatalog} freeTier={freeTier} conversation={conversation} onClose={closeStoryNavigation} onSave={async (changes) => { await updateConversationContext(changes); closeStoryNavigation(); }} />}
       {storyNavigation.surface==="world" && conversation && <StoryWorldPicker conversationId={conversation.id} title={selected?creationTitle(selected):"this story"} onClose={closeStoryNavigation} onChanged={setStoryWorlds} />}
     </main>
     </ShellNavProvider>
@@ -1636,11 +1637,28 @@ const availabilityLabel: Record<NonNullable<ModelDefinition["availability"]>, st
   unavailable: "Temporarily unavailable",
 };
 
-function WriterModelShelves({ models, value, onChange }: { models: ModelDefinition[]; value: string; onChange: (id: string) => void }) {
+/**
+ * What the Free shelf says about today.
+ *
+ * THE SHARED SENTENCE COMES FIRST when there is no capacity, because "you have
+ * used yours" and "today's shared capacity has been used" send a reader to
+ * entirely different remedies and only one of them is true at a time. Neither
+ * sentence quotes the platform's remaining count: that is a fact about
+ * Afterglow's OpenRouter account, not about the reader.
+ */
+function freeShelfBlurb(freeTier: FreeTierStatusView | null, fallback: string) {
+  if (!freeTier?.enabled) return fallback;
+  if (!freeTier.sharedCapacityAvailable) return "Today's shared free capacity has been used. It comes back at midnight UTC.";
+  if (freeTier.userRemaining <= 0) return "You have used your free generations for today. They come back at midnight UTC.";
+  return `${freeTier.userRemaining} of ${freeTier.userCap} free generations available today. Capacity is shared, so it is not guaranteed.`;
+}
+
+function WriterModelShelves({ models, freeTier, value, onChange }: { models: ModelDefinition[]; freeTier: FreeTierStatusView | null; value: string; onChange: (id: string) => void }) {
   return <div className="model-shelves">{modelShelves.map((shelf)=>{
     const shelved = models.filter((model)=>model.category===shelf.id);
     if (!shelved.length) return null;
-    return <section key={shelf.id}><header><strong>{shelf.label}</strong><small>{shelf.blurb}</small></header><div className="model-shelf-list">{shelved.map((model)=>
+    const blurb = shelf.id==="free" ? freeShelfBlurb(freeTier, shelf.blurb) : shelf.blurb;
+    return <section key={shelf.id}><header><strong>{shelf.label}</strong><small>{blurb}</small></header><div className="model-shelf-list">{shelved.map((model)=>
       <button key={model.id} type="button" className={model.id===value?"model-shelf-row selected":"model-shelf-row"} aria-pressed={model.id===value} onClick={()=>onChange(model.id)}>
         <span className="model-radio" aria-hidden>{model.id===value?"●":"○"}</span>
         <span>
@@ -1657,7 +1675,7 @@ function WriterModelShelves({ models, value, onChange }: { models: ModelDefiniti
   })}</div>;
 }
 
-function ModelPicker({ catalog, conversation, onClose, onSave }: { catalog: ModelCatalog; conversation: Conversation; onClose: () => void; onSave: (changes: Pick<Conversation,"providerId"|"modelId"|"rpEngineId">) => Promise<void> }) {
+function ModelPicker({ catalog, freeTier, conversation, onClose, onSave }: { catalog: ModelCatalog; freeTier: FreeTierStatusView | null; conversation: Conversation; onClose: () => void; onSave: (changes: Pick<Conversation,"providerId"|"modelId"|"rpEngineId">) => Promise<void> }) {
   const [engineId,setEngineId] = useState(conversation.rpEngineId); const [providerId,setProviderId] = useState(conversation.providerId); const [modelId,setModelId] = useState(conversation.modelId); const [busy,setBusy] = useState(false); const [advanced,setAdvanced] = useState(false); const [favorites,setFavorites] = useState<string[]>([]);
   const [section,setSection] = useState<"discover"|"favorites">("discover"); const [searchOpen,setSearchOpen] = useState(false); const [search,setSearch] = useState("");
   useEffect(()=>{try{const saved=JSON.parse(localStorage.getItem("afterglow_favorite_models")||"[]");if(Array.isArray(saved))setFavorites(saved.filter((value):value is string=>typeof value==="string"));}catch{}},[]);
@@ -1670,7 +1688,7 @@ function ModelPicker({ catalog, conversation, onClose, onSave }: { catalog: Mode
     return [engine.label,engine.description,...engine.tags].some((value)=>value.toLowerCase().includes(normalizedSearch));
   });
   function toggleFavorite(id:string){setFavorites((current)=>{const next=current.includes(id)?current.filter((item)=>item!==id):[...current,id];localStorage.setItem("afterglow_favorite_models",JSON.stringify(next));return next;});}
-  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer model-picker"><header><div><span className="eyebrow">How this story is written</span><h2>Roleplay engine</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="picker-body"><p>The engine decides how the roleplay is handled — pacing, escalation, initiative, how much the cast is kept apart. Your creation stays the character it is, and your world, persona, history and memory are unchanged when you switch.</p><div className={`model-navigation ${searchOpen?"searching":""}`}>{searchOpen?<><input autoFocus value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="Search engines" aria-label="Search engines"/><button className="icon-button" aria-label="Close search" onClick={()=>{setSearchOpen(false);setSearch("");}}><X size={16} aria-hidden /></button></>:<><button className={section==="discover"?"active":""} onClick={()=>setSection("discover")}>Discover</button><button className={section==="favorites"?"active":""} onClick={()=>setSection("favorites")}>Favorites</button><button className="model-search-button" aria-label="Search engines" onClick={()=>setSearchOpen(true)}><Search size={15} aria-hidden /></button></>}</div><div className="model-card-list">{engines.map((engine)=><article key={engine.id} className={engine.id===engineId?"model-card selected":"model-card"}><button className="model-card-main" onClick={()=>setEngineId(engine.id)}><span className="model-radio">{engine.id===engineId?"●":"○"}</span><span><strong>{engine.label}</strong><small>{engine.description}</small><span className="model-tags">{engine.adult&&<em>18+ RP</em>}{engine.tags.map((tag)=><i key={tag}>{tag}</i>)}</span></span></button><button className={favorites.includes(engine.id)?"model-favorite active":"model-favorite"} aria-label={favorites.includes(engine.id)?`Remove ${engine.label} from favourites`:`Favourite ${engine.label}`} onClick={()=>toggleFavorite(engine.id)}><Star size={15} fill={favorites.includes(engine.id)?"currentColor":"none"} aria-hidden /></button></article>)}</div>{!engines.length&&<div className="empty-library-note">{searchOpen?"No engines match that search.":"Favourite an engine in Discover and it will appear here."}</div>}<button className="advanced-model-toggle" onClick={()=>setAdvanced((value)=>!value)}><span><strong>Writer model</strong><small>{selectedModel?.label||conversation.modelId}</small></span><b><ChevronDown size={15} className={advanced?"flip":""} aria-hidden /></b></button>{advanced&&<div className="advanced-model-panel"><p>The engine above is Afterglow&apos;s brief for how to write. The writer model is the language model that writes to it — a different capability, not a different style.</p><SelectField label="Provider" value={providerId} onChange={(value)=>{setProviderId(value);setModelId(catalog.models.find((model)=>model.providerId===value)?.id||"");}} options={catalog.providers.map((provider)=>({value:provider.id,label:provider.label}))}/><WriterModelShelves models={models} value={selectedModel?.id||modelId} onChange={setModelId}/></div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!selectedModel} onClick={async()=>{if(!selectedModel)return;setBusy(true);try{await onSave({providerId,modelId:selectedModel.id,rpEngineId:engineId});}finally{setBusy(false);}}}>{busy?"Switching…":"Use engine"}</button></footer></aside></div>;
+  return <div className="modal-backdrop drawer-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)onClose();}}><aside className="memory-drawer picker-drawer model-picker"><header><div><span className="eyebrow">How this story is written</span><h2>Roleplay engine</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} aria-hidden /></button></header><div className="picker-body"><p>The engine decides how the roleplay is handled — pacing, escalation, initiative, how much the cast is kept apart. Your creation stays the character it is, and your world, persona, history and memory are unchanged when you switch.</p><div className={`model-navigation ${searchOpen?"searching":""}`}>{searchOpen?<><input autoFocus value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="Search engines" aria-label="Search engines"/><button className="icon-button" aria-label="Close search" onClick={()=>{setSearchOpen(false);setSearch("");}}><X size={16} aria-hidden /></button></>:<><button className={section==="discover"?"active":""} onClick={()=>setSection("discover")}>Discover</button><button className={section==="favorites"?"active":""} onClick={()=>setSection("favorites")}>Favorites</button><button className="model-search-button" aria-label="Search engines" onClick={()=>setSearchOpen(true)}><Search size={15} aria-hidden /></button></>}</div><div className="model-card-list">{engines.map((engine)=><article key={engine.id} className={engine.id===engineId?"model-card selected":"model-card"}><button className="model-card-main" onClick={()=>setEngineId(engine.id)}><span className="model-radio">{engine.id===engineId?"●":"○"}</span><span><strong>{engine.label}</strong><small>{engine.description}</small><span className="model-tags">{engine.adult&&<em>18+ RP</em>}{engine.tags.map((tag)=><i key={tag}>{tag}</i>)}</span></span></button><button className={favorites.includes(engine.id)?"model-favorite active":"model-favorite"} aria-label={favorites.includes(engine.id)?`Remove ${engine.label} from favourites`:`Favourite ${engine.label}`} onClick={()=>toggleFavorite(engine.id)}><Star size={15} fill={favorites.includes(engine.id)?"currentColor":"none"} aria-hidden /></button></article>)}</div>{!engines.length&&<div className="empty-library-note">{searchOpen?"No engines match that search.":"Favourite an engine in Discover and it will appear here."}</div>}<button className="advanced-model-toggle" onClick={()=>setAdvanced((value)=>!value)}><span><strong>Writer model</strong><small>{selectedModel?.label||conversation.modelId}</small></span><b><ChevronDown size={15} className={advanced?"flip":""} aria-hidden /></b></button>{advanced&&<div className="advanced-model-panel"><p>The engine above is Afterglow&apos;s brief for how to write. The writer model is the language model that writes to it — a different capability, not a different style.</p><SelectField label="Provider" value={providerId} onChange={(value)=>{setProviderId(value);setModelId(catalog.models.find((model)=>model.providerId===value)?.id||"");}} options={catalog.providers.map((provider)=>({value:provider.id,label:provider.label}))}/><WriterModelShelves models={models} freeTier={freeTier} value={selectedModel?.id||modelId} onChange={setModelId}/></div>}</div><footer className="drawer-footer"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy||!selectedModel} onClick={async()=>{if(!selectedModel)return;setBusy(true);try{await onSave({providerId,modelId:selectedModel.id,rpEngineId:engineId});}finally{setBusy(false);}}}>{busy?"Switching…":"Use engine"}</button></footer></aside></div>;
 }
 
 /**
