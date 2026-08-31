@@ -115,10 +115,23 @@ describe("same-model failover", () => {
   });
 
   it("pins a single endpoint only when an operator asks for a benchmark", () => {
+    vi.stubEnv("PROVIDER_ROUTING_MODE", "benchmark");
     vi.stubEnv("PIN_UPSTREAM_PROVIDER", "mimo-v2.5:xiaomi");
     expect(providerPolicyFor("mimo-v2.5", 0, [])).toEqual({ only: ["xiaomi"], allowFallbacks: false });
     // Scoped to the model named, so pinning one cannot pin the rest.
     expect(providerPolicyFor("midnight-cherry", 0, [])?.only).toBeUndefined();
+    vi.unstubAllEnvs();
+  });
+
+  it("ignores a pin left behind outside benchmark mode", () => {
+    // The variable is set for one measurement run and unset afterwards, and
+    // "afterwards" is where it gets forgotten. A stale pin routes every
+    // conversation to one host with fallbacks off; requiring the mode as well
+    // makes a forgotten pin inert rather than an outage.
+    vi.stubEnv("PIN_UPSTREAM_PROVIDER", "mimo-v2.5:xiaomi");
+    const policy = providerPolicyFor("mimo-v2.5", 0, []);
+    expect(policy?.only).toBeUndefined();
+    expect(policy?.allowFallbacks).toBe(true);
     vi.unstubAllEnvs();
   });
 
@@ -221,8 +234,18 @@ describe("an empty reply is diagnosed rather than guessed at", () => {
     const { events } = await generate();
     expect(events.find((event) => event.type === "done")).toBeTruthy();
     expect(streamCompletion).toHaveBeenCalledTimes(2);
-    const retryOptions = streamCompletion.mock.calls[1][1] as { thinking?: boolean; excludeProviders?: string[] };
-    expect(retryOptions.thinking).toBe(false);
+    const retryOptions = streamCompletion.mock.calls[1][1] as { thinking?: boolean | "off"; excludeProviders?: string[] };
+    /*
+     * "off", not false, and the difference was a live bug.
+     *
+     * `false` OMITS the `reasoning` parameter, which accepts whatever the
+     * endpoint does by default — and on a hybrid reasoning model such as GLM
+     * 4.7 that default is reasoning. So this retry, taken precisely because a
+     * generation had spent its whole envelope thinking and returned no prose,
+     * used to ask for exactly the same thing again and could burn a second
+     * envelope identically. `"off"` states the refusal.
+     */
+    expect(retryOptions.thinking).toBe("off");
   });
 
   it("asks a different host on the retry after a silent one", async () => {

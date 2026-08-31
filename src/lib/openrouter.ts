@@ -83,7 +83,9 @@ export const maxAttempts = attemptDelays.length;
 
 /** The `provider` block for one attempt, or undefined for OpenRouter's default. */
 function providerBlock(modelId: string | undefined, attempt: number, failed: string[]) {
-  const policy = modelId ? providerPolicyFor(modelId, attempt, failed) : null;
+  const policy = modelId
+    ? providerPolicyFor(modelId, attempt, failed, { finalAttempt: attempt >= attemptDelays.length - 1 })
+    : null;
   if (policy) {
     return {
       ...(policy.order ? { order: policy.order } : {}),
@@ -91,6 +93,13 @@ function providerBlock(modelId: string | undefined, attempt: number, failed: str
       ...(policy.ignore ? { ignore: policy.ignore } : {}),
       allow_fallbacks: policy.allowFallbacks,
       ...(policy.sort ? { sort: policy.sort } : {}),
+      /*
+       * `max_price` is per MILLION tokens and is OpenRouter's own filter, so a
+       * host above the ceiling is never selected in the first place. Doing it
+       * here rather than by listing hosts means the guard keeps working when a
+       * provider re-prices, and cannot be defeated by a renamed slug.
+       */
+      ...(policy.maxPrice ? { max_price: { prompt: policy.maxPrice.prompt, completion: policy.maxPrice.completion } } : {}),
     };
   }
   // No catalogue policy: keep the previous behaviour exactly — untouched on the
@@ -229,7 +238,13 @@ function commonFields(options: ProviderCompletionOptions) {
   return {
     usage: { include: true },
     ...(options.sessionId ? { session_id: options.sessionId } : {}),
-    ...(options.thinking ? { reasoning: { enabled: true } } : {}),
+    /*
+     * Three states, not two. See `CompletionOptions.thinking`: omitting
+     * `reasoning` takes the endpoint's own default, which on a hybrid reasoning
+     * model means reasoning, and is therefore not a way to decline it.
+     */
+    ...(options.thinking === true ? { reasoning: { enabled: true } } : {}),
+    ...(options.thinking === "off" ? { reasoning: { enabled: false } } : {}),
   };
 }
 

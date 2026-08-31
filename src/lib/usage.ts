@@ -38,7 +38,7 @@ export const pricingAsOf = "2026-08-31";
  * re-priced analysis can tell which table produced a given row, without
  * touching the row.
  */
-export const pricingVersion = 2;
+export const pricingVersion = 3;
 
 /** How a stored cost figure was arrived at. */
 export type CostBasis =
@@ -90,6 +90,26 @@ export const modelPricing: Record<string, TariffRates> = {
   "mimo-v2.5": { cacheHit: 0.00255, cacheMiss: 0.119, output: 0.238 },
   "mimo-v2.5-pro": { cacheHit: 0.0028, cacheMiss: 0.3045, output: 0.609 },
   "midnight-cherry": { cacheHit: 0.55, cacheMiss: 0.55, output: 0.80 },
+  /*
+   * GLM 4.7, at the DEAREST endpoint its cost ceiling admits.
+   *
+   * It had no entry at all, so a GLM generation whose response arrived without
+   * `usage.cost` — a stream that ended early, an endpoint that omitted it — was
+   * recorded as `unpriced` and counted as costing nothing. A writer silently
+   * missing from a spend report is the worst kind of wrong number, because
+   * nothing about the report looks broken.
+   *
+   * Z.AI's rates rather than DeepInfra's on purpose. Several endpoints serve
+   * this slug at different prices and a fallback cannot know which one ran;
+   * quoting the cheapest would understate spend exactly when the cheapest
+   * endpoint is the one that failed to report. The ceiling in
+   * `src/lib/provider.ts` guarantees no eligible endpoint is dearer than this,
+   * so the estimate is an upper bound by construction.
+   *
+   * It remains a FALLBACK. OpenRouter reports the real charge on a healthy
+   * response and `recordUsageEvent` always prefers it.
+   */
+  "glm-4.7": { cacheHit: 0.11, cacheMiss: 0.60, output: 2.20 },
 };
 
 export function normalizedUsage(usage: LLMUsage) {

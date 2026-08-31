@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Database, Download, Gauge, KeyRound, ShieldCheck, Sparkles, Upload } from "lucide-react";
-import type { AppSettings, ModelCatalog, UsageResponse } from "@/lib/types";
+import type { AppSettings, ModelCatalog, RoutingDiagnosticResponse, UsageResponse } from "@/lib/types";
 import type { ByokMetadata, WriterFundingPreference } from "@/lib/byok";
 import type { UsageRangeId } from "@/lib/usage-range";
 import { api } from "@/lib/api-client";
@@ -68,6 +68,7 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
 }) {
   const [form, setForm] = useState(settings);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
+  const [routing, setRouting] = useState<RoutingDiagnosticResponse | null>(null);
   const [usageRange, setUsageRange] = useState<UsageRangeId>("30d");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -114,6 +115,18 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
       .then((data) => { if (live) setUsage(data); })
       .catch(() => undefined)
       .finally(() => { if (live) setUsageLoading(false); });
+    /*
+     * The routing diagnostic rides the SAME window as the ledger above.
+     *
+     * Two panels describing different periods is worse than one panel
+     * describing the wrong one, so the range chips drive both. It is fetched
+     * separately rather than folded into /api/usage because it is a per-
+     * conversation scan rather than an aggregate, and a failure to produce it
+     * must not take the spend report down with it.
+     */
+    api<RoutingDiagnosticResponse>(`/api/usage/routing?${query}`)
+      .then((data) => { if (live) setRouting(data); })
+      .catch(() => { if (live) setRouting(null); });
     return () => { live = false; };
   }, [isAdmin, usageRange, customFrom, customTo]);
 
@@ -475,6 +488,61 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
       <p className={styles.fieldHint}>
         Cached input is charged at a fraction of fresh input, so a high cache hit rate on a long conversation is where the saving is.
       </p>
+
+      {/*
+        * ROUTING & CACHE AFFINITY.
+        *
+        * The breakdown above sums across every conversation at once, which
+        * means it looks exactly the same whether ONE story bounced between
+        * four upstream hosts — paying fresh-input prices to re-read a prompt
+        * it had already sent — or FOUR stories each settled on a host and
+        * stayed warm. Those need opposite responses, so this panel asks the
+        * question per conversation instead of per account.
+        */}
+      {routing && <div style={{ marginTop: 18 }}>
+        <span className={styles.fieldLabel}>Routing &amp; cache affinity</span>
+        <p className={styles.fieldHint} style={{ marginTop: 4 }}>
+          Routing mode <b>{routing.routing.mode}</b>
+          {routing.routing.costCeiling ? ` · ceiling $${routing.routing.costCeiling.promptUsdPerMillion}/M in, $${routing.routing.costCeiling.completionUsdPerMillion}/M out` : ""}
+          {routing.truncated ? " · window truncated, narrow the range" : ""}
+        </p>
+
+        {routing.drift.eligibleConversations > 0
+          ? <p className={styles.fieldHint}>
+              {routing.drift.driftedConversations === 0
+                ? <>No provider drift: all {routing.drift.eligibleConversations} conversations with {routing.drift.minimumGenerations}+ generations stayed on one upstream host.</>
+                : <><b>{routing.drift.driftedConversations} of {routing.drift.eligibleConversations}</b> conversations changed upstream host mid-story ({routing.drift.totalSwitches} switches). Every switch is a cold prefix billed at the fresh rate.</>}
+            </p>
+          : <p className={styles.fieldHint}>Not enough writer generations in this range to say whether anything drifted.</p>}
+
+        <div className={styles.stack} style={{ marginTop: 8 }}>
+          {routing.byProvider.map((item) => <div key={item.provider} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+              <strong style={{ fontSize: 13 }}>{item.provider}</strong>
+              <br />
+              <small className={styles.fieldHint}>
+                {item.generations} gens across {item.conversations} chats · {percent(item.cacheRatio)} cached
+                {item.effectiveInputUsdPerMillion != null ? ` · $${item.effectiveInputUsdPerMillion.toFixed(3)}/M effective in` : ""}
+                {item.reasoningTokens > 0 ? ` · ${number(item.reasoningTokens)} reasoning tokens` : ""}
+                {item.avgTtftMs != null ? ` · ${item.avgTtftMs.toLocaleString()}ms to first token` : ""}
+              </small>
+            </span>
+            <b style={{ fontVariantNumeric: "tabular-nums", fontSize: 12 }}>
+              {item.costPer100Generations != null ? `${usd(item.costPer100Generations)} / 100` : "—"}
+            </b>
+          </div>)}
+        </div>
+
+        {routing.drift.worst.length > 0 && <div style={{ marginTop: 10 }}>
+          <small className={styles.fieldHint}>
+            Most-switched conversations: {routing.drift.worst.map((item) => `${item.conversationId.slice(0, 8)} (${item.providerSwitches} switches over ${item.generations} gens, ${percent(item.cacheRatio)} cached)`).join(" · ")}
+          </small>
+        </div>}
+
+        <p className={styles.fieldHint} style={{ marginTop: 8 }}>
+          Effective input $/M is <b>derived</b>: the charge OpenRouter reported, less the output half priced at the endpoint&rsquo;s list rate. Cache ratio and cost are measured. An endpoint with no known list price shows no effective rate rather than a guess.
+        </p>
+      </div>}
     </section>}
 
     <section className={styles.card}>

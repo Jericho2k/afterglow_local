@@ -65,9 +65,12 @@ export async function completionWithUsage(
 
 export async function streamCompletion(
   messages: ChatMessage[],
-  options: { signal?: AbortSignal; model?: string; maxTokens?: number; temperature?: number; thinking?: boolean } = {},
+  options: { signal?: AbortSignal; model?: string; maxTokens?: number; temperature?: number; thinking?: boolean | "off" } = {},
 ) {
-  const thinking = Boolean(options.thinking);
+  // Only `true` asks for reasoning. DeepSeek's own API already states the
+  // negative case explicitly below, so `false` and `"off"` mean the same thing
+  // here — but `Boolean("off")` is TRUE, so the string must never reach it.
+  const thinking = options.thinking === true;
   const response = await request({
     model: options.model || model(), messages,
     thinking: { type: thinking ? "enabled" : "disabled" },

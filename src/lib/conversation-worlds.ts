@@ -107,10 +107,34 @@ export async function ensureConversationWorlds(client: PoolClient, userId: strin
  */
 export async function conversationWorldRecords(client: PoolClient, userId: string, conversationId: string) {
   const result = await client.query(
+    /*
+     * ORDERED BY WHEN THE WORLD WAS ATTACHED, NOT BY WHEN IT WAS LAST EDITED.
+     *
+     * This ordering is not presentation — it decides the byte order of the
+     * LOREBOOK section, which sits near the top of the stable half of the
+     * prompt. Everything after the first byte that moves is billed as fresh
+     * input, so an unstable order here is expensive in a way an unstable order
+     * in a list of cards is not.
+     *
+     * `updated_at DESC` was unstable in two separate ways. Two worlds attached
+     * together share a timestamp to the microsecond, and Postgres is free to
+     * return tied rows in either order on any given query — so the same
+     * conversation could serialise its lore two different ways on consecutive
+     * turns and pay for the whole prompt twice. And editing ANY attached world
+     * moved it to the front, displacing worlds whose text had not changed at
+     * all.
+     *
+     * Attachment time with the world id as a tiebreaker is a TOTAL order over
+     * immutable columns, so it cannot tie and cannot drift. It changes nothing
+     * a reader or a writer can perceive: the same worlds, the same lore, the
+     * same section — only a fixed sequence instead of an incidental one. The
+     * card queries above and below keep recency ordering, which is the right
+     * answer for a list somebody is looking at.
+     */
     `SELECT w.* FROM worlds w
      JOIN conversation_worlds cw ON cw.world_id=w.id
      WHERE cw.conversation_id=$2 AND cw.user_id=$1 AND ${readable}
-     ORDER BY w.updated_at DESC`,
+     ORDER BY cw.created_at ASC, w.id ASC`,
     [userId, conversationId],
   );
   return result.rows;

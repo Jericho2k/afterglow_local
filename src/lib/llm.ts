@@ -22,7 +22,28 @@ export type CompletionOptions = {
   maxTokens?: number;
   temperature?: number;
   json?: boolean;
-  thinking?: boolean;
+  /**
+   * Whether to ask the endpoint for reasoning, in three distinguishable states.
+   *
+   *   true    ask for it
+   *   false   say nothing, and take whatever the endpoint does by default
+   *   "off"   ask for NONE, explicitly
+   *
+   * The difference between the last two is not pedantry, and it was a live bug.
+   * GLM 4.7 is a hybrid reasoning model, and several endpoints serving models
+   * like it reason unless told not to — so OMITTING the parameter is not the
+   * same as declining reasoning, it is declining to have an opinion. The empty-
+   * reply retry in the chat route relied on `false` meaning the former: having
+   * watched a generation spend its whole envelope on reasoning and return no
+   * prose, it retried "asking for none" and in fact asked for exactly the same
+   * thing again.
+   *
+   * `"off"` is only ever sent to an endpoint that accepts the `reasoning`
+   * parameter at all — `ModelCapabilities.thinking` — because sending an
+   * unknown parameter to one that does not is a 400 with a reader's turn
+   * attached to it.
+   */
+  thinking?: boolean | "off";
   /**
    * Opaque provider-stickiness hint for one conversation and one task.
    * Built by src/lib/inference-session.ts; adapters that have no such concept

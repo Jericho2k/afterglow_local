@@ -33,17 +33,57 @@ export function recallText(messages: Message[], fallback = "") {
 /**
  * How many messages the anchor moves in one go.
  *
- * Every step is one cache invalidation, so a larger step means a longer-lived
- * prefix and a slightly wider window; a smaller step means a tighter window
- * and more frequent invalidation. Eight is roughly four exchanges: long enough
- * that a normal session re-anchors a handful of times, small enough that the
- * extra transcript stays inside the growth allowance below.
+ * Every step is one cache invalidation, so this is a straight economic
+ * trade and it now has numbers behind it rather than a plausible-sounding
+ * guess. Measured through the real prompt builder over a long story
+ * (tests/prompt-cacheability.test.ts):
+ *
+ *   a turn where the anchor HOLDS reuses about 80% of the request
+ *   a turn where the anchor MOVES reuses about 46%
+ *
+ * A step of S messages re-anchors once every S/2 turns, since a turn adds two
+ * messages. So a smaller step pays that ~34-point drop more often, while a
+ * larger step carries up to S-1 extra messages of transcript in every request —
+ * which are, by construction, inside the cached prefix, and therefore billed at
+ * the CACHED rate rather than the fresh one.
+ *
+ * That is the whole calculation, and at GLM 4.7's DeepInfra rates ($0.40/M
+ * fresh against $0.08/M cached — a five-to-one ratio) it is not close. The
+ * amortised cost of re-anchoring falls as 1/S while the cost of the extra
+ * carried transcript rises as S, and the two cross well above eight. Sixteen is
+ * deliberately short of the arithmetic optimum: the model assumes
+ * average-length replies, and a story of unusually long ones would carry more
+ * tokens than the sweep predicts. Half the theoretical gain with half the
+ * exposure is the right side to err on.
+ *
+ * IT COSTS NO CONTINUITY AT ANY VALUE. The anchored window is always a superset
+ * of what the budget rule alone would select — rounding down can only move the
+ * window's start earlier — so a larger step buys cache with a few extra cached
+ * tokens, never with dropped context.
+ *
+ * `TRANSCRIPT_ANCHOR_STEP` lets an operator retune without a deploy. It is
+ * clamped to a sane band: below 2 the anchor moves every turn and the whole
+ * mechanism is off, and an unbounded value would let one variable put a very
+ * long transcript into every request.
  */
-export const anchorStep = 8;
+export const defaultAnchorStep = 16;
+
+export function anchorStepFor() {
+  const configured = Number(process.env.TRANSCRIPT_ANCHOR_STEP);
+  if (!Number.isFinite(configured)) return defaultAnchorStep;
+  return Math.min(64, Math.max(2, Math.floor(configured)));
+}
+
+/**
+ * Retained as a constant for callers that only need the shipped default —
+ * chiefly tests asserting on rollover frequency. The request path calls
+ * `anchorStepFor()` so an operator override actually takes effect.
+ */
+export const anchorStep = defaultAnchorStep;
 
 /** Rows to read so the anchored window always has the messages it may want. */
-export function anchoredFetchLimit(maxMessages: number) {
-  return Math.max(1, maxMessages) + anchorStep;
+export function anchoredFetchLimit(maxMessages: number, step = anchorStepFor()) {
+  return Math.max(1, maxMessages) + step;
 }
 
 /**
@@ -79,6 +119,7 @@ export function selectAnchoredMessages(
   totalMessages: number,
   maxMessages: number,
   tokenBudget: number,
+  step = anchorStepFor(),
 ) {
   const baseline = selectRecentMessages(available, maxMessages, tokenBudget);
   const total = Math.max(totalMessages, available.length);
@@ -86,7 +127,7 @@ export function selectAnchoredMessages(
   if (baseline.length >= total) return baseline;
 
   const dropped = total - baseline.length;
-  const anchorDropped = Math.floor(dropped / anchorStep) * anchorStep;
+  const anchorDropped = Math.floor(dropped / step) * step;
   const want = total - anchorDropped;
   // Bounded by what was actually read: the caller fetches
   // `anchoredFetchLimit(maxMessages)` rows, so `want` normally fits.
