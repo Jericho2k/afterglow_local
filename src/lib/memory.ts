@@ -9,7 +9,7 @@ import { estimateTokens } from "./context";
 import { providerModelId, taskModelSelection } from "./provider";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled } from "./memory-flags";
-import { isStaleCommitment, protectedTierBudget, protectedTierLimit, recencyScore } from "./memory-scoring";
+import { isStaleCommitment, protectedTierBudget, protectedTierLimit, recencyScore, storyPositionFrom, type StoryPosition } from "./memory-scoring";
 import { consolidationTrigger, maxBatchRows, planConsolidationBatch } from "./consolidation-batch";
 import { invalidateSceneStatesAfter, sceneSpanBetween, sceneStampAt } from "./scene-state-store";
 import type { PoolClient } from "pg";
@@ -77,7 +77,15 @@ function memoryCost(memory: Memory) {
   return estimateTokens(`${memory.content} ${memory.resolution}`) + 16;
 }
 
-export function rankMemories(memories: Memory[], input: string, limit = 8, tokenBudget = 6000, now = Date.now()) {
+/**
+ * `at` is where the story has reached, in the story's own units.
+ *
+ * It replaces the wall clock this ranker used to age memories by. When a caller
+ * cannot supply it, the archive's own newest position stands in; see
+ * `storyPositionFrom` for why that errs on the side of remembering.
+ */
+export function rankMemories(memories: Memory[], input: string, limit = 8, tokenBudget = 6000, at?: StoryPosition) {
+  const position = at ?? storyPositionFrom(memories);
   const inputTerms = terms(input);
   const ranked = memories
     .map((memory) => {
@@ -87,10 +95,10 @@ export function rankMemories(memories: Memory[], input: string, limit = 8, token
       const phraseHits = memory.keywords.filter((key) => input.toLowerCase().includes(key.toLowerCase())).length;
       // Staleness and decay are shared with the V2 ranker so the two paths
       // cannot disagree about how a memory ages; see src/lib/memory-scoring.ts.
-      const stale = isStaleCommitment(memory, now);
+      const stale = isStaleCommitment(memory, position);
       const activeBoost = memory.status === "active" && protectedKinds.has(memory.kind) && !stale ? 18 : 0;
       const kindBoost = essentialKinds.has(memory.kind) ? 7 : memory.kind === "event" ? 2 : 0;
-      const score = phraseHits * 24 + overlap * 5 + memory.importance * 3 + activeBoost + kindBoost + recencyScore(memory, now);
+      const score = phraseHits * 24 + overlap * 5 + memory.importance * 3 + activeBoost + kindBoost + recencyScore(memory, position);
       return { memory, score, overlap, phraseHits, stale };
     })
     .filter(({ memory }) => memory.status !== "superseded")
@@ -204,12 +212,12 @@ export function rankArcs(arcs: MemoryArc[], input: string, limit = 4, tokenBudge
  * apply across every *account* chatting with a shared public character, which
  * is why the owner filter is not optional here.
  */
-export async function relevantMemories(client: PoolClient, userId: string, characterId: string, conversationId: string, input: string, limit = 8, tokenBudget = 6000) {
+export async function relevantMemories(client: PoolClient, userId: string, characterId: string, conversationId: string, input: string, limit = 8, tokenBudget = 6000, at?: StoryPosition) {
   const result = await client.query(
     "SELECT * FROM memories WHERE user_id = $3 AND character_id = $1 AND (conversation_id = $2 OR conversation_id IS NULL) ORDER BY pinned DESC, created_at DESC",
     [characterId,conversationId,userId],
   );
-  return rankMemories(result.rows.map(memoryFromRow), input, limit, tokenBudget);
+  return rankMemories(result.rows.map(memoryFromRow), input, limit, tokenBudget, at);
 }
 
 export async function relevantContinuity(client: PoolClient, userId: string, characterId: string, conversationId: string, input: string, limit = 8, tokenBudget = 6000) {

@@ -426,6 +426,9 @@ async function schema() {
   // refers to; see migration 0028 and src/lib/provenance.ts.
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_version integer NOT NULL DEFAULT 1");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS content_version integer NOT NULL DEFAULT 1");
+  // When this memory last earned its place on relevance ALONE, in messages; see
+  // migration 0029 and `isStaleCommitment`. Never written by the protected tier.
+  await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_relevance_match_count integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS selected_variant integer NOT NULL DEFAULT 0");
   await pool().query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS memory_ids uuid[] NOT NULL DEFAULT '{}'");
@@ -1161,6 +1164,7 @@ export function memoryFromRow(row: Record<string, unknown>): Memory {
     lastRecalledAt: row.last_recalled_at ? new Date(String(row.last_recalled_at)).toISOString() : null,
     recallCount: Number(row.recall_count || 0), sourceMessageCount: Number(row.source_message_count || 0),
     contentVersion: Math.max(1, Number(row.content_version || 1)),
+    lastRelevanceMatchCount: Number(row.last_relevance_match_count || 0),
     scene: sceneStampFromRow(row.scene_story_day,row.scene_time_of_day,row.scene_location,row.scene_present),
     origin: (["consolidation","user","import"].includes(String(row.origin)) ? String(row.origin) : "consolidation") as Memory["origin"],
     supersededBy: row.superseded_by ? String(row.superseded_by) : null,

@@ -375,6 +375,14 @@ export type Memory = {
   recallCount: number;
   sourceMessageCount: number;
   /**
+   * When this memory last earned its place on RELEVANCE ALONE, in messages.
+   *
+   * Deliberately not `lastRecalledAt`, which the protected tier writes on every
+   * turn and which therefore cannot be evidence that a protected memory still
+   * matters. See `isStaleCommitment`. Absent means never.
+   */
+  lastRelevanceMatchCount?: number;
+  /**
    * Which revision of the text this row holds; see src/lib/provenance.ts.
    * Absent means 1, the revision a memory has until it is first edited.
    */

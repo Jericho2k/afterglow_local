@@ -215,6 +215,16 @@ export async function POST(request: Request) {
         // continued rather than the reader's older message.
         query:focusedRetrievalQuery(history,(action === "continue" ? continuationRetrievalAnchor : "") || lastUserInput || character.scenario || character.name,sceneRetrievalHint),
         messageId:userMessageId,limit:settings.memoryLimit,tokenBudget:settings.memoryTokenBudget,
+        /*
+         * Where the story has reached, in the story's own units.
+         *
+         * Aging used to be measured on the wall clock, which is the wrong clock
+         * for fiction: a roleplay can sit untouched for three real months while
+         * five fictional minutes pass, and every promise in it would go stale
+         * inside a scene that had not moved. Message count and the live scene's
+         * story day are the two clocks that actually track the story.
+         */
+        at:{ messageCount:Number(row.message_count || 0), storyDay:sceneState ? sceneFieldsOf(sceneState).storyDay ?? null : null },
       });
       ({memories,arcs,coreCanon}=continuity);
       retrievalRunId = continuity.diagnostics.runId;
