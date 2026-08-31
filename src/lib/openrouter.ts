@@ -100,6 +100,19 @@ function providerBlock(modelId: string | undefined, attempt: number, failed: str
        * provider re-prices, and cannot be defeated by a renamed slug.
        */
       ...(policy.maxPrice ? { max_price: { prompt: policy.maxPrice.prompt, completion: policy.maxPrice.completion } } : {}),
+      /*
+       * The privacy floor, enforced where the endpoint catalogue lives.
+       *
+       * `data_collection: "deny"` excludes endpoints that store prompts
+       * non-transiently to train on them; `zdr` narrows further to endpoints
+       * that do not retain the prompt at rest at all. They are separate
+       * guarantees and a provider can offer one without the other, so both are
+       * sent when a model asks for both. Doing this here rather than by
+       * comparing provider names in Afterglow means the filter keeps working
+       * when a provider changes its policy.
+       */
+      ...(policy.dataCollection ? { data_collection: policy.dataCollection } : {}),
+      ...(policy.zdr ? { zdr: true } : {}),
     };
   }
   // No catalogue policy: keep the previous behaviour exactly — untouched on the

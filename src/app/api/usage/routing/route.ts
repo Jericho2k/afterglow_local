@@ -1,7 +1,8 @@
 import { asUser } from "@/lib/db";
 import { adminRequired, currentAccount, unauthorized } from "@/lib/session";
 import { driftVerdict, summarizeAffinity, summarizeProviderEconomics, type AffinityEvent } from "@/lib/provider-affinity";
-import { costPolicyFor, modelCapabilities, routingMode } from "@/lib/provider";
+import { catalogModelIds, emergencyExpensiveFallbackEnabled, routingMode } from "@/lib/provider";
+import { guardSummary } from "@/lib/spend-guards";
 import { resolveUsageRange, usageRangeFilter } from "@/lib/usage-range";
 
 /**
@@ -87,10 +88,26 @@ export async function GET(request: Request) {
        */
       routing: {
         mode: routingMode(),
-        ...(model ? {
-          costCeiling: modelCapabilities("openrouter", model).costCeiling ?? null,
-          enforcedAllowlist: costPolicyFor(model)?.only ?? null,
-        } : {}),
+        /*
+         * Whether the last-attempt escape hatch is armed.
+         *
+         * Off by default and reported whether or not it is on, because "the
+         * ceiling held all month" and "the ceiling held all month because
+         * nothing failed three times" are different facts and only one of them
+         * is reassuring.
+         */
+        emergencyExpensiveFallback: emergencyExpensiveFallbackEnabled(),
+        /*
+         * WHAT IS ACTUALLY GUARDING EACH MODEL, read back rather than assumed.
+         *
+         * A cache figure without the policy that produced it is uninterpretable
+         * three weeks later, when nobody remembers whether the ceiling was on —
+         * and a guard nobody can inspect is a guard nobody can trust. So the
+         * approved pool, the ceiling, the privacy floor and whether platform
+         * funding may reach the model are all reported, for the model asked
+         * about or for the whole catalogue.
+         */
+        guards: (model ? [model] : catalogModelIds()).map((id) => guardSummary(id)),
       },
       // Capped rather than paginated: this is a diagnostic, and a window that
       // needed more than this many events is one to narrow instead.

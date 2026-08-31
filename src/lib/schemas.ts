@@ -254,6 +254,16 @@ export const chatSchema = z.object({
   action: z.enum(["send", "regenerate", "continue"]).default("send"),
   userMessageId: z.string().uuid().nullable().optional(),
   assistantMessageId: z.string().uuid().optional(),
+  /*
+   * The reader's answer to "shall Afterglow fund this one?".
+   *
+   * When today's shared free capacity is gone the chat route refuses and NAMES
+   * a writer Afterglow is willing to pay for rather than quietly switching to
+   * it. This flag is the client sending the reader's yes, and it is a separate
+   * field rather than an inferred state because consent that can be inferred is
+   * not consent. Absent — which is every ordinary turn — nothing changes.
+   */
+  acceptFundedFallback: z.boolean().optional(),
 });
 
 export const memorySchema = z.object({

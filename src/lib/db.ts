@@ -384,6 +384,76 @@ async function schema() {
       updated_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id,provider)
     );
+    /*
+     * Two free-tier ledgers, plus the curated route table that decides what the
+     * free tier may reach.
+     *
+     * The reasoning, the constraints and the access rules live in
+     * supabase/migrations/0031_free_tier_and_curated_routes.sql. What is
+     * repeated here is only the shape a plain PostgreSQL database needs to run
+     * the same code paths; on Supabase these statements are no-ops.
+     *
+     * NOTE ON PUNCTUATION: no apostrophes anywhere inside this template. The
+     * pg-mem parser backing the schema tests reads an apostrophe in a block
+     * comment as the start of a string literal, and the whole schema then fails
+     * to parse. It is a silly constraint and it costs one rewritten sentence.
+     */
+    CREATE TABLE IF NOT EXISTS free_tier_pool_days (
+      utc_day date NOT NULL,
+      funding text NOT NULL,
+      reserved integer NOT NULL DEFAULT 0,
+      spent integer NOT NULL DEFAULT 0,
+      released integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (utc_day,funding)
+    );
+    CREATE TABLE IF NOT EXISTS free_tier_user_days (
+      user_id uuid NOT NULL,
+      utc_day date NOT NULL,
+      funding text NOT NULL,
+      reserved integer NOT NULL DEFAULT 0,
+      spent integer NOT NULL DEFAULT 0,
+      released integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id,utc_day,funding)
+    );
+    CREATE TABLE IF NOT EXISTS free_tier_reservations (
+      id uuid PRIMARY KEY,
+      user_id uuid NOT NULL,
+      utc_day date NOT NULL,
+      funding text NOT NULL,
+      model_id text NOT NULL,
+      state text NOT NULL DEFAULT 'reserved',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      settled_at timestamptz
+    );
+    CREATE TABLE IF NOT EXISTS curated_model_routes (
+      model_id text PRIMARY KEY,
+      enabled boolean NOT NULL DEFAULT true,
+      category text,
+      notice text,
+      max_ttft_ms integer,
+      min_throughput_tps numeric,
+      per_user_daily_cap integer,
+      data_policy_note text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS model_route_health (
+      model_id text PRIMARY KEY,
+      window_started_at timestamptz NOT NULL DEFAULT now(),
+      last_success_at timestamptz,
+      last_failure_at timestamptz,
+      successes integer NOT NULL DEFAULT 0,
+      failures integer NOT NULL DEFAULT 0,
+      capacity_errors integer NOT NULL DEFAULT 0,
+      ttft_ms_total bigint NOT NULL DEFAULT 0,
+      ttft_samples integer NOT NULL DEFAULT 0,
+      output_tokens_total bigint NOT NULL DEFAULT 0,
+      generation_ms_total bigint NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS character_report_evidence (
       report_id uuid PRIMARY KEY REFERENCES character_reports(id) ON DELETE CASCADE,
       character_id uuid,

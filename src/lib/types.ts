@@ -598,12 +598,56 @@ export type ProviderDefinition = {
   label: string;
 };
 
+/**
+ * The shelf a model sits on in the picker.
+ *
+ * Product language, deliberately. A reader choosing a writer is choosing an
+ * experience — "the good one", "the cheap one", "the free one", "the one we are
+ * still measuring" — and not an inference vendor, a quantisation or a
+ * provider slug. Everything infrastructural about a model stays in
+ * `ModelCapabilities`, which never reaches the browser.
+ */
+export type ModelCategory = "recommended" | "economy" | "free" | "experimental";
+
+/**
+ * Two ways to serve ONE model, told apart by experience rather than by vendor.
+ *
+ * Some models are hosted by endpoints with genuinely different characters: one
+ * costs almost nothing and streams slowly, another costs more and streams fast.
+ * That is worth offering, and the vendor's name is not worth explaining, so the
+ * distinction a reader sees is "Economy" or "Fast" and the routing that
+ * implements it lives in the catalogue.
+ */
+export type ModelSpeedProfile = "economy" | "fast";
+
 export type ModelDefinition = {
   id: string;
   providerId: string;
   label: string;
   description: string;
   supportsThinking: boolean;
+  category: ModelCategory;
+  /** Set only where one model is offered as two serving profiles. */
+  speedProfile?: ModelSpeedProfile;
+  /** Costs the reader nothing: a curated `:free` endpoint or the shared pool. */
+  free: boolean;
+  /**
+   * A short, honest note the picker shows beneath a model that needs one —
+   * a free route's shared-capacity caveat, or an experimental route's privacy
+   * disclosure. Empty when there is nothing a reader needs warning about.
+   */
+  notice?: string;
+  /**
+   * How a volatile route is behaving, for the routes where that is a real
+   * question.
+   *
+   * Present only on free routes. A paid model's availability is a provider
+   * incident handled by failover, and decorating every row with a status dot
+   * would train readers to ignore the one place the dot means something.
+   */
+  availability?: "available" | "busy" | "unavailable";
+  /** The route works but streams slowly enough to be worth choosing last. */
+  deprioritized?: boolean;
 };
 
 export type RoleplayEngineDefinition = {
@@ -613,6 +657,26 @@ export type RoleplayEngineDefinition = {
   thinking: boolean;
   adult: boolean;
   tags: string[];
+};
+
+/**
+ * What the reader has left of the free tier today.
+ *
+ * A count of THEIR remaining generations and a boolean for whether shared
+ * capacity exists at all. The platform's exact remaining figure is deliberately
+ * absent: it is a fact about Afterglow's OpenRouter account rather than about
+ * the reader, and it invites refreshing until a number goes up. Both sentences
+ * the interface needs — "free generations available today" and "today's shared
+ * free capacity has been used" — are answerable without it.
+ */
+export type FreeTierStatusView = {
+  enabled: boolean;
+  userRemaining: number;
+  userCap: number;
+  sharedCapacityAvailable: boolean;
+  fundedFallbackAvailable: boolean;
+  /** UTC midnight, so the interface can say when it comes back. */
+  resetsAt: string;
 };
 
 export type ModelCatalog = {
@@ -738,8 +802,22 @@ export type RoutingDiagnosticResponse = {
   model: string | null;
   routing: {
     mode: string;
-    costCeiling?: { promptUsdPerMillion: number; completionUsdPerMillion: number } | null;
-    enforcedAllowlist?: string[] | null;
+    /** Whether the last-attempt escape hatch above the price ceiling is armed. */
+    emergencyExpensiveFallback?: boolean;
+    /**
+     * What is actually guarding each model, read back from the server rather
+     * than remembered. A guard nobody can inspect is a guard nobody can trust,
+     * and three weeks later nobody remembers whether the ceiling was on.
+     */
+    guards?: Array<{
+      modelId: string;
+      free: boolean;
+      approvedProviders: string[];
+      maxPrice: { prompt: number; completion: number } | null;
+      enforcedPool: string[] | null;
+      dataPolicy: { dataCollection: "allow" | "deny"; zdr?: boolean } | null;
+      fundable: boolean;
+    }>;
   };
   truncated: boolean;
   generations: number;

@@ -1,5 +1,7 @@
 import { asUser, getUserSettings, settingsFromRow } from "@/lib/db";
-import { allowedModels, availableCatalog, defaultModel, resolveModel } from "@/lib/provider";
+import { allowedModels, defaultModel, resolveModel } from "@/lib/provider";
+import { curatedCatalog } from "@/lib/curated-routes";
+import { freeTierStatus } from "@/lib/free-tier";
 import { settingsSchema } from "@/lib/schemas";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 
@@ -12,8 +14,29 @@ function settingsForClient(settings:ReturnType<typeof settingsFromRow>,admin:boo
 export async function GET() {
   const account = await currentAccount();
   if (!account) return unauthorized();
-  const settings = await asUser(account.id, (client) => getUserSettings(client, account.id));
-  return Response.json({ settings:settingsForClient(settings,isAdminAccount(account)), models: allowedModels(), catalog: availableCatalog() });
+  const [settings, catalog, freeTier] = await Promise.all([
+    asUser(account.id, (client) => getUserSettings(client, account.id)),
+    /*
+     * The CURATED catalogue, not the raw one.
+     *
+     * A free route the server has disabled, or one whose measured latency has
+     * fallen below the interactive floor, must not be offered — and the picker
+     * is where a reader would otherwise choose it and only find out at
+     * generation time.
+     */
+    curatedCatalog(),
+    /*
+     * What the reader has left today.
+     *
+     * A count of THEIR remaining generations and a boolean for whether shared
+     * capacity exists at all. The platform's exact remaining figure is
+     * deliberately not sent: it is a fact about Afterglow's OpenRouter account
+     * rather than about the reader, and it invites refreshing until a number
+     * goes up.
+     */
+    freeTierStatus(account.id),
+  ]);
+  return Response.json({ settings:settingsForClient(settings,isAdminAccount(account)), models: allowedModels(), catalog, freeTier });
 }
 
 export async function PATCH(request: Request) {
@@ -44,5 +67,5 @@ export async function PATCH(request: Request) {
     return settingsFromRow(result.rows[0]);
   });
 
-  return Response.json({ settings:settingsForClient(settings,isAdminAccount(account)), models: allowedModels(), catalog: availableCatalog() });
+  return Response.json({ settings:settingsForClient(settings,isAdminAccount(account)), models: allowedModels(), catalog: await curatedCatalog() });
 }

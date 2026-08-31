@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { completionWithUsage, parseJson } from "@/lib/llm";
 import { consolidationInput, consolidationInstructions } from "@/lib/prompts";
 import { normalizedUsage } from "@/lib/usage";
-import { taskModelSelection } from "@/lib/provider";
+import { resolveModel, taskModelSelection } from "@/lib/provider";
 import type { Memory, Message } from "@/lib/types";
 
 /**
@@ -32,8 +32,33 @@ import type { Memory, Message } from "@/lib/types";
 const enabled = process.env.MEMORY_EVAL === "1" && Boolean(process.env.OPENROUTER_API_KEY);
 const describeEval = enabled ? describe : describe.skip;
 
-/** The incumbent, plus whichever challengers an operator names. */
-const challengers = (process.env.MEMORY_EVAL_CHALLENGERS ?? "mimo-v2.5,glm-4.7").split(",").map((id) => id.trim()).filter(Boolean);
+/**
+ * The incumbent, plus whichever challengers an operator names.
+ *
+ * THE 2026-08 FIELD, and why each one is in it:
+ *
+ *   deepseek-v4-flash-0731  The headline candidate. A separately listed,
+ *                           re-post-trained GA revision of the same family, on
+ *                           a route priced at a fraction of the direct one. It
+ *                           is a DIFFERENT CHECKPOINT — the undated OpenRouter
+ *                           slug resolves to the 0423 revision, and Afterglow's
+ *                           incumbent is DeepSeek's own endpoint — so "same
+ *                           family name" is the beginning of the question here,
+ *                           not the end of it. See section V of the brief and
+ *                           the catalogue note beside the entry.
+ *   mimo-v2.5 / -pro        Already funded, already trusted for structured
+ *                           output, with cache economics that suit a job whose
+ *                           prompt prefix barely changes.
+ *   glm-5.3-flash           Cheap, and only a candidate if its structured
+ *                           output can carry the consolidation contract; a
+ *                           model that reasons before it speaks also spends
+ *                           output tokens the contract has no use for.
+ *   ling-3.0-flash          Cheapest thing in the lineup. Included so that
+ *                           "cheap enough to be free" can be tested rather than
+ *                           assumed.
+ */
+const challengers = (process.env.MEMORY_EVAL_CHALLENGERS
+  ?? "deepseek-v4-flash-0731,mimo-v2.5,mimo-v2.5-pro,glm-5.3-flash,ling-3.0-flash").split(",").map((id) => id.trim()).filter(Boolean);
 
 /**
  * The axes a challenger has to match. Named here rather than in a comment so
@@ -117,6 +142,62 @@ describeEval("memory consolidation model comparison", () => {
         "",
       );
     }
+    /*
+     * THE TRAP, SCORED SEPARATELY FROM EVERYTHING ELSE.
+     *
+     * The window closes exactly one commitment — the boat, returned ahead of
+     * the tide. The lighthouse trip is discussed and explicitly NOT kept, and
+     * the attic is mentioned in passing by somebody who then does nothing about
+     * it. A model that resolves either of those has deleted a thread the reader
+     * was waiting on, permanently and silently, and the archive will afterwards
+     * argue against restoring it.
+     *
+     * This is reported as its own line rather than folded into a quality score,
+     * because a challenger that is within noise on nine axes and wrong on this
+     * one is a rejection, not a trade.
+     */
+    const falseResolutions = runs.map((run) => {
+      const data = run.parsed as { resolved?: unknown[] } | null;
+      const resolved = Array.isArray(data?.resolved) ? data!.resolved : [];
+      const text = JSON.stringify(resolved).toLowerCase();
+      return {
+        modelId: run.modelId,
+        count: resolved.length,
+        resolvedLighthouse: text.includes("lighthouse") || text.includes("c2"),
+        resolvedAttic: text.includes("attic") || text.includes("c3"),
+      };
+    });
+    lines.push("FALSE RESOLUTIONS — the severe failure, counted on its own:", "");
+    for (const verdict of falseResolutions) {
+      const wrong = [verdict.resolvedLighthouse ? "lighthouse (explicitly NOT kept)" : "", verdict.resolvedAttic ? "attic (nobody moved)" : ""].filter(Boolean);
+      lines.push(`  ${verdict.modelId}: ${wrong.length ? `DISQUALIFYING — resolved ${wrong.join(" and ")}` : "clean"}`);
+    }
+    lines.push("");
+
+    /*
+     * SECTION V — THE IDENTITY QUESTION, ASKED OUT LOUD.
+     *
+     * Cost is the easy half and it is not the decision. What has to be
+     * established before any migration is that the cheaper route behaves like
+     * the model whose output the product already trusts, and the only evidence
+     * that can establish it is this table with the trap line above clean.
+     */
+    const relace = runs.find((run) => run.modelId === "deepseek-v4-flash-0731");
+    const base = runs[0];
+    if (relace) {
+      const ratio = base.usage.providerCostUsd && relace.usage.providerCostUsd
+        ? base.usage.providerCostUsd / relace.usage.providerCostUsd : null;
+      lines.push(
+        "DEEPSEEK 0731 vs THE INCUMBENT — a different checkpoint on a different route:",
+        `  cost ratio: ${ratio === null ? "not reported by both" : `${ratio.toFixed(1)}x cheaper`}`,
+        `  json valid: incumbent ${base.jsonValid}, 0731 ${relace.jsonValid}`,
+        `  latency: incumbent ${base.ms}ms, 0731 ${relace.ms}ms`,
+        "  A cost ratio is NOT a migration argument. Equivalence on promise resolution",
+        "  and hallucinated memories is, and only after several windows rather than one.",
+        "",
+      );
+    }
+
     lines.push(
       "A challenger must be MATERIALLY CHEAPER and roughly equal on all of:",
       `  ${memoryQualityAxes.join(", ")}`,
@@ -142,5 +223,22 @@ describe("the memory-model decision, when nobody has run the comparison", () => 
     expect(memoryQualityAxes).toContain("promise_resolution_precision");
     expect(memoryQualityAxes).toContain("hallucinated_memory");
     expect(memoryQualityAxes.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("has the cheaper DeepSeek route in the catalogue and nowhere near production", () => {
+    vi.stubEnv("ENABLE_OPENROUTER", "true");
+    vi.stubEnv("OPENROUTER_API_KEY", "or-test-secret");
+    /*
+     * The 0731 route is selectable by the harness and wired to nothing.
+     *
+     * That is the whole of section V's discipline: a route can be evaluated
+     * without being trusted, and a price difference — however large — is not
+     * evidence about a model that decides which of a reader's promises get
+     * marked kept.
+     */
+    expect(resolveModel("openrouter", "deepseek-v4-flash-0731")).toBeTruthy();
+    expect(taskModelSelection("memory_consolidation").providerId).toBe("deepseek");
+    expect(taskModelSelection("memory_curation").providerId).toBe("deepseek");
+    vi.unstubAllEnvs();
   });
 });
