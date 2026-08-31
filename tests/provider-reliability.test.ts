@@ -115,10 +115,23 @@ describe("same-model failover", () => {
   });
 
   it("pins a single endpoint only when an operator asks for a benchmark", () => {
+    vi.stubEnv("PROVIDER_ROUTING_MODE", "benchmark");
     vi.stubEnv("PIN_UPSTREAM_PROVIDER", "mimo-v2.5:xiaomi");
     expect(providerPolicyFor("mimo-v2.5", 0, [])).toEqual({ only: ["xiaomi"], allowFallbacks: false });
     // Scoped to the model named, so pinning one cannot pin the rest.
     expect(providerPolicyFor("midnight-cherry", 0, [])?.only).toBeUndefined();
+    vi.unstubAllEnvs();
+  });
+
+  it("ignores a pin left behind outside benchmark mode", () => {
+    // The variable is set for one measurement run and unset afterwards, and
+    // "afterwards" is where it gets forgotten. A stale pin routes every
+    // conversation to one host with fallbacks off; requiring the mode as well
+    // makes a forgotten pin inert rather than an outage.
+    vi.stubEnv("PIN_UPSTREAM_PROVIDER", "mimo-v2.5:xiaomi");
+    const policy = providerPolicyFor("mimo-v2.5", 0, []);
+    expect(policy?.only).toBeUndefined();
+    expect(policy?.allowFallbacks).toBe(true);
     vi.unstubAllEnvs();
   });
 

@@ -98,10 +98,21 @@ describe("prompt cost by section", () => {
     console.log(`\n${lines.join("\n")}`);
 
     const withoutWorld = analyzePayload(payload([], windowFor(60))).tokens;
-    const withLargeWorld = analyzePayload(payload([world("Vale", 16_500)], windowFor(60))).tokens;
-    // The measurement this sprint exists to establish: a large World is not a
-    // rounding error on a prompt, it is the majority of one.
-    expect(withLargeWorld).toBeGreaterThan(withoutWorld * 3);
+    const large = analyzePayload(payload([world("Vale", 16_500)], windowFor(60)));
+    /*
+     * The measurement this sprint exists to establish: a large World is not a
+     * rounding error on a prompt, it is the majority of one.
+     *
+     * Stated as the World's SHARE rather than as a multiple of the
+     * world-less prompt. The multiple was really a statement about how much
+     * transcript rides alongside, so it moved when the anchor step was retuned
+     * for cache economics — which is a change to a different thing entirely.
+     * The share is the claim actually being made, and it does not depend on the
+     * size of the transcript window.
+     */
+    const worldTokens = large.system.sections.find((section) => section.id === "world")?.tokens ?? 0;
+    expect(worldTokens / large.tokens).toBeGreaterThan(0.5);
+    expect(large.tokens).toBeGreaterThan(withoutWorld * 2);
   });
 
   it("attributes World lore to the World section rather than to the creation", () => {

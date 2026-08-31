@@ -23,6 +23,21 @@ export type InferenceSelection = { providerId: string; modelId: string };
  * would be a guess with the authority of a constant, and the budgeting code
  * treats "unknown" as "do not constrain" — which is exactly today's behaviour.
  */
+/**
+ * The most an endpoint may charge, per million tokens, to be eligible.
+ *
+ * Both figures are FRESH prices. OpenRouter filters on an endpoint's list
+ * price, and a cached-input rate is a discount off that rather than a separate
+ * ceiling to set, so naming only the two rates OpenRouter actually compares
+ * keeps this honest about what it can enforce.
+ */
+export type ProviderCostCeiling = {
+  /** USD per million fresh prompt tokens. */
+  promptUsdPerMillion: number;
+  /** USD per million completion tokens. */
+  completionUsdPerMillion: number;
+};
+
 export type ModelCapabilities = {
   /** Prompt plus completion, in tokens. Undefined means unverified. */
   contextTokens?: number;
@@ -41,6 +56,35 @@ export type ModelCapabilities = {
    * `pinnedProviderFor` below.
    */
   preferredProviders?: string[];
+  /**
+   * The most this model's traffic may cost per million tokens, per endpoint.
+   *
+   * Several upstream hosts serve one model at prices that differ by a factor
+   * of several, and OpenRouter's default routing is price-WEIGHTED rather than
+   * price-ordered: the cheapest endpoint is strongly preferred, not
+   * guaranteed. A ceiling is the difference between "usually cheap" and "never
+   * expensive", and it is expressed as a price rather than as a list of hosts
+   * because price is the actual criterion — a slug list goes stale the moment
+   * a provider re-prices or is renamed, and silently stops guarding anything.
+   *
+   * Sent to OpenRouter as `provider.max_price`, so the filtering happens where
+   * the catalogue lives instead of being re-derived from a table here that
+   * would need updating every time somebody changes a rate.
+   */
+  costCeiling?: ProviderCostCeiling;
+  /**
+   * Endpoints known to serve this model at an acceptable price and with
+   * prompt-cache support.
+   *
+   * ADVISORY BY DEFAULT, and deliberately so: it becomes a hard `provider.only`
+   * restriction only when an operator sets `ENFORCE_PROVIDER_ALLOWLIST`. A
+   * slug that is wrong or has been renamed upstream turns `only` into a total
+   * outage for the model, and these slugs could not be checked against
+   * OpenRouter's live catalogue from the build environment — see the note on
+   * the GLM entry. `costCeiling` above guards the same thing without depending
+   * on any string being right.
+   */
+  affordableProviders?: string[];
   /**
    * How much this model writes when nothing stops it.
    *
@@ -137,6 +181,44 @@ const knownModels: InternalModelDefinition[] = [
     supportsThinking: true,
     capabilities: { thinking: true, jsonMode: true, promptCaching: true },
   },
+  /*
+   * GLM 4.7, and the one model in this catalogue that declares a price ceiling.
+   *
+   * WHY IT NEEDS ONE. Eight or so upstream hosts serve this slug at prices that
+   * differ by a factor of several, and a month of production traffic landed on
+   * four of them. The model page's headline price is the CHEAPEST endpoint's
+   * price; what a conversation actually pays is whichever host OpenRouter's
+   * price-weighted load balancer happened to pick for it, which is a different
+   * number and is not bounded by anything.
+   *
+   * The rates below were reported by the operator from OpenRouter's live
+   * catalogue and corroborated for DeepInfra by secondary sources, per million
+   * tokens, fresh / cached / output:
+   *
+   *   DeepInfra   0.40 / 0.08  / 1.75
+   *   Novita      0.54 / 0.099 / 1.98
+   *   Z.AI        0.60 / 0.11  / 2.20
+   *
+   * DeepInfra is cheaper than Z.AI on all three lines, so at EQUAL cache hit
+   * rates it is the cheaper home for a conversation. That is the whole argument
+   * for the ceiling; it is not an argument for pinning DeepInfra, because a pin
+   * would override the session stickiness that keeps a conversation's cache
+   * warm and would take GLM down whenever one host is unhealthy.
+   *
+   * WHERE THE NUMBERS COME FROM. 0.65 and 2.25 sit just above Z.AI, the
+   * dearest of the three endpoints worth keeping, and below the ~2.65/M output
+   * endpoints that prompted this. Three healthy hosts stay eligible, so the
+   * ceiling costs no reliability; it removes only the endpoints that are
+   * dominated on price by hosts already serving this traffic.
+   *
+   * OPERATORS: the slugs in `affordableProviders` are the OpenRouter provider
+   * slugs `deepinfra`, `novita` and `z-ai`, which are documented slugs but
+   * could NOT be confirmed against this model's live endpoint list from the
+   * build environment, which has no egress to openrouter.ai. They are advisory
+   * until `ENFORCE_PROVIDER_ALLOWLIST` is set; confirm them first, because a
+   * wrong slug in `provider.only` means every GLM request fails. The ceiling
+   * needs no such confirmation and is what production relies on.
+   */
   {
     id: "glm-4.7",
     providerId: "openrouter",
@@ -144,7 +226,13 @@ const knownModels: InternalModelDefinition[] = [
     label: "Z.ai GLM 4.7",
     description: "General comparison writer with stable multi-step reasoning and long context.",
     supportsThinking: true,
-    capabilities: { thinking: true, jsonMode: true, promptCaching: true },
+    capabilities: {
+      thinking: true,
+      jsonMode: true,
+      promptCaching: true,
+      costCeiling: { promptUsdPerMillion: 0.65, completionUsdPerMillion: 2.25 },
+      affordableProviders: ["deepinfra", "novita", "z-ai"],
+    },
   },
   /*
    * Xiaomi's MiMo V2.5 family.
@@ -370,6 +458,17 @@ export function modelVerbosity(providerId: string, modelId: string): ModelVerbos
  * separated).
  */
 export function pinnedProviderFor(modelId: string) {
+  /*
+   * A PIN REQUIRES BENCHMARK MODE, not just a pin variable.
+   *
+   * The variable is set for a measurement run and unset afterwards, and
+   * "afterwards" is where this goes wrong: a pin left behind in a deployment
+   * sends every conversation to one host with fallbacks OFF, which is both an
+   * availability risk and precisely the kind of unexamined routing that made
+   * this sprint necessary. Two deliberate variables rather than one means a
+   * forgotten pin is inert.
+   */
+  if (routingMode() !== "benchmark") return null;
   const configured = process.env.PIN_UPSTREAM_PROVIDER?.trim();
   if (!configured) return null;
   for (const entry of configured.split(",")) {
@@ -382,13 +481,79 @@ export function pinnedProviderFor(modelId: string) {
 export type ProviderRoutingPolicy = {
   /** Endpoints to try first, in order. Never the only ones allowed. */
   order?: string[];
-  /** The benchmark pin: these and nothing else. */
+  /** The benchmark pin, or an enforced allowlist: these and nothing else. */
   only?: string[];
   /** Endpoints already known to have failed this request. */
   ignore?: string[];
   allowFallbacks: boolean;
   sort?: "throughput" | "price" | "latency";
+  /** Per-million ceilings an endpoint must be under to be eligible. */
+  maxPrice?: { prompt: number; completion: number };
 };
+
+/**
+ * How much routing policy production is allowed to apply.
+ *
+ * This exists to be turned off. The ceiling below changes which upstream hosts
+ * every GLM conversation may reach, and an operator who does not like what that
+ * does to availability or to quality must be able to put it back to exactly
+ * today's behaviour without waiting for a deploy.
+ *
+ *   auto            No cost policy at all. Byte-for-byte the behaviour before
+ *                   this sprint: preferred endpoints where a model declares
+ *                   them, OpenRouter's own routing everywhere else.
+ *   cost_guarded    THE DEFAULT. A model's `costCeiling` is sent as
+ *                   `provider.max_price`, so no endpoint above it is eligible —
+ *                   on the first attempt and on recovery alike. Nothing else
+ *                   changes: no `order`, no `sort`, so OpenRouter's sticky
+ *                   session routing is left to do its job.
+ *   cost_optimized  Adds `sort: "price"` to the first attempt, which asks for
+ *                   the cheapest eligible endpoint deterministically instead of
+ *                   the price-weighted draw. NOT the default, because `sort`
+ *                   documentedly turns load balancing off and its interaction
+ *                   with an already-warm sticky session is NOT documented —
+ *                   a session that recovered onto a second-cheapest host might
+ *                   be pulled back to the cheapest one, cold, every turn.
+ *                   Verify against live traffic before preferring it.
+ *   benchmark       Honours `PIN_UPSTREAM_PROVIDER`. Pins are measurement-only
+ *                   and this is the mode that says so out loud.
+ *
+ * An unrecognised value falls back to the default rather than to no guard: a
+ * typo in a deployment variable should not quietly restore the expensive
+ * behaviour this was added to prevent.
+ */
+export type RoutingMode = "auto" | "cost_guarded" | "cost_optimized" | "benchmark";
+
+export function routingMode(): RoutingMode {
+  const configured = process.env.PROVIDER_ROUTING_MODE?.trim();
+  return configured === "auto" || configured === "cost_optimized" || configured === "benchmark" ? configured : "cost_guarded";
+}
+
+/**
+ * Whether a declared `affordableProviders` list becomes a hard restriction.
+ *
+ * Off by default. See the note on `affordableProviders`: an unverified slug in
+ * `provider.only` is an outage, and the price ceiling guards the same thing
+ * without depending on a string.
+ */
+function allowlistEnforced() {
+  return process.env.ENFORCE_PROVIDER_ALLOWLIST === "true";
+}
+
+/** The cost policy in force for one model, or null when there is none. */
+export function costPolicyFor(modelId: string) {
+  const mode = routingMode();
+  if (mode === "auto") return null;
+  const capabilities = knownModels.find((model) => model.id === modelId)?.capabilities;
+  const ceiling = capabilities?.costCeiling;
+  if (!ceiling) return null;
+  const allowlist = allowlistEnforced() ? capabilities?.affordableProviders?.filter((value) => safeId(value)) : undefined;
+  return {
+    maxPrice: { prompt: ceiling.promptUsdPerMillion, completion: ceiling.completionUsdPerMillion },
+    ...(allowlist?.length ? { only: allowlist } : {}),
+    sortByPrice: mode === "cost_optimized",
+  };
+}
 
 /**
  * How OpenRouter should reach one model, for one attempt.
@@ -404,16 +569,59 @@ export type ProviderRoutingPolicy = {
  * doing it silently here would mean a reader's chosen writer changed without
  * anybody saying so.
  */
-export function providerPolicyFor(modelId: string, attempt: number, failedProviders: string[] = []): ProviderRoutingPolicy | null {
+export function providerPolicyFor(
+  modelId: string,
+  attempt: number,
+  failedProviders: string[] = [],
+  options: { finalAttempt?: boolean } = {},
+): ProviderRoutingPolicy | null {
   const pinned = pinnedProviderFor(modelId);
   if (pinned) return { only: [pinned], allowFallbacks: false };
   const preferred = knownModels.find((model) => model.id === modelId)?.capabilities.preferredProviders ?? [];
   const ignore = failedProviders.filter((value) => safeId(value));
+  /*
+   * THE CEILING IS DROPPED ON THE LAST ATTEMPT, AND ONLY THERE.
+   *
+   * Two earlier attempts have already been spent inside the affordable set, so
+   * reaching here means every endpoint under the ceiling either failed or went
+   * quiet. At that point the choice is a dearer endpoint or no reply at all,
+   * and one expensive generation is a far smaller harm to a reader mid-scene
+   * than a failed turn. It stays a genuine emergency: it cannot be reached
+   * without two prior failures, and it never substitutes a different MODEL.
+   */
+  const cost = options.finalAttempt ? null : costPolicyFor(modelId);
+  const guard = cost ? { maxPrice: cost.maxPrice, ...(cost.only ? { only: cost.only } : {}) } : {};
+
   if (attempt === 0) {
-    if (!preferred.length && !ignore.length) return null;
-    return { ...(preferred.length ? { order: preferred } : {}), ...(ignore.length ? { ignore } : {}), allowFallbacks: true };
+    if (!preferred.length && !ignore.length && !cost) return null;
+    return {
+      ...(preferred.length ? { order: preferred } : {}),
+      ...(ignore.length ? { ignore } : {}),
+      ...guard,
+      allowFallbacks: true,
+      /*
+       * NO `sort` ON THE WARM PATH unless cost_optimized asks for one.
+       *
+       * OpenRouter pins a conversation to the host holding its prompt cache
+       * from the `session_id` the chat route sends, and its documentation is
+       * explicit that setting `order` — and, less explicitly, `sort` — turns
+       * its own routing off. The cheapest request is the one that HITS, so the
+       * default policy states a ceiling and then gets out of the way.
+       */
+      ...(cost?.sortByPrice ? { sort: "price" as const } : {}),
+    };
   }
-  return { ...(ignore.length ? { ignore } : {}), allowFallbacks: true, sort: "throughput" };
+  /*
+   * Recovery, bounded by the same ceiling.
+   *
+   * `sort: "throughput"` is kept: an attempt reaching here has already lost the
+   * cache it was warm on, so the fastest healthy host is the right choice.
+   * What changed is that "healthy" is now drawn from the affordable set rather
+   * than from every host serving the slug — a timeout was previously able to
+   * move a conversation onto the dearest endpoint in the catalogue, at the
+   * moment nobody was watching, and stickiness would then keep it there.
+   */
+  return { ...(ignore.length ? { ignore } : {}), ...guard, allowFallbacks: true, sort: "throughput" };
 }
 
 const taskRouteEnvironment: Record<Exclude<InferenceTask,"rp_generation">, string> = {

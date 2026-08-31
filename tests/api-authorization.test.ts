@@ -41,6 +41,7 @@ const consolidate = await import("@/app/api/memories/consolidate/route");
 const sceneState = await import("@/app/api/scene-state/route");
 const backup = await import("@/app/api/backup/route");
 const usage = await import("@/app/api/usage/route");
+const usageRouting = await import("@/app/api/usage/routing/route");
 const memoryFeedback = await import("@/app/api/memory-feedback/route");
 const conversationWorlds = await import("@/app/api/conversations/[id]/worlds/route");
 const follows = await import("@/app/api/follows/route");
@@ -101,6 +102,7 @@ describe("unauthenticated access", () => {
       memories.GET(new Request("http://test/api/memories?characterId=" + aliceCharacter)),
       backup.GET(),
       usage.GET(new Request("http://test/api/usage")),
+      usageRouting.GET(new Request("http://test/api/usage/routing")),
       chat.POST(post("http://test/api/chat", { conversationId: aliceConversation, content: "hi", action: "send" })),
       conversationWorlds.GET(new Request("http://test/api/conversations/x/worlds"), { params: Promise.resolve({ id: aliceConversation }) }),
       conversationWorlds.POST(post("http://test/api/conversations/x/worlds", { worldId: aliceWorld }), { params: Promise.resolve({ id: aliceConversation }) }),
@@ -338,6 +340,19 @@ describe("cross-account access", () => {
     account = { id: alice, email: null };
     const own = await (await usage.GET(new Request("http://test/api/usage"))).json();
     expect(own.usage.requests).toBe(1);
+  });
+
+  it("keeps the routing diagnostic admin-only, and exposes no story content", async () => {
+    account = { id: bob, email: null };
+    expect((await usageRouting.GET(new Request("http://test/api/usage/routing"))).status).toBe(403);
+
+    account = { id: alice, email: null };
+    const report = await (await usageRouting.GET(new Request("http://test/api/usage/routing"))).json();
+    // A routing question needs ids and counts and nothing else. The ledger
+    // holds no transcript, and this asserts the report keeps it that way.
+    expect(report).toHaveProperty("drift");
+    expect(report).toHaveProperty("byProvider");
+    expect(JSON.stringify(report)).not.toContain("Alice private");
   });
 
   it("separates inference value from Afterglow spend by funding source", async () => {
