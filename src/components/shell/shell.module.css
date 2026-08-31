@@ -97,6 +97,8 @@
 
 .tabs {
   display: flex;
+  /* A scrolling tab strip must not widen its parent to fit its own tabs. */
+  min-width: 0; max-width: 100%;
   gap: 6px;
   margin: 0 0 20px;
   padding: 4px;
@@ -130,7 +132,7 @@
 /* ------------------------------------------------------------ cards --- */
 
 .card {
-  min-width: 0;
+  width: 100%; min-width: 0; max-width: 100%;
   border: 1px solid var(--edge);
   border-radius: 18px;
   background: var(--surface);
@@ -150,7 +152,7 @@
   font-style: normal; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums;
 }
 
-.stack { display: grid; gap: 12px; min-width: 0; }
+.stack { display: grid; gap: 12px; min-width: 0; max-width: 100%; }
 .stack > * { min-width: 0; }
 /* Model slugs, provider ids and persona names are identifiers, and an
    identifier is exactly the kind of string that has no break opportunity. */
@@ -312,12 +314,18 @@
 
 /* ----------------------------------------------------------- fields --- */
 
-.field { display: flex; flex-direction: column; gap: 7px; }
+.field { display: flex; flex-direction: column; gap: 7px; min-width: 0; max-width: 100%; }
 .fieldLabel { font-size: 11.5px; font-weight: 600; color: var(--muted); }
-.fieldHint { min-width: 0; font-size: 11px; line-height: 1.5; color: var(--faint); overflow-wrap: anywhere; }
+.fieldHint { min-width: 0; max-width: 100%; font-size: 11px; line-height: 1.5; color: var(--faint); overflow-wrap: anywhere; }
 
 .input, .textarea, .select {
-  width: 100%;
+  /*
+   * `width: 100%` is not enough inside a flex or grid parent: a form control
+   * carries an intrinsic minimum from its `size` attribute, so it refuses to
+   * shrink below roughly twenty characters and pushes the sheet wider than the
+   * phone. `min-width: 0` is what actually lets it fit.
+   */
+  width: 100%; min-width: 0; max-width: 100%;
   border: 1px solid var(--edge);
   border-radius: 12px;
   background: #100c12;
@@ -459,16 +467,29 @@
 
 .sheetBody {
   flex: 1; min-width: 0; min-height: 0;
-  overflow-x: hidden;
+  width: 100%; max-width: 100%;
+  /*
+   * `clip` rather than `hidden`.
+   *
+   * `overflow-x: hidden` makes the element a scroll container in that axis:
+   * programmatically scrollable, and it traps `position: sticky` descendants.
+   * `clip` says what is meant — anything overhanging is not drawn — without any
+   * of that. It is the right primitive for containment.
+   */
+  overflow-x: clip;
   overflow-y: auto;
   padding: 16px;
   display: grid; gap: 14px;
   align-content: start;
 }
+/* One rule, so nothing inside the sheet has to remember to be shrinkable. */
+.sheetBody > * { min-width: 0; max-width: 100%; }
 .sheetBody > * { min-width: 0; }
 
 .sheetFooter {
-  display: flex; gap: 9px;
+  /* Two long button labels wrap onto a second row rather than overflowing. */
+  display: flex; flex-wrap: wrap; gap: 9px;
+  min-width: 0; max-width: 100%;
   padding: 12px 16px max(12px, env(safe-area-inset-bottom));
   border-top: 1px solid var(--edge);
   background: rgba(12, 9, 14, .7);
@@ -569,7 +590,7 @@
 
 /* Writer-only OpenRouter funding. Secret input and saved metadata are separate
    surfaces so a connected state never needs to decrypt or repopulate a key. */
-.byokIntro { margin: 0 0 13px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.byokIntro { min-width: 0; max-width: 100%; overflow-wrap: anywhere; margin: 0 0 13px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
 .byokPanel { display: grid; gap: 14px; min-width: 0; }
 .byokStatusRow { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .byokProviderMark {
@@ -583,8 +604,8 @@
 .byokStatusCopy small { color: var(--faint); overflow-wrap: anywhere; }
 .byokConnect { display: grid; gap: 8px; min-width: 0; }
 .byokActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; min-width: 0; }
-.byokActions > * { max-width: 100%; }
-.fundingChoices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.byokActions > * { min-width: 0; max-width: 100%; }
+.fundingChoices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; max-width: 100%; }
 .fundingChoices button {
   min-width: 0; min-height: 64px; display: grid; align-content: center; gap: 4px;
   border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
@@ -595,9 +616,9 @@
 .fundingChoices button[disabled] { opacity: .5; cursor: not-allowed; }
 .fundingChoices strong { font-size: 12.5px; }
 .fundingChoices small { min-width: 0; color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
-.byokDisclosure { margin: 14px 0 0; color: var(--faint); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.byokUnavailable { border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
-.removeConfirm { display: grid; gap: 8px; border: 1px solid rgba(238,104,137,.28); border-radius: 13px; background: rgba(238,104,137,.07); padding: 12px; }
+.byokDisclosure { min-width: 0; max-width: 100%; margin: 14px 0 0; color: var(--faint); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.byokUnavailable { min-width: 0; max-width: 100%; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.removeConfirm { display: grid; gap: 8px; min-width: 0; max-width: 100%; border: 1px solid rgba(238,104,137,.28); border-radius: 13px; background: rgba(238,104,137,.07); padding: 12px; }
 .removeConfirm strong { font-size: 13px; }
 .removeConfirm p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .fundingBreakdown { display: grid; gap: 7px; margin-top: 12px; }
@@ -606,6 +627,11 @@
 .fundingBreakdown b { flex: none; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 @media (max-width: 430px) {
+  /* The narrowest phones get their space back from the chrome, not the content. */
+  .sheetBody { padding: 12px; gap: 12px; }
+  .card { padding: 14px; border-radius: 16px; }
+  .sheetFooter { padding-inline: 12px; }
+  .sheetFooter > * { flex: 1 1 130px; min-width: 0; }
   .fundingChoices { grid-template-columns: 1fr; }
   .byokActions { justify-content: stretch; }
   .byokActions > * { flex: 1 1 140px; }

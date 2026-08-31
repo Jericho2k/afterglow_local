@@ -495,6 +495,17 @@ async function schema() {
   }
   const canonicalBackfill=await pool().query("INSERT INTO afterglow_runtime_migrations(key) VALUES ('0008_canonical_generated_user_messages') ON CONFLICT DO NOTHING RETURNING key");
   if(canonicalBackfill.rowCount)await pool().query("UPDATE messages SET generation_started_at=created_at WHERE role='user' AND generation_started_at IS NULL");
+  /*
+   * A ONE-TIME BACKFILL FOR ROWS THAT NEVER CARRIED AN ESTIMATE, AND NOTHING ELSE.
+   *
+   * `WHERE estimated_cost_usd IS NULL` is what makes this safe to run on every
+   * boot: it fills gaps and never revises a figure. The rates below are the ones
+   * that applied when those rows were written and MUST NOT be re-pointed at
+   * today's table — doing so would silently reprice history at rates that were
+   * not in force, which is exactly the kind of quiet rewrite the ledger exists
+   * to prevent. A re-priced analysis belongs in a view over the token counts,
+   * which are facts, not in the ledger, which records beliefs.
+   */
   await pool().query(`
     UPDATE usage_events SET estimated_cost_usd = CASE model
       WHEN 'deepseek-v4-flash' THEN (
