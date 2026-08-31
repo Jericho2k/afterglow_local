@@ -161,6 +161,39 @@ describe("the sprint's scenario, exactly", () => {
   });
 });
 
+describe("the lore block's byte order is stable", () => {
+  /*
+   * This ordering is not presentation. It decides the byte order of the
+   * LOREBOOK section, which sits near the top of the STABLE half of the writer
+   * prompt — so everything after the first byte that moves is billed as fresh
+   * input rather than served from the provider's cache.
+   *
+   * It used to be `w.updated_at DESC`, which was unstable twice over: worlds
+   * attached together share a timestamp and tied rows may come back in either
+   * order, and editing any attached world displaced every world after it.
+   */
+  it("does not change when an attached world is edited", async () => {
+    const story = await startStory(owner);
+    await asUser(owner, (client) => attachConversationWorld(client, owner, story, worldB));
+    const before = await asUser(owner, (client) => conversationWorldRecords(client, owner, story));
+
+    // Editing B's lore must move B's own text and nothing else's position.
+    await query("UPDATE worlds SET content=$2, updated_at=now() WHERE id=$1", [worldB, "revised lore"]);
+    const after = await asUser(owner, (client) => conversationWorldRecords(client, owner, story));
+
+    expect(after.map((row) => String(row.id))).toEqual(before.map((row) => String(row.id)));
+  });
+
+  it("is the same on every read, so two consecutive turns serialise alike", async () => {
+    const story = await startStory(owner);
+    await asUser(owner, (client) => attachConversationWorld(client, owner, story, worldB));
+    const reads = await Promise.all(Array.from({ length: 5 }, () =>
+      asUser(owner, (client) => conversationWorldRecords(client, owner, story))));
+    const orders = reads.map((rows) => rows.map((row) => String(row.id)).join(","));
+    expect(new Set(orders).size).toBe(1);
+  });
+});
+
 describe("private lore never travels", () => {
   it("omits another creator's private world from a visitor's defaults", async () => {
     // A public creation built on a private world: the association is real and
