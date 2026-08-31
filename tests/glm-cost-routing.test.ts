@@ -60,6 +60,36 @@ describe("what actually reaches OpenRouter", () => {
     expect(bodies[0].session_id).toBe("abc123");
   });
 
+  it("distinguishes declining reasoning from having no opinion about it", async () => {
+    enableOpenRouter();
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ id: "g", model: "z-ai/glm-4.7", choices: [{ message: { content: "ok" } }], usage: {} });
+    }));
+
+    const send = (thinking: boolean | "off" | undefined) =>
+      completionWithUsage({ providerId: "openrouter", modelId: "glm-4.7" }, [{ role: "user", content: "Hi" }], { modelId: "glm-4.7", thinking });
+
+    await send(true);
+    await send(false);
+    await send("off");
+
+    /*
+     * THREE STATES, AND THE MIDDLE ONE IS NOT A DENIAL.
+     *
+     * GLM 4.7 is a hybrid reasoning model. Omitting `reasoning` accepts
+     * whatever the endpoint does by default, which may well be reasoning —
+     * billed as output tokens, at output prices, for a roleplay reply that
+     * never shows it. The empty-reply retry in the chat route relied on `false`
+     * meaning "ask for none" and so, having watched one envelope go entirely on
+     * thinking, asked for precisely the same thing again.
+     */
+    expect(bodies[0].reasoning).toEqual({ enabled: true });
+    expect(bodies[1].reasoning).toBeUndefined();
+    expect(bodies[2].reasoning).toEqual({ enabled: false });
+  });
+
   it("sends no provider block at all when an operator reverts to auto", async () => {
     enableOpenRouter();
     vi.stubEnv("PROVIDER_ROUTING_MODE", "auto");

@@ -682,3 +682,76 @@ export type UsageResponse = {
   byUpstreamProvider?: UsageBreakdown[];
   pricingAsOf: string;
 };
+
+/**
+ * The routing diagnostic, which answers a question Usage & Cost cannot.
+ *
+ * That report sums across every conversation at once, so it looks identical
+ * whether one story bounced between four upstream hosts or four stories each
+ * settled on one. This shape is per CONVERSATION, in time order, so "is
+ * anything actually drifting" has an answer rather than an impression.
+ */
+export type RoutingProviderEconomics = {
+  provider: string;
+  slug: string | null;
+  generations: number;
+  conversations: number;
+  promptTokens: number;
+  cachedTokens: number;
+  freshTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cacheRatio: number | null;
+  costUsd: number | null;
+  costPerGeneration: number | null;
+  costPer100Generations: number | null;
+  /** Derived by subtracting the output half at list rates; null when unknown. */
+  effectiveInputUsdPerMillion: number | null;
+  effectiveInputBasis: "derived" | "unknown_endpoint_pricing";
+  listOutputUsdPerMillion: number | null;
+  avgLatencyMs: number | null;
+  avgTtftMs: number | null;
+};
+
+export type RoutingConversationAffinity = {
+  conversationId: string;
+  model: string;
+  generations: number;
+  providerSwitches: number;
+  firstProvider: string | null;
+  latestProvider: string | null;
+  providers: Array<{ provider: string; slug: string | null; generations: number }>;
+  promptTokens: number;
+  cachedTokens: number;
+  freshTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  costUsd: number | null;
+  costPerGeneration: number | null;
+  cacheRatio: number | null;
+  avgLatencyMs: number | null;
+  avgTtftMs: number | null;
+};
+
+export type RoutingDiagnosticResponse = {
+  range?: UsageRangeSummary;
+  model: string | null;
+  routing: {
+    mode: string;
+    costCeiling?: { promptUsdPerMillion: number; completionUsdPerMillion: number } | null;
+    enforcedAllowlist?: string[] | null;
+  };
+  truncated: boolean;
+  generations: number;
+  drift: {
+    minimumGenerations: number;
+    eligibleConversations: number;
+    driftedConversations: number;
+    driftedShare: number | null;
+    totalSwitches: number;
+    switchesPerGeneration: number | null;
+    worst: Array<{ conversationId: string; generations: number; providerSwitches: number; cacheRatio: number | null }>;
+  };
+  byProvider: RoutingProviderEconomics[];
+  byConversation: RoutingConversationAffinity[];
+};

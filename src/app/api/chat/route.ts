@@ -371,10 +371,27 @@ export async function POST(request: Request) {
     signal: request.signal,
     maxTokens: fitted.plan.maxTokens,
     temperature,
-    // Reasoning is asked for only when the ENGINE wants it and the ENDPOINT
-    // accepts it. Sending `reasoning` to a model that rejects unknown
-    // parameters is a 400 with the reader's turn attached to it.
-    thinking: engineDefinition.thinking && capabilities.thinking,
+    /*
+     * Reasoning is asked for only when the ENGINE wants it and the ENDPOINT
+     * accepts it. Sending `reasoning` to a model that rejects unknown
+     * parameters is a 400 with the reader's turn attached to it.
+     *
+     * WHEN THE ENGINE DOES NOT WANT IT there are two different things to send,
+     * and which one is right is a measurement nobody has taken yet. Saying
+     * nothing takes the endpoint's default, which on a hybrid reasoning model
+     * such as GLM 4.7 may well be reasoning — billed as output tokens, at
+     * output prices, for a roleplay reply that never shows it. Saying "none"
+     * explicitly stops that, and might also cost some quality.
+     *
+     * So the default is UNCHANGED and the alternative is one variable away:
+     * `RP_REASONING=off` makes six of the seven engines decline reasoning
+     * outright. The A/B that would justify flipping it is
+     * `scripts/glm-routing-benchmark.mjs --reasoning`, and until somebody has
+     * run it this stays where it is.
+     */
+    thinking: engineDefinition.thinking && capabilities.thinking
+      ? true
+      : capabilities.thinking && process.env.RP_REASONING?.trim() === "off" ? "off" as const : false,
     /** The catalogue model id, so routing policy can be chosen per model. */
     modelId: selection.modelId,
     // Conversation-scoped provider stickiness. Sequential turns in one story
@@ -555,7 +572,18 @@ export async function POST(request: Request) {
           const retry = await streamWriterCompletion(selection,completionMessages,writerFunding,{
             ...completionOptions,
             excludeProviders: exhaustedProviders,
-            ...(spentOnReasoning ? { thinking: false } : {}),
+            /*
+             * "Asks for none" now actually asks for none.
+             *
+             * This used to pass `false`, which OMITS the `reasoning` parameter
+             * and therefore accepts whatever the endpoint does by default — on
+             * a hybrid reasoning model, reasoning. So the retry after a
+             * generation that spent its entire envelope thinking and returned
+             * no prose asked for exactly the same thing again, and could burn
+             * a second envelope the same way. `"off"` states it, and is only
+             * sent to an endpoint that accepts the parameter at all.
+             */
+            ...(spentOnReasoning && capabilities.thinking ? { thinking: "off" as const } : {}),
           });
           await consume(retry,retryStartedAt);
         }

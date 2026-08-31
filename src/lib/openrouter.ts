@@ -238,7 +238,13 @@ function commonFields(options: ProviderCompletionOptions) {
   return {
     usage: { include: true },
     ...(options.sessionId ? { session_id: options.sessionId } : {}),
-    ...(options.thinking ? { reasoning: { enabled: true } } : {}),
+    /*
+     * Three states, not two. See `CompletionOptions.thinking`: omitting
+     * `reasoning` takes the endpoint's own default, which on a hybrid reasoning
+     * model means reasoning, and is therefore not a way to decline it.
+     */
+    ...(options.thinking === true ? { reasoning: { enabled: true } } : {}),
+    ...(options.thinking === "off" ? { reasoning: { enabled: false } } : {}),
   };
 }
 

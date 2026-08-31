@@ -234,8 +234,18 @@ describe("an empty reply is diagnosed rather than guessed at", () => {
     const { events } = await generate();
     expect(events.find((event) => event.type === "done")).toBeTruthy();
     expect(streamCompletion).toHaveBeenCalledTimes(2);
-    const retryOptions = streamCompletion.mock.calls[1][1] as { thinking?: boolean; excludeProviders?: string[] };
-    expect(retryOptions.thinking).toBe(false);
+    const retryOptions = streamCompletion.mock.calls[1][1] as { thinking?: boolean | "off"; excludeProviders?: string[] };
+    /*
+     * "off", not false, and the difference was a live bug.
+     *
+     * `false` OMITS the `reasoning` parameter, which accepts whatever the
+     * endpoint does by default — and on a hybrid reasoning model such as GLM
+     * 4.7 that default is reasoning. So this retry, taken precisely because a
+     * generation had spent its whole envelope thinking and returned no prose,
+     * used to ask for exactly the same thing again and could burn a second
+     * envelope identically. `"off"` states the refusal.
+     */
+    expect(retryOptions.thinking).toBe("off");
   });
 
   it("asks a different host on the retry after a silent one", async () => {
