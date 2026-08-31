@@ -41,10 +41,20 @@ export type ChatView = {
    * rendered from, and `prependedMessages` puts the next page in front.
    */
   hasMoreBefore: boolean;
+  /**
+   * How many messages of the story sit ABOVE the first one rendered.
+   *
+   * The window is not the story, so an index into `messages` is not a position
+   * in the conversation. Every mutation that names its target by position adds
+   * this offset before sending it; without it a "delete from here" tapped near
+   * the bottom of a four-hundred-message story resolves, on the server, to a
+   * message near the top of it. Zero whenever the whole story is on screen.
+   */
+  windowStartPosition: number;
   loadingEarlier: boolean;
 };
 
-export const emptyChatView: ChatView = { request: null, conversation: null, messages: [], loading: false, hasMoreBefore: false, loadingEarlier: false };
+export const emptyChatView: ChatView = { request: null, conversation: null, messages: [], loading: false, hasMoreBefore: false, windowStartPosition: 0, loadingEarlier: false };
 
 /**
  * Point the view at a story.
@@ -59,6 +69,7 @@ export function openChatView(view: ChatView, characterId: string, conversationId
     messages: [],
     loading: true,
     hasMoreBefore: false,
+    windowStartPosition: 0,
     loadingEarlier: false,
   };
 }
@@ -69,9 +80,9 @@ export function acceptsResponse(view: ChatView, nonce: number) {
 }
 
 /** A story that arrived for the request that is still current. */
-export function chatLoaded(view: ChatView, nonce: number, conversation: Conversation, messages: Message[], hasMoreBefore = false): ChatView {
+export function chatLoaded(view: ChatView, nonce: number, conversation: Conversation, messages: Message[], hasMoreBefore = false, windowStartPosition = 0): ChatView {
   if (!acceptsResponse(view, nonce)) return view;
-  return { ...view, conversation, messages, loading: false, hasMoreBefore, loadingEarlier: false };
+  return { ...view, conversation, messages, loading: false, hasMoreBefore, windowStartPosition, loadingEarlier: false };
 }
 
 /**
@@ -82,11 +93,17 @@ export function chatLoaded(view: ChatView, nonce: number, conversation: Conversa
  * spliced into it. Ids already present are skipped so a double tap cannot
  * duplicate a message.
  */
-export function prependedMessages(view: ChatView, conversationId: string, older: Message[], hasMoreBefore: boolean): ChatView {
+export function prependedMessages(view: ChatView, conversationId: string, older: Message[], hasMoreBefore: boolean, windowStartPosition?: number): ChatView {
   if (view.conversation?.id !== conversationId) return view;
   const known = new Set(view.messages.map((message) => message.id));
   const added = older.filter((message) => !known.has(message.id));
-  return { ...view, messages: [...added, ...view.messages], hasMoreBefore, loadingEarlier: false };
+  // The window now starts higher up the story. Prefer what the server counted;
+  // fall back to stepping the offset back by however many rows were spliced in,
+  // which is the same number whenever the page was not already on screen.
+  const start = typeof windowStartPosition === "number"
+    ? windowStartPosition
+    : Math.max(0, view.windowStartPosition - added.length);
+  return { ...view, messages: [...added, ...view.messages], hasMoreBefore, windowStartPosition: start, loadingEarlier: false };
 }
 
 /** A request that failed. Only the newest one may stop the spinner. */
@@ -107,6 +124,7 @@ export function adoptChatView(view: ChatView, characterId: string, conversation:
     messages,
     loading: false,
     hasMoreBefore: false,
+    windowStartPosition: 0,
     loadingEarlier: false,
   };
 }

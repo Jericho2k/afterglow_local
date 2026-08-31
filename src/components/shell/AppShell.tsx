@@ -43,6 +43,7 @@ import { chatHref, commandFromSearch, isCurrentHref, routeFromSearch, viewHref, 
 import { savedCreationDestination } from "@/lib/creation-actions";
 import { mergeCreationLists } from "@/lib/shell-library";
 import { acceptsResponse, adoptChatView, chatFailed, chatLoaded, clearChatView, emptyChatView, openChatView, prependedMessages, type ChatView } from "@/lib/chat-view";
+import { messageFingerprint } from "@/lib/message-identity";
 
 type WorldWithCount = StudioWorld;
 
@@ -173,7 +174,7 @@ export default function AppShell() {
 
   const [creatingConversation, setCreatingConversation] = useState(false);
   const pinnedToBottomRef = useRef(true);
-  const variantDesiredRef = useRef(new Map<string,{ message:Message; index:number; position:number }>());
+  const variantDesiredRef = useRef(new Map<string,{ message:Message; index:number; localIndex:number }>());
   const variantWorkersRef = useRef(new Set<string>());
   const branchPendingRef = useRef<string | null>(null);
   const routeHandledRef=useRef(false);
@@ -420,7 +421,7 @@ export default function AppShell() {
   const loadChat = useCallback(async (characterId: string, conversationId?: string) => {
     const query = new URLSearchParams({ characterId });
     if (conversationId) query.set("conversationId", conversationId);
-    return api<{ conversations: Conversation[]; conversation: Conversation | null; messages: Message[]; hasMoreBefore?: boolean }>(`/api/conversations?${query}`);
+    return api<{ conversations: Conversation[]; conversation: Conversation | null; messages: Message[]; hasMoreBefore?: boolean; windowStartPosition?: number }>(`/api/conversations?${query}`);
   }, []);
 
   /*
@@ -446,7 +447,8 @@ export default function AppShell() {
   const refreshChat = useCallback(async (characterId: string, conversationId?: string) => {
     const data = await loadChat(characterId, conversationId);
     setChatView((view) => view.request?.characterId === characterId
-      ? { ...view, conversation: data.conversation, messages: data.messages, loading: false }
+      ? { ...view, conversation: data.conversation, messages: data.messages, loading: false,
+          hasMoreBefore: Boolean(data.hasMoreBefore), windowStartPosition: data.windowStartPosition ?? 0 }
       : view);
     setConversations(data.conversations);
     // A refresh never starts a story. If the last one was just deleted there is
@@ -476,8 +478,8 @@ export default function AppShell() {
     const anchorTop = list?.scrollTop ?? 0;
     try {
       const query = new URLSearchParams({ characterId: view.request?.characterId ?? "", conversationId, before: oldest });
-      const data = await api<{ messages: Message[]; hasMoreBefore?: boolean }>(`/api/conversations?${query}`);
-      setChatView((current) => prependedMessages(current, conversationId, data.messages, Boolean(data.hasMoreBefore)));
+      const data = await api<{ messages: Message[]; hasMoreBefore?: boolean; windowStartPosition?: number }>(`/api/conversations?${query}`);
+      setChatView((current) => prependedMessages(current, conversationId, data.messages, Boolean(data.hasMoreBefore), data.windowStartPosition));
       requestAnimationFrame(() => {
         const node = messagesRef.current;
         if (node) node.scrollTop = anchorTop + (node.scrollHeight - anchorHeight);
@@ -660,7 +662,7 @@ export default function AppShell() {
         setChatView((view) => {
           if (!acceptsResponse(view, nonce)) return view;
           setConversations(data.conversations);
-          return chatLoaded(view, nonce, opened, data.messages, Boolean(data.hasMoreBefore));
+          return chatLoaded(view, nonce, opened, data.messages, Boolean(data.hasMoreBefore), data.windowStartPosition ?? 0);
         });
         // Off the critical path: the transcript is on screen by now, and the
         // count beside Memories is not worth a round trip in front of it.
@@ -892,20 +894,41 @@ export default function AppShell() {
     setEditingMessageId(message.id); setEditDraft(message.content);
   }
 
-  async function saveMessageEdit(message: Message, messagePosition: number) {
+  /**
+   * Where a rendered message sits in the STORY, and proof of which message it is.
+   *
+   * The transcript on screen is a window, so its indices are not conversation
+   * positions; `windowStartPosition` is how many messages precede the window and
+   * turns one into the other. The fingerprint is what lets the server refuse
+   * rather than guess if it ever has to fall back to that position — see
+   * src/lib/message-identity.ts.
+   */
+  async function mutationLocator(message: Message, index: number) {
+    return {
+      conversationId: message.conversationId,
+      messagePosition: chatViewRef.current.windowStartPosition + index + 1,
+      messageFingerprint: await messageFingerprint(message.role, message.content),
+    };
+  }
+
+  async function saveMessageEdit(message: Message, index: number) {
     const content = editDraft.trim();
     if (!content) return;
     if (content === message.content) { setEditingMessageId(null); return; }
     try {
-      const data = await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ messageId: message.id, content, truncateAfter: false, conversationId: message.conversationId, messagePosition }) });
+      const locator = await mutationLocator(message, index);
+      const data = await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ messageId: message.id, content, truncateAfter: false, ...locator }) });
       setMessages((items) => items.map((item) => item.id === message.id ? data.message : item));
       setEditingMessageId(null);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not edit message"); }
   }
 
-  function selectVariant(message: Message, index: number, messagePosition: number) {
+  function selectVariant(message: Message, index: number, localIndex: number) {
     if (streaming || index === message.selectedVariant || index < 0 || index >= message.variants.length) return;
-    variantDesiredRef.current.set(message.id,{message,index,position:messagePosition});
+    // The locator describes the message as the SERVER currently holds it, which
+    // is the selection in `message` — not the one being moved to, and not
+    // whatever a later tap optimistically painted on screen.
+    variantDesiredRef.current.set(message.id,{message,index,localIndex});
     setMessages((items) => items.map((item) => item.id === message.id ? { ...item, selectedVariant:index, content:item.variants[index] } : item));
     if (variantWorkersRef.current.has(message.id)) return;
     variantWorkersRef.current.add(message.id);
@@ -920,12 +943,13 @@ export default function AppShell() {
           const desired=variantDesiredRef.current.get(message.id);
           if (!desired) break;
           try {
-            const data=await api<{message:Message}>(`/api/messages/${message.id}`,{method:"PATCH",body:JSON.stringify({messageId:message.id,variantIndex:desired.index,conversationId:desired.message.conversationId,messagePosition:desired.position})});
+            const locator=await mutationLocator(desired.message,desired.localIndex);
+            const data=await api<{message:Message}>(`/api/messages/${message.id}`,{method:"PATCH",body:JSON.stringify({messageId:message.id,variantIndex:desired.index,...locator})});
             const latest=variantDesiredRef.current.get(message.id);
             if (!latest || latest.index !== desired.index) continue;
             variantDesiredRef.current.delete(message.id);
             setMessages((items)=>items.map((item)=>item.id===message.id&&item.selectedVariant===desired.index?data.message:item));
-            reloadAfterSave=desired.position<messages.length;
+            reloadAfterSave=desired.localIndex<messages.length-1;
           } catch (e) {
             const latest=variantDesiredRef.current.get(message.id);
             if (latest && latest.index !== desired.index) continue;
@@ -953,10 +977,11 @@ export default function AppShell() {
     finally { branchPendingRef.current=null; setBranchPendingMessageId(null); }
   }
 
-  async function deleteFromMessage(message: Message, messagePosition: number) {
+  async function deleteFromMessage(message: Message, index: number) {
     if (!conversation || streaming || !window.confirm("Delete this message and everything after it?")) return;
     try {
-      await api(`/api/messages/${message.id}`, { method: "DELETE", body: JSON.stringify({ messageId: message.id, conversationId: message.conversationId, messagePosition }) });
+      const locator = await mutationLocator(message, index);
+      await api(`/api/messages/${message.id}`, { method: "DELETE", body: JSON.stringify({ messageId: message.id, ...locator }) });
       await refreshChat(conversation.characterId, conversation.id);
     }
     catch (e) { setError(e instanceof Error ? e.message : "Could not delete message"); }
@@ -1148,9 +1173,9 @@ export default function AppShell() {
                 <div className="message-stack">
                   <div className="message-meta"><strong>{message.role === "assistant" ? creationSubject(selected) : activePersona?.name || "You"}</strong><time>{time(message.createdAt)}</time></div>
                   <div className={`bubble ${!message.content && streaming ? "typing" : ""} ${editingMessageId === message.id ? "editing" : ""}`} style={editingMessageId === message.id && editWidth ? { width: editWidth } : undefined}>
-                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index + 1); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index + 1)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" && openingBlocks(message, index) ? <RichMessage blocks={openingBlocks(message, index)} bucket={characterAvatarBucket} /> : <StyledMessage content={message.content} providerEscapes={message.role === "assistant"} />) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index + 1)}><ChevronLeft size={15} aria-hidden /></button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index + 1)}><ChevronRight size={15} aria-hidden /></button><em>Selected</em></div>}</>}
+                    {editingMessageId === message.id ? <div className="inline-editor"><textarea ref={editorRef} rows={1} autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setEditingMessageId(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveMessageEdit(message,index); } }} /><div><span>Esc to cancel · ⌘/Ctrl + Enter to save</span><button onClick={() => setEditingMessageId(null)}>Cancel</button><button className="save-edit" disabled={!editDraft.trim()} onClick={() => void saveMessageEdit(message,index)}>Save</button></div></div> : <>{message.content ? (message.role === "assistant" && openingBlocks(message, index) ? <RichMessage blocks={openingBlocks(message, index)} bucket={characterAvatarBucket} /> : <StyledMessage content={message.content} providerEscapes={message.role === "assistant"} />) : <><i /><i /><i /></>}{message.role === "assistant" && message.content && message.variants.length > 1 && <div className="variant-picker"><button aria-label="Previous response option" disabled={streaming || message.selectedVariant === 0} onClick={() => void selectVariant(message,message.selectedVariant - 1,index)}><ChevronLeft size={15} aria-hidden /></button><span>Option <strong>{message.selectedVariant + 1}</strong> of {message.variants.length}</span><button aria-label="Next response option" disabled={streaming || message.selectedVariant === message.variants.length - 1} onClick={() => void selectVariant(message,message.selectedVariant + 1,index)}><ChevronRight size={15} aria-hidden /></button><em>Selected</em></div>}</>}
                   </div>
-                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}><Pencil size={12} aria-hidden />Edit</button><button onClick={() => void deleteFromMessage(message,index + 1)}><Eraser size={12} aria-hidden />Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?<><LoaderCircle size={12} className="spin" aria-hidden />Creating…</>:<><GitBranch size={12} aria-hidden />Branch here</>}</button><button title="See what story context this reply was written from" onClick={() => setRecallMessage(message)}><BrainCircuit size={12} aria-hidden />{contextActionLabel(message)}</button>{conversation && <MemoryFeedback messageId={message.id} conversationId={conversation.id} />}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}><RefreshCw size={12} aria-hidden />Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}><Play size={12} aria-hidden />Continue</button></>}</div>}
+                  {message.content && editingMessageId !== message.id && <div className={`message-actions ${streaming ? "pending" : ""}`} aria-hidden={streaming}><button onClick={(e) => beginEdit(message, e.currentTarget.closest(".message-stack")?.querySelector(".bubble"))}><Pencil size={12} aria-hidden />Edit</button><button onClick={() => void deleteFromMessage(message,index)}><Eraser size={12} aria-hidden />Delete from here</button>{message.role === "assistant" && <><button disabled={Boolean(branchPendingMessageId)} title="Create a separate story containing everything through this reply" onClick={() => void branchFromMessage(message)}>{branchPendingMessageId===message.id?<><LoaderCircle size={12} className="spin" aria-hidden />Creating…</>:<><GitBranch size={12} aria-hidden />Branch here</>}</button><button title="See what story context this reply was written from" onClick={() => setRecallMessage(message)}><BrainCircuit size={12} aria-hidden />{contextActionLabel(message)}</button>{conversation && <MemoryFeedback messageId={message.id} conversationId={conversation.id} />}</>}{message.role === "assistant" && index === messages.length - 1 && <><button onClick={() => void send("regenerate")}><RefreshCw size={12} aria-hidden />Regenerate</button><button className="continue-action" title="Generate the character's next message" onClick={() => void send("continue")}><Play size={12} aria-hidden />Continue</button></>}</div>}
                 </div>
               </article>
             ))}

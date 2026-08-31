@@ -3,6 +3,7 @@ import { newDb } from "pg-mem";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ensureSchema, getDefaultSettings, messageFromRow, query, setPoolForTesting, transaction } from "@/lib/db";
 import { invalidateDerivedContinuity, relevantMemories } from "@/lib/memory";
+import { messageFingerprint } from "@/lib/message-identity";
 import { deleteMessagesFromPosition, lockMessageForMutation, persistedMessagePosition, truncateMessagesAfterPosition } from "@/lib/message-mutations";
 
 const ownerId = "11111111-1111-4111-8111-111111111111";
@@ -235,8 +236,27 @@ describe("PostgreSQL persistence", () => {
     await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant','First','2026-01-01T00:00:00Z')",[firstId,conversationId]);
     await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'user','Second','2026-01-01T00:00:01Z')",[secondId,conversationId]);
 
-    const recovered = await transaction((client) => lockMessageForMutation(client,crypto.randomUUID(),{ conversationId,messagePosition:2 }));
-    expect(String(recovered?.id)).toBe(secondId);
+    const locator = { conversationId,messagePosition:2,messageFingerprint: await messageFingerprint("user","Second") };
+    const recovered = await transaction((client) => lockMessageForMutation(client,crypto.randomUUID(),locator));
+    expect(recovered.ok).toBe(true);
+    expect(recovered.ok && String(recovered.row.id)).toBe(secondId);
+  });
+
+  it("refuses a positional recovery it cannot prove is the intended message", async () => {
+    const characterId = crypto.randomUUID(); const conversationId = crypto.randomUUID();
+    await query("INSERT INTO characters (id,name) VALUES ($1,'Mara')",[characterId]);
+    await query("INSERT INTO conversations (id,character_id,title) VALUES ($1,$2,'Identity sync')",[conversationId,characterId]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'assistant','First','2026-01-01T00:00:00Z')",[crypto.randomUUID(),conversationId]);
+    await query("INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ($1,$2,'user','Second','2026-01-01T00:00:01Z')",[crypto.randomUUID(),conversationId]);
+
+    // Right position, wrong message: the row there is not the one described.
+    const wrongMessage = { conversationId,messagePosition:2,messageFingerprint: await messageFingerprint("user","Something else entirely") };
+    const mismatched = await transaction((client) => lockMessageForMutation(client,crypto.randomUUID(),wrongMessage));
+    expect(mismatched).toEqual({ ok:false, reason:"unverified" });
+
+    // No proof offered at all is refused rather than guessed at.
+    const unproven = await transaction((client) => lockMessageForMutation(client,crypto.randomUUID(),{ conversationId,messagePosition:2 }));
+    expect(unproven).toEqual({ ok:false, reason:"unverified" });
   });
 
   it("truncates by stable position without deleting the edited message", async () => {
