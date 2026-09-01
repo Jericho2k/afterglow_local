@@ -211,9 +211,41 @@ describe("moving the changing half changes what can be reused", () => {
   it("never puts anything after the turn being answered", () => {
     // Models weight the final message heavily. Continuity goes before it, not
     // after it, or the reply would be a reply to the wrong thing.
-    const messages = turn(56, summary, "tail");
-    const conversation = windowFor(56);
+    //
+    // 57 rather than 56, because the fixture alternates and 56 turns end on an
+    // ASSISTANT one. That is a real transcript shape — it is what regenerating
+    // a reply produced by Continue leaves behind — but it is not the shape this
+    // rule is about, and asserting the rule against it was quietly asserting
+    // the bug below.
+    const messages = turn(57, summary, "tail");
+    const conversation = windowFor(57);
+    expect(conversation.at(-1)!.role).toBe("user");
     expect(messages.at(-1)!.content).toBe(conversation.at(-1)!.content);
     expect(messages.at(-2)!.role).toBe("system");
+  });
+
+  it("does not wedge continuity between a reader's turn and the reply after it", () => {
+    /*
+     * THE SHAPE REGENERATE PRODUCED, AND WHY IT WAS MALFORMED.
+     *
+     * A transcript whose newest turn is an assistant one — every regeneration
+     * of a reply that itself followed a reply — used to come out as
+     * `[…, user, system, assistant]`: a system message inserted between the
+     * reader's turn and the model's own, and a request whose final message is
+     * an assistant turn, which several upstreams read as a prefill to extend
+     * rather than a turn to answer and some reject outright.
+     *
+     * There is no reader's turn at the tail to protect here, so continuity goes
+     * last: still immediately before the model writes, still nothing after the
+     * reader's own words.
+     */
+    const messages = turn(56, summary, "tail");
+    const conversation = windowFor(56);
+    expect(conversation.at(-1)!.role).toBe("assistant");
+    expect(messages.at(-1)!.role).toBe("system");
+    expect(messages.at(-2)!.content).toBe(conversation.at(-1)!.content);
+    // And the transcript itself is intact: no system message inside it.
+    const transcriptRoles = messages.slice(1, -1).map((message) => message.role);
+    expect(transcriptRoles).not.toContain("system");
   });
 });

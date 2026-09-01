@@ -4,7 +4,7 @@ import {
   editorOriginKey, forgetEditorOrigin, markEditorOpenedFromCreation,
   savedEditDestination, takeEditorOrigin,
 } from "@/lib/editor-navigation";
-import { chatCta, chatCtaDescription, newStoryLabel } from "@/lib/creation-actions";
+import { chatCta, chatCtaDescription } from "@/lib/creation-actions";
 
 /**
  * Three navigation complaints, and the decisions behind them.
@@ -132,9 +132,11 @@ describe("the chat button resumes rather than creating", () => {
     expect(chatCtaDescription(scenario, chatCta(scenario, storyId))).toBe("Continue your most recent story in The Final War");
   });
 
-  it("keeps beginning again as its own action", () => {
-    expect(newStoryLabel).toBe("New story");
+  it("never turns the main button back into a create", () => {
+    // The `+` beside it is gone; this is the rule that made it unnecessary.
+    // A creation the reader already has a story with resumes, always.
     expect(chatCta(character, storyId).kind).not.toBe("start");
+    expect(chatCta(scenario, storyId).kind).not.toBe("start");
   });
 });
 

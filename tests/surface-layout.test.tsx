@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { declarationsFor } from "./helpers/css";
 import { creationCtaDescription, creationCtaLabel, creationTitle, inlineTitle } from "@/lib/creation";
 
 /**
@@ -156,8 +157,24 @@ describe("long unbroken content cannot set the width of a page", () => {
     expect(rule(desktop, ".primaryCta")).toContain("min-width: 0");
   });
 
-  it("keeps the chat header's title on one line", () => {
-    expect(globals).toContain(".identity-profile strong{display:block;min-width:0;max-width:min(52vw,520px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}");
+  it("keeps the chat header's title on one line, bounded by its container", () => {
+    /*
+     * This used to match the rule byte for byte, INCLUDING the cap it declared
+     * — `max-width: min(52vw, 520px)`. That cap was the bug it was guarding:
+     * a viewport fraction is not the space the title has, and on a 393px phone
+     * the phone variant allowed 236px into a slot of about 229. So the
+     * assertion is now the two properties that matter and the one that must
+     * never come back: it truncates, it can shrink, and it is measured against
+     * its container rather than against the screen. See
+     * tests/mobile-chat-layout.test.ts and
+     * scripts/viewport-overflow-audit.mjs.
+     */
+    const title = declarationsFor(globals, ".identity-profile strong");
+    expect(title["white-space"]).toBe("nowrap");
+    expect(title.overflow).toBe("hidden");
+    expect(title["text-overflow"]).toBe("ellipsis");
+    expect(title["min-width"]).toBe("0");
+    expect(title["max-width"]).toBe("100%");
   });
 });
 

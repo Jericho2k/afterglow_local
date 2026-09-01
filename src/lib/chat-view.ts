@@ -79,6 +79,35 @@ export function acceptsResponse(view: ChatView, nonce: number) {
   return view.request?.nonce === nonce;
 }
 
+/**
+ * Whether the view is ALREADY showing (or already loading) what an address asks
+ * for.
+ *
+ * This is the difference between a navigation and standing still, and getting
+ * it wrong is what broke Back out of a creation page. Pressing Back fires
+ * `popstate`, the shell read the address, and the address said "chat with
+ * creation X, story Y" — which was already exactly what was on screen. Applying
+ * it anyway meant `openChatView`: transcript cleared, nonce bumped, `loading`
+ * set, and a second identical fetch racing the first. The reader saw the chat
+ * they had just left blank itself and rebuild, and if either request failed
+ * they got an error banner over a conversation that had never been broken.
+ *
+ * A route with NO conversation id is "some story with this creation", which the
+ * open one satisfies. A route naming a story matches either the request that
+ * asked for it or the conversation that arrived; those differ for exactly one
+ * turn, while a story opened without an id is being resolved.
+ *
+ * A view holding neither a conversation nor a request in flight is showing
+ * nothing, and "nothing" never satisfies an address — that is the case where
+ * re-asking is right, and it is how a failed load recovers on the next Back.
+ */
+export function showsRoute(view: ChatView, characterId: string, conversationId: string | null) {
+  if (view.request?.characterId !== characterId) return false;
+  if (!view.loading && view.conversation === null) return false;
+  if (conversationId === null) return true;
+  return view.request?.conversationId === conversationId || view.conversation?.id === conversationId;
+}
+
 /** A story that arrived for the request that is still current. */
 export function chatLoaded(view: ChatView, nonce: number, conversation: Conversation, messages: Message[], hasMoreBefore = false, windowStartPosition = 0): ChatView {
   if (!acceptsResponse(view, nonce)) return view;

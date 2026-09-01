@@ -120,5 +120,12 @@ export function chatCtaDescription(creation: CtaCreation, cta: ChatCta) {
     : `Continue your most recent story in ${title}`;
 }
 
-/** The separate, deliberate action. Never what the main button does. */
-export const newStoryLabel = "New story";
+/*
+ * "New story" used to be a `+` beside the creation page's main call to action,
+ * and its label lived here. The control is gone: two primary-looking buttons
+ * competing for one thumb is worse than one, and beginning again is still a
+ * real action inside the chat's story drawer, where it is spelled out as
+ * "Start separate story" rather than being a glyph. What is NOT gone is the
+ * rule this file exists for — the main button resumes when there is something
+ * to resume, and never quietly creates a second conversation.
+ */

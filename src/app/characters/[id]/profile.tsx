@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Award, BadgeCheck, Bookmark, ChevronDown, Compass, Globe2, Images, Link2,
-  Flag, MessageCircle, Pencil, Plus, Share2, ShieldAlert, Sparkles, Tag, Trash2, UserRound, Users, X,
+  Flag, MessageCircle, Pencil, Share2, ShieldAlert, Sparkles, Tag, Trash2, UserRound, Users, X,
 } from "lucide-react";
 import type { AttachedWorld, Character, CharacterComment } from "@/lib/types";
 import {
@@ -16,7 +16,7 @@ import { accentVariables } from "@/lib/accent";
 import { castMemberKey } from "@/lib/cast";
 import { imageCount } from "@/lib/rich-content";
 import { RichContent } from "@/components/rich";
-import { chatCta, chatCtaDescription, creationActions, creationEditHref, newStoryLabel } from "@/lib/creation-actions";
+import { chatCta, chatCtaDescription, creationActions, creationEditHref } from "@/lib/creation-actions";
 import { chatHref } from "@/lib/shell-route";
 import { compactCount, exactCount } from "@/lib/format";
 import { creatorProfileHref } from "@/lib/follows";
@@ -80,6 +80,31 @@ function relative(value: string) {
   return `${years} year${years === 1 ? "" : "s"} ago`;
 }
 
+/**
+ * What this tab has already been shown, per creation.
+ *
+ * Module scope, so it survives the component being unmounted and remounted by
+ * a navigation, and dies with the tab. It holds only what the API already
+ * returned to this reader — nothing is derived, nothing is shared, and every
+ * entry is replaced by the next successful fetch for the same creation.
+ *
+ * Bounded, because a reader can walk a long way through a cast: the oldest
+ * entries are dropped, so a browsing session cannot grow this without limit.
+ */
+const creationCacheLimit = 12;
+const creationCache = new Map<string, { detail: Detail | null; comments: CharacterComment[] | null }>();
+
+function rememberCreation(characterId: string, patch: Partial<{ detail: Detail; comments: CharacterComment[] }>) {
+  const existing = creationCache.get(characterId) ?? { detail: null, comments: null };
+  creationCache.delete(characterId);
+  creationCache.set(characterId, { ...existing, ...patch });
+  while (creationCache.size > creationCacheLimit) {
+    const oldest = creationCache.keys().next().value;
+    if (oldest === undefined) break;
+    creationCache.delete(oldest);
+  }
+}
+
 export default function CharacterProfile({ characterId }: { characterId: string }) {
   const router = useRouter();
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -99,18 +124,69 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   const [reportState,setReportState]=useState<"ready"|"submitting"|"success"|"error">("ready");
   const [reportError,setReportError]=useState("");
 
+  /*
+   * COMING BACK TO THIS PAGE MUST NOT MEAN LOOKING AT AN EMPTY ONE.
+   *
+   * The router unmounts this component when the reader opens a cast member, so
+   * pressing Back remounts it with `detail` at null — an empty page with a
+   * spinner — and the whole creation is fetched again over the network. On a
+   * phone that is the reported "mostly black with empty elements": the reader
+   * came BACK to a page they had just been reading and got a blank one, for as
+   * long as a round trip took, with the images arriving later still.
+   *
+   * The fix is not an animation or a lifecycle event; it is that the data
+   * outlives the component. This cache is deliberately tiny and deliberately
+   * per-tab: it holds what the reader has already been shown, it is written
+   * when a fetch succeeds, and a Back that finds an entry paints the page in
+   * the first frame and revalidates behind it. There is no staleness risk worth
+   * a blank screen here — the entry was fetched seconds ago, by this reader, in
+   * this tab, and the revalidation replaces it either way.
+   */
   useEffect(() => {
-    fetch(`/api/characters/${characterId}`)
+    const cached = creationCache.get(characterId);
+    if (cached) { setDetail(cached.detail); setComments(cached.comments); }
+
+    /*
+     * LATEST REQUEST WINS, AND A CANCELLED ONE MAY NOT SPEAK.
+     *
+     * Two navigations in quick succession — Back into this page while its own
+     * fetch is still in flight, or a cast member opened and abandoned — used to
+     * race, and the loser could arrive last and paint a different creation, or
+     * set an error over a page that had already loaded. The abort stops the
+     * request; the token stops its handlers, including the catch, because an
+     * aborted fetch rejects and that rejection must not become the reader's
+     * error banner.
+     */
+    const controller = new AbortController();
+    let current = true;
+    const stopped = () => !current || controller.signal.aborted;
+
+    fetch(`/api/characters/${characterId}`, { signal: controller.signal })
       .then(async (response) => {
         const body = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(body.error || "Could not open this character");
+        if (stopped()) return;
         setDetail(body);
+        rememberCreation(characterId, { detail: body });
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not open this character"));
-    fetch(`/api/comments?characterId=${characterId}`)
+      .catch((reason) => {
+        if (stopped()) return;
+        // A page that is already showing the creation from cache must not be
+        // replaced by an error because a background revalidation failed.
+        if (cached) return;
+        setError(reason instanceof Error ? reason.message : "Could not open this character");
+      });
+
+    fetch(`/api/comments?characterId=${characterId}`, { signal: controller.signal })
       .then(async (response) => (response.ok ? (await response.json()).comments : []))
-      .then(setComments)
-      .catch(() => setComments([]));
+      .then((loaded) => {
+        if (stopped()) return;
+        setComments(loaded);
+        rememberCreation(characterId, { comments: loaded });
+      })
+      .catch(() => { if (!stopped()) setComments((existing) => existing ?? []); });
+
+    return () => { current = false; controller.abort(); };
   }, [characterId]);
 
   useEffect(()=>{
@@ -242,19 +318,27 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     if (!character) return;
     const failure = await toggleCreationSave(
       { id: character.id, savedByViewer: Boolean(character.savedByViewer), saveCount: character.saveCount ?? 0 },
-      (state) => setDetail((current) => current ? {
-        ...current,
-        character: {
-          ...current.character,
-          savedByViewer: state.savedByViewer,
-          saveCount: state.saveCount,
-          // The hero stat and the button read one number, never two.
-          publicStats: { ...current.character.publicStats, saves: state.saveCount },
-        },
-      } : current),
+      (state) => setDetail((current) => {
+        if (!current) return current;
+        const next = {
+          ...current,
+          character: {
+            ...current.character,
+            savedByViewer: state.savedByViewer,
+            saveCount: state.saveCount,
+            // The hero stat and the button read one number, never two.
+            publicStats: { ...current.character.publicStats, saves: state.saveCount },
+          },
+        };
+        // The cache is what a Back into this page paints from, so a save the
+        // reader just made has to be in it — otherwise returning here would
+        // show the bookmark un-filled again for a moment.
+        rememberCreation(characterId, { detail: next });
+        return next;
+      }),
     );
     if (failure) setError(failure);
-  }, [character]);
+  }, [character, characterId]);
 
   // One primitive, shared with the creator profile: native share sheet where
   // there is one, clipboard otherwise, one message either way. It used to copy
@@ -321,7 +405,6 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   // Resume or start, decided from real data rather than from the button's own
   // wording. See `chatCta` in src/lib/creation-actions.ts.
   const cta = chatCta(character, detail.viewerConversationId ?? null);
-  const storyCount = detail.viewerConversationCount ?? 0;
   const creatorCard = detail.creatorCard ?? null;
   const rankBadge = detail.rankBadge ?? null;
   const creatorHref = creatorProfileHref(creatorCard?.username);
@@ -449,6 +532,24 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           <span>Created {created}</span>
         </p>
 
+        {/*
+          * The page's two actions, ONCE.
+          *
+          * On a phone this row is not rendered at all: the same two controls
+          * live in the fixed bar at the bottom of the page, which is where a
+          * reader on a long page can actually reach them. Two copies of one
+          * primary action is not redundancy, it is a page with two different
+          * answers to "what do I do here" — and the copy at the top was the one
+          * nobody could see by the time they had decided.
+          *
+          * On a wide screen the hero stays in view for most of the page, a
+          * floating bar would be furniture, and this row is the only instance.
+          *
+          * The `+` that used to sit between them is gone. Starting a separate
+          * story is a real action and it still exists — inside the chat, in the
+          * story drawer, where it is spelled out rather than being a glyph
+          * competing with the primary control for the same thumb.
+          */}
         <div className={styles.ctaRow}>
           {/* Stable copy inside the control, the creation's own name outside
               it. The full title is the heading directly above, and the
@@ -457,8 +558,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
               The button RESUMES when there is something to resume. It used to
               create a story on every press, which is how a reader ended up
               with a dozen one-message conversations and none of the one they
-              were actually in. Beginning again is the separate control beside
-              it, and it says so. */}
+              were actually in. */}
           <button
             className={styles.primaryCta}
             onClick={() => openChat(cta.conversationId)}
@@ -468,15 +568,6 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           >
             <Sparkles size={18} /><span>{starting ? "Opening story…" : cta.label}</span>
           </button>
-          {cta.kind === "resume" && <button
-            className={`${styles.ghostButton} ${styles.ghostWide}`}
-            onClick={() => void createStory("Could not start a new story")}
-            disabled={starting}
-            aria-label={`Start a new story with ${title}, keeping the ${storyCount === 1 ? "one you already have" : `${storyCount} you already have`}`}
-            title={newStoryLabel}
-          >
-            <Plus size={18} /><span className={styles.ghostLabel}>{newStoryLabel}</span>
-          </button>}
           <button className={styles.ghostButton} aria-pressed={Boolean(character.savedByViewer)} aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"} onClick={() => void toggleSave()}>
             <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
           </button>
@@ -508,7 +599,9 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           <ul className={styles.gallery}>
             {character.gallery.map((item) => {
               const source = avatarSource(characterAvatarBucket, item.storagePath, item.externalUrl);
-              return <li key={item.id}><img src={source} alt={item.caption} loading="lazy" /></li>;
+              // The gallery is the one place lazy loading earns its keep: full
+              // -size uploads, far below the fold, often several of them.
+              return <li key={item.id}><img src={source} alt={item.caption} loading="lazy" decoding="async" /></li>;
             })}
           </ul>
         </section>}
@@ -563,8 +656,23 @@ export default function CharacterProfile({ characterId }: { characterId: string 
               const portrait = avatarSource(characterAvatarBucket, member.avatarPath, member.avatarUrl);
               const key = castMemberKey(member);
               const body = <>
+                {/*
+                  * EAGER, DELIBERATELY.
+                  *
+                  * A cast portrait is a 52px thumbnail in a list of a handful,
+                  * so lazy loading saved nothing worth having — and it cost the
+                  * reported bug. A `loading="lazy"` image is evaluated against
+                  * the viewport as the page lays out, and a page RESTORED by
+                  * the browser lays out at scroll 0 and is scrolled afterwards;
+                  * images that were below the fold at that instant are never
+                  * re-evaluated, so returning from a cast member's page left a
+                  * list of empty boxes that filled in only when the reader
+                  * nudged the screen. `decoding="async"` keeps the paint off
+                  * the main thread, which is the part that was actually worth
+                  * having.
+                  */}
                 <span className={styles.castAvatar}>
-                  {portrait ? <img src={portrait} alt="" loading="lazy" /> : initials(member.name)}
+                  {portrait ? <img src={portrait} alt="" decoding="async" /> : initials(member.name)}
                 </span>
                 <span className={styles.castCopy}>
                   <strong>{member.name}</strong>
@@ -638,22 +746,25 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     {error && <div className={styles.toast} role="status">{error}<button onClick={() => setError("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
 
     {/*
-      * The action bar, on phones only.
+      * The action bar, on phones only, and the ONLY instance of these two
+      * controls there.
       *
       * A creation page is long — hero, definition, cast, gallery, worlds,
       * comments — and the one thing a reader came to do was at the very top of
       * it. Scrolling back up to start a story is not a gesture anybody should
-      * have to learn, so the two actions that matter follow the reader down
-      * the page.
+      * have to learn, so the two actions that matter follow the reader down the
+      * page, and the copies in the hero are not rendered beside them.
       *
-      * It is a copy of the hero's controls rather than a move of them: on a
-      * desktop the hero row is visible for most of the page and a floating bar
-      * would be furniture. It is hidden while the report dialog is open,
-      * because that dialog covers the viewport and a bar floating over a modal
-      * is the wrong layer.
+      * IT USES THE PAGE'S OWN BUTTONS. It previously had a style of its own — a
+      * blurred translucent pane, and a Save control shaped like nothing else on
+      * the page — which read as an advertisement floating over the content
+      * rather than as part of it. `.primaryCta` and `.ghostButton` are the
+      * controls this page already has and the ones the design is built around,
+      * so the bar reuses them exactly; only the Save gets a label, because a
+      * bare icon at the bottom of a page has no neighbours to explain it.
       *
-      * `.page` reserves the bar's height at the bottom, so it rests over the
-      * gradient and never over the last line of the last comment.
+      * Hidden while the report dialog is open: that dialog covers the viewport
+      * and a bar floating over a modal is the wrong layer.
       */}
     {!reportOpen && <div className={styles.actionBar}>
       <button
@@ -662,15 +773,15 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         disabled={starting}
         aria-label={chatCtaDescription(character, cta)}
       >
-        <Sparkles size={17} /><span>{starting ? "Opening story…" : cta.label}</span>
+        <Sparkles size={18} /><span>{starting ? "Opening story…" : cta.label}</span>
       </button>
       <button
-        className={styles.actionBarSave}
+        className={`${styles.ghostButton} ${styles.actionBarSave}`}
         aria-pressed={Boolean(character.savedByViewer)}
         aria-label={character.savedByViewer ? "Remove from your saved creations" : "Save this creation"}
         onClick={() => void toggleSave()}
       >
-        <Bookmark size={17} fill={character.savedByViewer ? "currentColor" : "none"} />
+        <Bookmark size={18} fill={character.savedByViewer ? "currentColor" : "none"} />
         <span>{character.savedByViewer ? "Saved" : "Save"}</span>
       </button>
     </div>}

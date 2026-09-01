@@ -1,5 +1,5 @@
 import type { LLMMessage, LLMUsage, ProviderAuthentication, ProviderCompletionOptions } from "./llm";
-import { ProviderError, classifyProviderFailure } from "./provider-errors";
+import { ProviderError, classifyProviderFailure, providerSpecificRejection } from "./provider-errors";
 import { providerPolicyFor } from "./provider";
 
 const baseUrl = () => (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
@@ -218,9 +218,15 @@ async function request(body: Record<string,unknown>, options: ProviderCompletion
       latencyMs: Date.now() - startedAt,
       detail,
     });
-    // A configuration, credential or billing failure is not transient. Trying
-    // it twice more only delays telling the reader something honest.
-    if (!lastError.retryable) break;
+    /*
+     * A rejection ONE HOST made about ITS OWN capabilities is not a fact about
+     * the request, so it does not end the attempt loop — the same model is
+     * asked for somewhere else. See `providerSpecificRejection`, which is
+     * deliberately narrow: it fires only for a 400/422/404 that was RELAYED
+     * from an upstream and reads as a parameter or capability complaint. A
+     * malformed request Afterglow built still fails immediately.
+     */
+    if (!lastError.retryable && !providerSpecificRejection(response.status, detail)) break;
   }
 
   throw lastError ?? new ProviderError("unknown", { provider: "openrouter", model: diagnosticModel });

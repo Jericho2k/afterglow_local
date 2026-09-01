@@ -287,6 +287,22 @@ export function continuityPlacementFor(promptCaching: boolean): ContinuityPlacem
  * The final message stays final. Models weight the last turn heavily, and
  * putting anything after the reader's own words would change what the reply is
  * a reply to.
+ *
+ * THAT LAST RULE IS ABOUT THE READER'S WORDS, NOT ABOUT THE LAST ARRAY SLOT,
+ * and conflating the two produced a malformed request for exactly one action.
+ * Regenerating a reply that is itself preceded by a reply — the ordinary shape
+ * after Continue, and the shape of any story whose newest turn is not the
+ * reader's — leaves a transcript that ends on an ASSISTANT message. Inserting
+ * the continuity block "before the last message" then produced
+ * `[…, user, system, assistant]`: a system message wedged between a reader's
+ * turn and the model's own, and a request whose final turn is an assistant one,
+ * which several upstreams read as a prefill to be extended rather than a turn
+ * to be answered and which some reject outright.
+ *
+ * So the block goes before the last USER message when there is one at the tail,
+ * and after the whole transcript when there is not. Both satisfy the rule that
+ * matters: continuity is read immediately before the model writes, and nothing
+ * is ever placed after the reader's own words.
  */
 export function writerMessages(prompt: WriterPrompt, conversation: WriterMessage[], placement: ContinuityPlacement): WriterMessage[] {
   if (placement === "system") {
@@ -295,7 +311,9 @@ export function writerMessages(prompt: WriterPrompt, conversation: WriterMessage
   const head: WriterMessage = { role: "system", content: prompt.head };
   const continuity: WriterMessage = { role: "system", content: prompt.continuity };
   if (!conversation.length) return [head, continuity];
-  return [head, ...conversation.slice(0, -1), continuity, conversation[conversation.length - 1]];
+  const last = conversation[conversation.length - 1];
+  if (last.role !== "user") return [head, ...conversation, continuity];
+  return [head, ...conversation.slice(0, -1), continuity, last];
 }
 
 /**

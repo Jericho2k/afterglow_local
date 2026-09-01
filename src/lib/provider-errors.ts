@@ -148,6 +148,41 @@ export function classifyProviderFailure(status: number, body: string): ProviderE
 }
 
 /**
+ * A 400 THAT IS ABOUT ONE HOST RATHER THAN ABOUT THE REQUEST.
+ *
+ * `bad_request` is not retryable and must stay that way: Afterglow sending
+ * something malformed is a bug, and asking three times does not fix a bug, it
+ * only makes the reader wait three times as long to be told nothing.
+ *
+ * But OpenRouter routes ONE model across many upstreams, and those upstreams do
+ * not accept the same request. An endpoint that does not implement `reasoning`,
+ * or rejects a field its neighbour ignores, answers 400 for a request that is
+ * perfectly valid at the host next to it. Treating that as "Afterglow sent
+ * something malformed" throws away every other host serving the model, which is
+ * a self-inflicted outage.
+ *
+ * The two are told apart by WHO REJECTED IT. OpenRouter's own validation
+ * failures are its own; a rejection relayed from an upstream carries that
+ * upstream's identity in the body (`provider_name`, or a "Provider X returned
+ * error" line). Only the relayed kind, and only when it also reads as a
+ * capability or parameter complaint, is worth trying somewhere else — and even
+ * then it is retried against a DIFFERENT provider for the SAME model, never
+ * with a different model and never against the host that just refused.
+ *
+ * Deliberately narrow. A relayed 400 that does not read as a parameter problem
+ * — a content-policy refusal, a malformed message array — stays exactly as
+ * non-retryable as it is today.
+ */
+const upstreamRelay = /provider_name|provider returned error|"provider"\s*:|upstream error/i;
+const capabilityComplaint = /\bnot support|unsupported|unrecognized|unrecognised|unknown (?:field|parameter|argument|option)|invalid (?:parameter|argument|field|request format)|does not accept|extra inputs are not permitted|no such parameter|is not allowed|not implemented/i;
+
+export function providerSpecificRejection(status: number, body: string) {
+  if (status !== 400 && status !== 422 && status !== 404) return false;
+  if (!body) return false;
+  return upstreamRelay.test(body) && capabilityComplaint.test(body);
+}
+
+/**
  * The operator's copy.
  *
  * Structured, one line, and the only place upstream text is written down. It
