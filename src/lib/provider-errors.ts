@@ -174,12 +174,64 @@ export function classifyProviderFailure(status: number, body: string): ProviderE
  * non-retryable as it is today.
  */
 const upstreamRelay = /provider_name|provider returned error|"provider"\s*:|upstream error/i;
-const capabilityComplaint = /\bnot support|unsupported|unrecognized|unrecognised|unknown (?:field|parameter|argument|option)|invalid (?:parameter|argument|field|request format)|does not accept|extra inputs are not permitted|no such parameter|is not allowed|not implemented/i;
+/*
+ * "MANDATORY" IS A CAPABILITY COMPLAINT TOO, AND THIS LIST DID NOT SAY SO.
+ *
+ * The wording that reached production was:
+ *
+ *   "Reasoning is mandatory for this endpoint and cannot be disabled."
+ *
+ * Every pattern here described a parameter an endpoint does not SUPPORT. None
+ * of them described one it REQUIRES, so the rejection fell through to plain
+ * `bad_request`, the attempt loop broke on attempt 1, and the reader was told
+ * "Something went wrong" for a request that any number of other hosts would
+ * have served. Both directions of the same disagreement belong here.
+ */
+const capabilityComplaint = /\bnot support|unsupported|unrecognized|unrecognised|unknown (?:field|parameter|argument|option)|invalid (?:parameter|argument|field|request format)|does not accept|extra inputs are not permitted|no such parameter|is not allowed|not implemented|\bmandatory\b|cannot be disabled|must be enabled|is required for this endpoint/i;
 
 export function providerSpecificRejection(status: number, body: string) {
   if (status !== 400 && status !== 422 && status !== 404) return false;
   if (!body) return false;
   return upstreamRelay.test(body) && capabilityComplaint.test(body);
+}
+
+/**
+ * A REJECTION AFTERGLOW CAN ANSWER BY ASKING FOR SOMETHING SLIGHTLY DIFFERENT.
+ *
+ * Failing over to another host is the right answer when a host cannot serve a
+ * request. It is the WRONG answer when every host would refuse the same thing,
+ * because the disagreement is about a parameter we chose rather than about the
+ * host — and that is exactly what happened here:
+ *
+ *   Afterglow declined reasoning, because GLM 5.3 Flash's catalogue entry says
+ *   the model thinks before it speaks and a reader mid-scene will not wait.
+ *   The endpoint answered "Reasoning is mandatory for this endpoint and cannot
+ *   be disabled." Trying the same request somewhere else spends the reader's
+ *   time to be told the same thing; trying it WITHOUT the parameter we were
+ *   refused succeeds.
+ *
+ * So this names the adaptation rather than the failure. `drop_reasoning` means:
+ * send the request again, unchanged, minus the `reasoning` key — which takes
+ * the endpoint's own default, which on an endpoint that mandates reasoning IS
+ * reasoning. That costs latency the catalogue was trying to avoid, and the
+ * alternative is refusing the reader's turn outright, which is worse.
+ *
+ * It is deliberately not the reverse. An endpoint that refuses reasoning when
+ * we ASKED for it is a host that cannot do what this engine wants, and that is
+ * a failover — the engine's request stands.
+ */
+export type ProviderAdaptation = "drop_reasoning";
+
+export function adaptableRejection(status: number, body: string, sentReasoning: boolean): ProviderAdaptation | null {
+  if (!sentReasoning) return null;
+  if (status !== 400 && status !== 422) return null;
+  if (!body) return null;
+  // Narrow on purpose: it must be about reasoning, and it must be a complaint
+  // that the parameter was refused rather than that its value was wrong.
+  if (!/reasoning|thinking/i.test(body)) return null;
+  return /\bmandatory\b|cannot be disabled|must be enabled|is required|not support|unsupported|unrecognized|unrecognised|unknown (?:field|parameter|argument|option)|not implemented|is not allowed/i.test(body)
+    ? "drop_reasoning"
+    : null;
 }
 
 /**

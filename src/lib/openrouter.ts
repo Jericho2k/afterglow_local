@@ -1,5 +1,5 @@
 import type { LLMMessage, LLMUsage, ProviderAuthentication, ProviderCompletionOptions } from "./llm";
-import { ProviderError, classifyProviderFailure, providerSpecificRejection } from "./provider-errors";
+import { adaptableRejection, ProviderError, classifyProviderFailure, providerSpecificRejection, redactProviderSecrets } from "./provider-errors";
 import { providerPolicyFor } from "./provider";
 
 const baseUrl = () => (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
@@ -136,12 +136,30 @@ async function request(body: Record<string,unknown>, options: ProviderCompletion
   // Hosts this request has already been refused by. Grows as attempts fail, so
   // the next attempt asks OpenRouter for anywhere else that serves this model.
   const failed = [...(options.excludeProviders ?? [])];
+  /*
+   * WHAT THIS REQUEST HAS LEARNED IT MAY NOT ASK FOR.
+   *
+   * Failover changes WHERE a request goes. This changes WHAT it asks for, and
+   * the two answer different rejections. An endpoint replying "Reasoning is
+   * mandatory for this endpoint and cannot be disabled" is not refusing to
+   * serve the model; it is refusing one parameter, and every other host might
+   * refuse it too — so going somewhere else spends the reader's turn to be
+   * told the same thing. Dropping the parameter and asking again succeeds.
+   *
+   * Held per request rather than per process: this is a fact about one
+   * endpoint's contract discovered at the moment it mattered, not a
+   * configuration change, and it must not silently rewrite what every later
+   * conversation sends. The catalogue and `RP_REASONING` remain the places
+   * where an intention about reasoning is expressed.
+   */
+  let negotiated: Record<string,unknown> = body;
+  const adaptations: string[] = [];
 
   for (let attempt = 0; attempt < attemptDelays.length; attempt += 1) {
     if (attemptDelays[attempt]) await wait(attemptDelays[attempt], signal);
     const startedAt = Date.now();
     const provider = providerBlock(options.modelId, attempt, failed);
-    const payload = provider ? { ...body, provider } : body;
+    const payload = provider ? { ...negotiated, provider } : negotiated;
 
     /*
      * One controller per attempt, so a deadline on the HEADERS does not later
@@ -205,6 +223,42 @@ async function request(body: Record<string,unknown>, options: ProviderCompletion
 
     const detail = (await response.text()).slice(0, 500);
     const upstreamProvider = response.headers.get("x-openrouter-provider") ?? undefined;
+
+    /*
+     * FIRST ASK WHETHER THIS IS OURS TO FIX.
+     *
+     * Before excluding the host, before deciding whether to retry at all: is
+     * the endpoint objecting to a PARAMETER rather than to the work? If so the
+     * host is fine and the request is not, so it is not added to `failed` — the
+     * next attempt goes to the same place, asking for something it will accept.
+     *
+     * Reasoning is the only parameter negotiated this way, and only in the one
+     * direction: we asked to decline it and were told we may not. Asking for it
+     * and being refused is a host that cannot do what the engine wants, which
+     * is a failover and is handled below.
+     */
+    const adaptation = adaptableRejection(response.status, detail, "reasoning" in negotiated);
+    if (adaptation === "drop_reasoning" && attempt < attemptDelays.length - 1) {
+      negotiated = Object.fromEntries(Object.entries(negotiated).filter(([key]) => key !== "reasoning"));
+      adaptations.push(adaptation);
+      /*
+       * Recorded at warn rather than error: the turn has not failed, and an
+       * operator wants to know that a catalogue intention is being overridden
+       * by an endpoint's contract. Repeated lines for one model are the signal
+       * that the catalogue entry, not the request, is what should change.
+       */
+      console.warn("[provider] endpoint refused a parameter; retrying without it", redactProviderSecrets(JSON.stringify({
+        provider: "openrouter", model: diagnosticModel, adaptation,
+        status: response.status, attempt: attempt + 1, upstreamProvider: upstreamProvider ?? null,
+        detail: detail.slice(0, 240),
+      })));
+      lastError = new ProviderError(classifyProviderFailure(response.status, detail), {
+        provider: "openrouter", model: diagnosticModel, status: response.status,
+        upstreamProvider, attempt: attempt + 1, latencyMs: Date.now() - startedAt, detail,
+      });
+      continue;
+    }
+
     // Same model, somewhere else. A host that has just refused this request is
     // not asked again on the next attempt.
     if (upstreamProvider && !failed.includes(upstreamProvider)) failed.push(upstreamProvider);

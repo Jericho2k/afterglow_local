@@ -222,6 +222,52 @@ declarations and sends no `reasoning` key, restoring the previous request shape
 exactly. `off` still forces it everywhere. This was missing when the wiring
 first shipped, which was the omission.
 
+#### It broke production, and here is exactly how
+
+The first deployment of this wiring took chat down. The failure is worth
+recording in full, because both halves of it were things this sprint had already
+claimed to have handled.
+
+```
+[provider] rp generation failed before streaming
+  category=bad_request  model=glm-5.3-flash-economy  status=400  attempt=1  latencyMs=50
+  detail={"error":{"message":"Reasoning is mandatory for this endpoint and
+          cannot be disabled.","code":400,"metadata":{"provider_name":null}}}
+```
+
+**The wording was not in the capability-complaint list.** Every pattern in
+`providerSpecificRejection` described a parameter an endpoint does not
+*support*; none described one it *requires*. So the rejection fell through to
+plain `bad_request`, the attempt loop broke on attempt 1 — visible in the log —
+and the reader was told "Something went wrong while generating the response" for
+a request that other hosts would have served. Both directions of the same
+disagreement are in the list now.
+
+**And failover would have been the wrong remedy anyway.** The endpoint is not
+refusing to serve the model; it is refusing one parameter, and every host in the
+pool may refuse the same one. Going somewhere else spends the reader's turn to
+be told the same thing.
+
+So the loop now asks a question before it asks where to go next: *is this ours
+to fix?* `adaptableRejection` recognises a rejection Afterglow can answer by
+asking for something slightly different, and the one adaptation is
+`drop_reasoning` — send the request again, unchanged, minus the `reasoning` key.
+Absent takes the endpoint's own default, which on an endpoint that mandates
+reasoning is reasoning. The host is **not** added to the excluded set, because it
+was never the problem.
+
+It is deliberately one-directional. An endpoint that refuses reasoning when an
+engine *asked* for it is a host that cannot do what the engine wants, which is a
+failover; the engine's request stands.
+
+The adaptation is per request, not per process: it is a fact about one
+endpoint's contract discovered at the moment it mattered, not a configuration
+change, and it must not quietly rewrite what every later conversation sends. The
+cost is one refused attempt — 50ms, logged at `warn` — on each turn to an
+endpoint that mandates reasoning. **Repeated warn lines for one model mean the
+catalogue entry should change, not the request**; `RP_REASONING=auto` removes the
+wasted attempt immediately while that is decided.
+
 ### 1.4 Provider-specific 400s
 
 `bad_request` remains non-retryable — a malformed request is a bug, and asking

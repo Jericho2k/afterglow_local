@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { classifyProviderFailure, providerSpecificRejection } from "@/lib/provider-errors";
+import { adaptableRejection, classifyProviderFailure, providerSpecificRejection } from "@/lib/provider-errors";
 import { approvedProviderPool, costPolicyFor, dataPolicyFor, defaultReasoningFor, modelCapabilities, providerModelId } from "@/lib/provider";
+import { streamCompletion } from "@/lib/llm";
 
 /**
  * A 400 is not always a bug in the request.
@@ -161,4 +162,137 @@ describe("the constraint bisect mirrors the real routing policy", () => {
       expect(entry.order).toEqual(modelCapabilities("openrouter", id).preferredProviders ?? []);
     });
   }
+});
+
+
+/**
+ * THE REJECTION THAT REACHED PRODUCTION, VERBATIM.
+ *
+ * Wiring `reasoningDefault` in made Afterglow send `reasoning: {enabled:false}`
+ * to GLM 5.3 Flash where it had previously sent no such key. One endpoint
+ * answered:
+ *
+ *   {"error":{"message":"Reasoning is mandatory for this endpoint and cannot be
+ *    disabled.","code":400,"metadata":{"provider_name":null}}}
+ *
+ * Two separate things then went wrong, and both are asserted here.
+ *
+ * The wording was not in the capability-complaint list, which only ever
+ * described a parameter an endpoint does not SUPPORT — never one it REQUIRES —
+ * so the attempt loop broke on attempt 1 and the reader got "Something went
+ * wrong while generating the response" for a request other hosts would serve.
+ *
+ * And failover was the wrong remedy anyway. The endpoint is not refusing to
+ * serve the model, it is refusing one parameter; every other host may refuse it
+ * too. The answer is to ask again without it.
+ */
+const mandatoryReasoning = JSON.stringify({
+  error: { message: "Reasoning is mandatory for this endpoint and cannot be disabled.", code: 400, metadata: { provider_name: null } },
+});
+
+describe("an endpoint that requires the parameter we declined", () => {
+  it("is recognised as a capability complaint, not a malformed request", () => {
+    expect(providerSpecificRejection(400, mandatoryReasoning)).toBe(true);
+    // The category is unchanged; what changed is that the loop no longer stops.
+    expect(classifyProviderFailure(400, mandatoryReasoning)).toBe("bad_request");
+  });
+
+  it("is answered by dropping the parameter rather than changing host", () => {
+    expect(adaptableRejection(400, mandatoryReasoning, true)).toBe("drop_reasoning");
+  });
+
+  it("is not adapted when we never sent the parameter", () => {
+    // Then the complaint is about something else and dropping nothing helps.
+    expect(adaptableRejection(400, mandatoryReasoning, false)).toBe(null);
+  });
+
+  it("adapts to the other direction of the same disagreement", () => {
+    for (const message of [
+      "reasoning is not supported by this deployment",
+      "unknown parameter: reasoning",
+      "thinking must be enabled for this endpoint",
+    ]) {
+      expect(adaptableRejection(400, JSON.stringify({ error: { message } }), true), message).toBe("drop_reasoning");
+    }
+  });
+
+  it("does not adapt a rejection that has nothing to do with reasoning", () => {
+    for (const [status, message] of [
+      [400, "messages: field required"],
+      [400, "content violates usage policy"],
+      [402, "insufficient credits"],
+      [429, "rate limited"],
+    ] as const) {
+      expect(adaptableRejection(status, JSON.stringify({ error: { message } }), true), message).toBe(null);
+    }
+  });
+});
+
+describe("what the adapter actually sends after being refused", () => {
+  function enableOpenRouter() {
+    vi.stubEnv("ENABLE_OPENROUTER", "true");
+    vi.stubEnv("OPENROUTER_API_KEY", "or-test-secret");
+    vi.stubEnv("OPENROUTER_BASE_URL", "https://openrouter.test/api/v1");
+    vi.stubEnv("ALLOWED_MODELS", "glm-5.3-flash-economy");
+  }
+
+  it("retries the same model, same host, without the reasoning key", async () => {
+    enableOpenRouter();
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      // The endpoint refuses the parameter, once, exactly as production did.
+      if ("reasoning" in body) return new Response(mandatoryReasoning, { status: 400 });
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }));
+
+    await streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash-economy" },
+      [{ role: "user", content: "Hi" }],
+      { modelId: "glm-5.3-flash-economy", thinking: "off", sessionId: "abc123" });
+
+    expect(bodies).toHaveLength(2);
+    // Attempt one asked to decline reasoning, as the catalogue says it should.
+    expect(bodies[0].reasoning).toEqual({ enabled: false });
+    // Attempt two dropped it entirely — NOT `enabled: true`, which would be
+    // asking for something nobody requested. Absent takes the endpoint's own
+    // default, which on an endpoint that mandates reasoning is reasoning.
+    expect("reasoning" in bodies[1]).toBe(false);
+    // Everything else is identical: same model, same session, same messages.
+    expect(bodies[1].model).toBe(bodies[0].model);
+    expect(bodies[1].session_id).toBe(bodies[0].session_id);
+    expect(bodies[1].messages).toEqual(bodies[0].messages);
+  });
+
+  it("does not blame the host for a parameter Afterglow chose", async () => {
+    enableOpenRouter();
+    const providers: Array<unknown> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { reasoning?: unknown; provider?: { ignore?: unknown } };
+      providers.push(body.provider?.ignore);
+      if ("reasoning" in body) {
+        return new Response(mandatoryReasoning, { status: 400, headers: { "x-openrouter-provider": "relace" } });
+      }
+      return new Response("data: [DONE]\n\n", { status: 200 });
+    }));
+
+    await streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash-economy" },
+      [{ role: "user", content: "Hi" }], { modelId: "glm-5.3-flash-economy", thinking: "off" });
+
+    // The retry does not exclude the endpoint that refused: it was never the
+    // problem, and excluding it would throw away the preferred host over a
+    // parameter we are no longer sending.
+    expect(providers[1]).toBeUndefined();
+  });
+
+  it("still gives up on a genuinely malformed request", async () => {
+    enableOpenRouter();
+    const calls = vi.fn(async () => new Response(JSON.stringify({ error: { message: "messages: field required", code: 400 } }), { status: 400 }));
+    vi.stubGlobal("fetch", calls);
+
+    await expect(streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash-economy" },
+      [{ role: "user", content: "Hi" }], { modelId: "glm-5.3-flash-economy", thinking: "off" })).rejects.toThrow();
+    // One attempt. A bug is not fixed by asking three times.
+    expect(calls).toHaveBeenCalledTimes(1);
+  });
 });
