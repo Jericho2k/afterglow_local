@@ -2,6 +2,7 @@ import * as deepseek from "./deepseek";
 import * as openrouter from "./openrouter";
 import { providerModelId, resolveModel } from "./provider";
 import type { InferenceFunding } from "./byok";
+import type { ReasoningEffort } from "./reasoning";
 
 export type LLMMessage = { role: "system" | "user" | "assistant"; content: string };
 export type LLMUsage = deepseek.DeepSeekUsage & {
@@ -23,11 +24,12 @@ export type CompletionOptions = {
   temperature?: number;
   json?: boolean;
   /**
-   * Whether to ask the endpoint for reasoning, in three distinguishable states.
+   * Whether to ask the endpoint for reasoning, in four distinguishable states.
    *
-   *   true    ask for it
-   *   false   say nothing, and take whatever the endpoint does by default
-   *   "off"   ask for NONE, explicitly
+   *   true     ask for it
+   *   false    say nothing, and take whatever the endpoint does by default
+   *   "off"    ask for NONE, explicitly
+   *   effort   ask for it and say how much
    *
    * The difference between the last two is not pedantry, and it was a live bug.
    * GLM 4.7 is a hybrid reasoning model, and several endpoints serving models
@@ -42,8 +44,15 @@ export type CompletionOptions = {
    * parameter at all — `ModelCapabilities.thinking` — because sending an
    * unknown parameter to one that does not is a 400 with a reader's turn
    * attached to it.
+   *
+   * A FOURTH STATE, BECAUSE SOME ENDPOINTS ALLOW NO OTHER. An effort level —
+   * "minimal", "low", "medium", "high" — asks for reasoning and says how much
+   * of it. It is what a model whose endpoint MANDATES reasoning gets instead of
+   * `"off"`: Z.AI's GLM 5.3 Flash answers `{ enabled: false }` with a 400, so
+   * "the least this endpoint will agree to" is the only expressible version of
+   * the intention `"off"` was standing in for. See src/lib/reasoning.ts.
    */
-  thinking?: boolean | "off";
+  thinking?: boolean | "off" | ReasoningEffort;
   /**
    * Opaque provider-stickiness hint for one conversation and one task.
    * Built by src/lib/inference-session.ts; adapters that have no such concept

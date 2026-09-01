@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { conversationCharacter, ownedConversation } from "@/lib/access";
 import { commitNewAssistantMessage, commitRegeneratedVariant, ProvenanceConflictError, resolveRegenerationTarget } from "@/lib/regeneration";
-import { createWriterStreamParser, streamEnding, truncatedByLength } from "@/lib/stream-parse";
+import { createWriterStreamParser, reasoningBudgetExhausted, streamEnding, truncatedByLength } from "@/lib/stream-parse";
 import { logGeneration, reasonForCategory, type GenerationDiagnostic, type GenerationFailureReason, type GenerationStage } from "@/lib/generation-diagnostics";
 import { logTimeline, startTimeline } from "@/lib/request-timing";
 import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
@@ -18,9 +18,10 @@ import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
-import { defaultReasoningFor, modelCapabilities, modelVerbosity, providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
+import { defaultReasoningFor, modelCapabilities, modelVerbosity, providerModelId, reasoningBudgetFor, reasoningIsMandatoryFor, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
 import { responseLengths, type AppSettings, type ResponseLength } from "@/lib/types";
 import { responseLengthPlan } from "@/lib/response-length";
+import { completionBudgetFor, escalatedCompletionBudget } from "@/lib/reasoning";
 import { contextExceededMessage, fitConversation } from "@/lib/context-budget";
 import { inferenceSessionId } from "@/lib/inference-session";
 import { ProviderError, classifyProviderFailure, logProviderDiagnostic, publicErrorMessage, publicErrorStatus } from "@/lib/provider-errors";
@@ -533,12 +534,30 @@ export async function POST(request: Request) {
   const capabilities = modelCapabilities(selection.providerId, selection.modelId);
   const placement = continuityPlacementFor(capabilities.promptCaching);
   const lengthPlan = responseLengthPlan(responseLength, settings.maxTokens, writerVerbosity);
+  /*
+   * THE REPLY LENGTH AND THE COMPLETION BUDGET ARE TWO NUMBERS NOW.
+   *
+   * `settings.maxTokens` was being sent as the provider's TOTAL budget, which
+   * is only correct for a model whose hidden reasoning costs nothing. On GLM
+   * 5.3 Flash — where the endpoint mandates reasoning and those tokens are
+   * billed and counted as completion tokens — it meant an 1,800-token Natural
+   * reply and a mandatory thinking pass competing for the same 1,800 tokens.
+   * The thinking won every time: `finish_reason=length`, reasoning tokens only,
+   * nothing visible at all.
+   *
+   * Response Length keeps its semantics exactly: Concise, Natural and Detailed
+   * still name what the reader SEES, and the directive still asks for the same
+   * words. What is added is headroom above that target, declared per model and
+   * zero for every model that never had the problem — so no other writer's
+   * envelope moves by a single token. See src/lib/reasoning.ts.
+   */
+  const completionBudget = completionBudgetFor(lengthPlan.maxTokens, reasoningBudgetFor(selection.modelId));
   // Budgeting reads the whole prompt regardless of how it will be delivered:
   // the tokens are the same either way, only their position changes.
   const fitted = fitConversation(modelHistory, {
     capabilities,
     systemPrompt: `${writerPrompt.head}\n\n${writerPrompt.continuity}`,
-    requestedMaxTokens: lengthPlan.maxTokens,
+    requestedMaxTokens: completionBudget.providerMaxTokens,
   });
   if (fitted.plan.overflows) {
     // The static material alone does not fit. Truncating a creator's canon to
@@ -564,6 +583,8 @@ export async function POST(request: Request) {
   at("budget_planned");
   diagnostic.promptTokensEstimated = fitted.plan.promptTokens;
   diagnostic.maxTokens = fitted.plan.maxTokens;
+  diagnostic.visibleReplyTokens = completionBudget.visibleTokens;
+  diagnostic.reasoningHeadroomTokens = completionBudget.headroomTokens;
   diagnostic.transcriptMessagesSent = fitted.messages.length;
   diagnostic.transcriptTrimmed = fitted.dropped ?? 0;
   const completionMessages = writerMessages(writerPrompt, fitted.messages, placement);
@@ -591,6 +612,39 @@ export async function POST(request: Request) {
   // being cut off: see src/lib/response-length.ts for why each ceiling sits
   // far above the words its own directive asks for. `lengthPlan` is computed
   // above, before budgeting, because budgeting may lower this ceiling to fit.
+  /*
+   * The catalogue's answer, resolved once so the request and the retry agree.
+   *
+   * `false` remains "say nothing"; it is not a refusal, and the retry below
+   * depends on knowing the difference. An effort level is a request TO reason
+   * with a size attached, which is the only "less, but not none" an endpoint
+   * that mandates reasoning will accept.
+   */
+  const catalogueReasoning = capabilities.thinking ? defaultReasoningFor(selection.modelId) : null;
+  const reasoningRequest = engineDefinition.thinking && capabilities.thinking
+    ? true as const
+    : catalogueReasoning === "on" ? true as const
+    : catalogueReasoning ?? false;
+  /*
+   * Whether "ask for no reasoning" is even available on this endpoint.
+   *
+   * The empty-reply retry's usual answer to an envelope spent on thinking is to
+   * ask for none. Where the endpoint has told us it will refuse that, sending it
+   * is a 400 with the reader's second attempt attached to it, so the retry has
+   * to change something else — the envelope. See below.
+   */
+  const canDeclineReasoning = capabilities.thinking && !reasoningIsMandatoryFor(selection.modelId);
+  /*
+   * The most the envelope could be raised to and still fit this model.
+   *
+   * Bounded by the model's own output ceiling and by the room the context
+   * budget actually left, so a retry that asks for more can never ask for more
+   * than the request can carry.
+   */
+  const roomForOutput = Math.min(
+    capabilities.maxOutputTokens || Infinity,
+    capabilities.contextTokens ? fitted.plan.availableForOutput : Infinity,
+  );
   const completionOptions = {
     signal: request.signal,
     maxTokens: fitted.plan.maxTokens,
@@ -614,30 +668,30 @@ export async function POST(request: Request) {
      * run it this stays where it is.
      */
     /*
-     * WHAT THE CATALOGUE SAYS ABOUT THIS MODEL IS NOW ACTUALLY SENT.
+     * WHAT THE CATALOGUE SAYS ABOUT THIS MODEL IS SENT, AND THE FIRST REQUEST
+     * IS VALID.
      *
      * `defaultReasoningFor` has existed since the model expansion and was
-     * called by nothing at all, so GLM 5.3 Flash's `reasoningDefault: "off"` —
-     * added because that model reasons before it speaks, with a measured
-     * time-to-first-token in the TENS OF SECONDS — did nothing. Omitting the
-     * `reasoning` parameter is not declining reasoning, it is declining to have
-     * an opinion, and a hybrid reasoning model's own opinion is to reason.
+     * called by nothing at all, so GLM 5.3 Flash's `reasoningDefault` did
+     * nothing. Wiring it up fixed that and revealed the next problem, which
+     * production logs then settled: Z.AI answers `reasoning: {enabled:false}`
+     * with 400 "Reasoning is mandatory for this endpoint and cannot be
+     * disabled", the adapter drops the parameter and asks again, and the second
+     * request takes the endpoint's own default — the MOST reasoning, which is
+     * the opposite of what was asked for, after two requests and a wait.
      *
-     * The consequence was not only latency. Reasoning tokens are spent from the
-     * SAME output envelope as the prose, so a Natural reply with 1,800 tokens
-     * of room could spend most of it thinking and then be cut off mid-sentence
-     * at `finish_reason: "length"` — which is the "responses are being cut off"
-     * report, arriving without an error because nothing was reading the finish
-     * reason.
+     * So a catalogue may now name an EFFORT instead, and that is what a model
+     * whose endpoint refuses `"off"` declares. It is not a workaround for the
+     * adaptation path; it is the request being right the first time. The
+     * adaptation stays where it is as a safety net for an endpoint nobody has
+     * met yet, and on this model it should never fire again.
      *
      * Precedence is unchanged and deliberate: an engine that WANTS reasoning
-     * still gets it; `RP_REASONING=off` is still the deployment-wide override;
-     * a model that declares no default still sends nothing, which is exactly
-     * today's behaviour for every model but the three that declare one.
+     * still wins outright; `RP_REASONING` is still the deployment-wide
+     * override; a model that declares no default still sends nothing, which is
+     * exactly today's behaviour for every model but the ones that declare one.
      */
-    thinking: engineDefinition.thinking && capabilities.thinking
-      ? true
-      : capabilities.thinking && defaultReasoningFor(selection.modelId) === "off" ? "off" as const : false,
+    thinking: reasoningRequest,
     /** The catalogue model id, so routing policy can be chosen per model. */
     modelId: selection.modelId,
     // Conversation-scoped provider stickiness. Sequential turns in one story
@@ -646,7 +700,9 @@ export async function POST(request: Request) {
     sessionId: inferenceSessionId("rp_generation", conversationId),
   };
   diagnostic.sessionScoped = Boolean(completionOptions.sessionId);
-  diagnostic.reasoning = completionOptions.thinking === true ? "on" : completionOptions.thinking === "off" ? "off" : "unset";
+  diagnostic.reasoning = completionOptions.thinking === true ? "on"
+    : completionOptions.thinking === false ? "unset"
+    : completionOptions.thinking;
   let upstream: ReadableStream<Uint8Array>;
   const requestStartedAt = Date.now();
   timeline.mark("provider-request-started");
@@ -779,6 +835,7 @@ export async function POST(request: Request) {
             outcome.finishReason ? `finish_reason=${outcome.finishReason}` : "",
             outcome.nativeFinishReason ? `native_finish_reason=${outcome.nativeFinishReason}` : "",
             outcome.reasoningSeen ? "reasoning tokens only" : "",
+            reasoningBudgetExhausted(outcome) ? "reasoning_budget_exhausted" : "",
             outcome.malformedFrames ? `malformed_frames=${outcome.malformedFrames}` : "",
             outcome.doneSeen ? "" : "stream ended without [DONE]",
           ].filter(Boolean).join("; ") || "no content and no reason given",
@@ -813,7 +870,25 @@ export async function POST(request: Request) {
           await recordAttemptUsage();
           if (upstreamProvider) exhaustedProviders.push(upstreamProvider);
           const spentOnReasoning = parser.outcome.reasoningSeen || truncatedByLength(parser.outcome);
+          /*
+           * THE ENVELOPE RAN OUT, NOT THE HOST.
+           *
+           * `finish_reason: "length"` with reasoning tokens and no prose is a
+           * generation that worked and had nowhere to put its answer. Retrying
+           * it against the same budget reproduces it exactly — which is what
+           * this path used to do — so the retry is given one larger envelope
+           * instead, bounded by the model's declared ceiling.
+           *
+           * It is also the answer where "ask for no reasoning" is not on offer:
+           * on an endpoint that mandates reasoning, sending `"off"` is a 400
+           * with the reader's last attempt attached to it.
+           */
+          const exhausted = reasoningBudgetExhausted(parser.outcome);
+          const raisedBudget = exhausted || (spentOnReasoning && !canDeclineReasoning)
+            ? escalatedCompletionBudget(completionBudget, fitted.plan.maxTokens, roomForOutput)
+            : null;
           retried = true;
+          if (raisedBudget) diagnostic.retryMaxTokens = raisedBudget;
           usage = null; providerRequestId = undefined; upstreamProvider = undefined; ttftMs = undefined;
           parser.reset();
           actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
@@ -835,12 +910,33 @@ export async function POST(request: Request) {
              * a second envelope the same way. `"off"` states it, and is only
              * sent to an endpoint that accepts the parameter at all.
              */
-            ...(spentOnReasoning && capabilities.thinking ? { thinking: "off" as const } : {}),
+            ...(spentOnReasoning && canDeclineReasoning ? { thinking: "off" as const } : {}),
+            /*
+             * A budget that was too small is not a fact about the host, so a
+             * budget retry stays exactly where it is — which also keeps the
+             * prompt cache warm, and on a dedicated model is the only place it
+             * could go anyway.
+             */
+            ...(raisedBudget ? { maxTokens: raisedBudget, excludeProviders: [] } : {}),
           });
           await consume(retry,retryStartedAt);
         }
         const assistant = parser.outcome.text;
-        if (!assistant.trim()) throw new ProviderError(parser.outcome.finishReason === "content_filter" ? "content_filtered" : "empty_response", { ...emptyDiagnostic(), attempt: 2 });
+        if (!assistant.trim()) {
+          /*
+           * Three different failures, told apart rather than averaged.
+           *
+           * A refusal is a decision, an exhausted envelope is a budget we chose
+           * and an empty response is a host that produced nothing. Only the
+           * last of them is answered by another host, which is why logging all
+           * three as `empty_response` hid this sprint's bug for as long as it
+           * did.
+           */
+          const category = parser.outcome.finishReason === "content_filter" ? "content_filtered" as const
+            : reasoningBudgetExhausted(parser.outcome) ? "reasoning_budget_exhausted" as const
+            : "empty_response" as const;
+          throw new ProviderError(category, { ...emptyDiagnostic(), attempt: 2 });
+        }
         const memoryIds = memories.map((memory) => memory.id);
         const arcIds = arcs.map((arc) => arc.id);
         /*

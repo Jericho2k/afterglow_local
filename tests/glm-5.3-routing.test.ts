@@ -74,9 +74,12 @@ describe("the catalogue exposes exactly one GLM 5.3", () => {
     expect(capabilities.promptCaching).toBe(true);
     // The model reasons before it speaks, with a measured time to first token
     // in the tens of seconds. `thinking` says the endpoint accepts the
-    // parameter; `reasoningDefault` says what production sends.
+    // parameter; `reasoningDefault` says what production sends — and what
+    // production sends is the lowest effort the endpoint will agree to, because
+    // it will not agree to none. See the reasoning suite below.
     expect(capabilities.thinking).toBe(true);
-    expect(capabilities.reasoningDefault).toBe("off");
+    expect(capabilities.reasoningDefault).toBe("low");
+    expect(capabilities.reasoningMandatory).toBe(true);
     // The ceiling stays as defence in depth, from the LIST price rather than
     // the launch discount that expires.
     expect(capabilities.costCeiling).toEqual({ promptUsdPerMillion: 0.20, completionUsdPerMillion: 0.60 });
@@ -216,6 +219,31 @@ describe("what actually leaves the process", () => {
      */
     expect(bodies[0].session_id).toBe("conversation-42");
     expect(bodies[0].reasoning).toEqual({ enabled: false });
+  });
+
+  it("puts an effort level on the wire, and never a refusal", async () => {
+    /*
+     * THE BYTES, BECAUSE THIS IS WHERE THE 400 CAME FROM.
+     *
+     * `reasoning: { enabled: false }` is what Z.AI answered with "Reasoning is
+     * mandatory for this endpoint and cannot be disabled", and the recovery —
+     * drop the parameter, ask again — took the endpoint's own default, which is
+     * MORE reasoning than the catalogue ever wanted. `effort` is OpenRouter's
+     * normalisation of a thinking budget and is the one shape that expresses
+     * "less, but not none", so it is asserted on the request itself rather than
+     * inferred from a catalogue field.
+     */
+    enableOpenRouter();
+    const bodies = captureRequests(ok);
+
+    await completionWithUsage({ providerId: "openrouter", modelId: "glm-5.3-flash" },
+      [{ role: "user", content: "Hi" }], { modelId: "glm-5.3-flash", thinking: "low" });
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].reasoning).toEqual({ effort: "low" });
+    // The two keys are mutually exclusive by construction: an effort is a
+    // request TO reason, and pairing it with `enabled` would be two answers.
+    expect(bodies[0].reasoning).not.toHaveProperty("enabled");
   });
 
   it("keeps the same host across the retries it is allowed", async () => {

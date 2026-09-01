@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { adaptableRejection, classifyProviderFailure, providerSpecificRejection } from "@/lib/provider-errors";
-import { approvedProviderPool, costPolicyFor, dataPolicyFor, defaultReasoningFor, modelCapabilities, providerModelId, providerPolicyFor } from "@/lib/provider";
+import { approvedProviderPool, costPolicyFor, dataPolicyFor, defaultReasoningFor, modelCapabilities, providerModelId, providerPolicyFor, reasoningIsMandatoryFor } from "@/lib/provider";
 import { streamCompletion } from "@/lib/llm";
 
 /**
@@ -63,24 +63,52 @@ describe("what a model says about reasoning is what gets sent", () => {
 
   /*
    * `defaultReasoningFor` shipped with the model expansion and was called by
-   * nothing at all, so GLM 5.3 Flash's `reasoningDefault: "off"` — added
-   * because that model reasons before it speaks, with a measured
-   * time-to-first-token in the tens of seconds — had no effect on any request.
-   * The chat route now consults it; this is the contract it consults.
+   * nothing at all, so a `reasoningDefault` added because a model reasons
+   * before it speaks — a measured time-to-first-token in the tens of seconds —
+   * had no effect on any request. The chat route now consults it; this is the
+   * contract it consults.
    */
   it("declines reasoning for the models that declare they should", () => {
-    expect(defaultReasoningFor("glm-5.3-flash")).toBe("off");
     expect(defaultReasoningFor("qwen3.8-flash")).toBe("off");
+  });
+
+  /*
+   * AND ASKS FOR THE LEAST, WHERE NONE IS NOT ON OFFER.
+   *
+   * Z.AI answered GLM 5.3 Flash's `reasoning: {enabled:false}` with 400
+   * "Reasoning is mandatory for this endpoint and cannot be disabled". The
+   * adapter then dropped the parameter and asked again, which takes the
+   * ENDPOINT'S default — the most reasoning, not the least — so the catalogue's
+   * intention was inverted at the cost of two requests and a reader's wait,
+   * every single turn. An effort level is the same intention in a shape this
+   * endpoint will serve, and it is served on the FIRST attempt.
+   */
+  it("names an effort where an endpoint refuses to be told no", () => {
+    expect(defaultReasoningFor("glm-5.3-flash")).toBe("low");
+    expect(reasoningIsMandatoryFor("glm-5.3-flash")).toBe(true);
+    // And nowhere else: this is one endpoint's contract, not a house style.
+    expect(reasoningIsMandatoryFor("qwen3.8-flash")).toBe(false);
+    expect(reasoningIsMandatoryFor("glm-4.7")).toBe(false);
   });
 
   it("says nothing for a model that declares no default", () => {
     expect(defaultReasoningFor("glm-4.7")).toBe(null);
   });
 
-  it("still lets a deployment decline reasoning everywhere", () => {
+  it("still lets a deployment decline reasoning everywhere it can be declined", () => {
     vi.stubEnv("RP_REASONING", "off");
     expect(defaultReasoningFor("glm-4.7")).toBe("off");
-    expect(defaultReasoningFor("glm-5.3-flash")).toBe("off");
+    expect(defaultReasoningFor("qwen3.8-flash")).toBe("off");
+    /*
+     * EXCEPT WHERE THE ENDPOINT HAS ALREADY REFUSED.
+     *
+     * The switch is an operator saying "spend nothing on thinking"; it is not
+     * an operator asking to send a request we know answers 400 and recovers by
+     * taking the endpoint's own maximum. Honouring it literally here would
+     * rebuild the exact failure `reasoningMandatory` records, so the model's
+     * declared floor — the least this endpoint serves — stands instead.
+     */
+    expect(defaultReasoningFor("glm-5.3-flash")).toBe("low");
   });
 
   it("lets a deployment put the request shape back without a deploy", () => {
@@ -102,7 +130,8 @@ describe("what a model says about reasoning is what gets sent", () => {
   it("ignores a value it does not recognise rather than guessing", () => {
     // A typo in a deployment variable must not silently change behaviour.
     vi.stubEnv("RP_REASONING", "yes");
-    expect(defaultReasoningFor("glm-5.3-flash")).toBe("off");
+    expect(defaultReasoningFor("glm-5.3-flash")).toBe("low");
+    expect(defaultReasoningFor("qwen3.8-flash")).toBe("off");
   });
 });
 
@@ -236,6 +265,16 @@ describe("an endpoint that requires the parameter we declined", () => {
   });
 });
 
+/*
+ * THE SAFETY NET, NOT THE PRODUCTION PATH — AND THE DISTINCTION IS THE SPRINT.
+ *
+ * Everything below drives the adaptation deliberately, by passing `thinking:
+ * "off"` to the adapter itself. It has to keep working for an endpoint nobody
+ * has met yet. What it must no longer BE is how GLM 5.3 Flash gets served: the
+ * catalogue now names an effort level, so the first request is valid and this
+ * path never fires on that model. See the reasoning contract suite above, and
+ * tests/glm-5.3-reasoning.test.ts for the assertion on what production builds.
+ */
 describe("what the adapter actually sends after being refused", () => {
   function enableOpenRouter() {
     vi.stubEnv("ENABLE_OPENROUTER", "true");
@@ -260,7 +299,7 @@ describe("what the adapter actually sends after being refused", () => {
       { modelId: "glm-5.3-flash", thinking: "off", sessionId: "abc123" });
 
     expect(bodies).toHaveLength(2);
-    // Attempt one asked to decline reasoning, as the catalogue says it should.
+    // Attempt one asked to decline reasoning, because this caller asked it to.
     expect(bodies[0].reasoning).toEqual({ enabled: false });
     // Attempt two dropped it entirely — NOT `enabled: true`, which would be
     // asking for something nobody requested. Absent takes the endpoint's own

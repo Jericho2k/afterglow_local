@@ -1,4 +1,5 @@
 import { redactProviderSecrets, type ProviderErrorCategory } from "./provider-errors";
+import type { ReasoningEffort } from "./reasoning";
 
 /**
  * ONE LINE PER WRITER TURN THAT AN OPERATOR CAN ACTUALLY DEBUG FROM.
@@ -90,9 +91,19 @@ export type GenerationDiagnostic = {
   upstreamProvider?: string;
   /** Whether a provider-stickiness hint was sent. Never the hint itself. */
   sessionScoped?: boolean;
-  reasoning?: "on" | "off" | "unset";
+  /** What was asked for: "on", "off", an effort level, or nothing at all. */
+  reasoning?: "on" | "off" | "unset" | ReasoningEffort;
   promptTokensEstimated?: number;
+  /** The `max_tokens` actually sent. Reply budget PLUS any reasoning headroom. */
   maxTokens?: number;
+  /**
+   * The two halves of `maxTokens`, kept visible because their collapse into one
+   * number is what produced this sprint's failure: an 1,800-token Natural reply
+   * competing with mandatory hidden reasoning inside one 1,800-token envelope.
+   * Headroom is zero for every model that declares no reasoning budget.
+   */
+  visibleReplyTokens?: number;
+  reasoningHeadroomTokens?: number;
   temperature?: number;
   responseLength?: string;
   fundingSource?: string;
@@ -125,6 +136,14 @@ export type GenerationDiagnostic = {
   replyCharacters?: number;
   /** Whether the empty-reply retry ran, and on which host it was avoided. */
   retried?: boolean;
+  /**
+   * The envelope the retry asked for, when it asked for a different one.
+   *
+   * Present only when the first attempt exhausted its budget on reasoning: it
+   * is the evidence that the retry was not the identical doomed request, which
+   * is the whole reason the retry is allowed to happen at all.
+   */
+  retryMaxTokens?: number;
   /** A trimmed, redacted upstream body. Operator only; never sent to a client. */
   detail?: string;
 };
@@ -147,6 +166,14 @@ export type GenerationFailureReason =
   | "rate_limited"
   | "upstream_unavailable"
   | "empty_response"
+  /**
+   * The generation stopped at `finish_reason: "length"` having produced
+   * reasoning tokens and no visible prose. Separated from `empty_response`
+   * because the host did nothing wrong and another host would do the same: the
+   * completion envelope was too small to hold this model's mandatory thinking
+   * and the reply together. See src/lib/reasoning.ts.
+   */
+  | "reasoning_budget_exhausted"
   | "content_filtered"
   | "stream_parse_failure"
   /**

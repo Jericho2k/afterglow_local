@@ -78,16 +78,23 @@ describe("what the picker is allowed to show", () => {
     expect(Object.keys(flash[0])).not.toContain("speedProfile");
   });
 
-  it("declines reasoning by default where a model thinks before it speaks", () => {
+  it("asks for the least reasoning each endpoint will actually agree to", () => {
     /*
-     * The one behavioural claim in this sprint with independent measurement
-     * behind it: GLM 5.3 Flash reasons before answering, and independent
-     * benchmarking put its median time-to-first-token on a reasoning-heavy
-     * suite in the tens of seconds. A reader mid-scene will have switched tabs.
-     * Coding-oriented reasoning is not known to help roleplay at all, so the
-     * default is off and an engine that explicitly wants thinking still wins.
+     * The claim behind these defaults has independent measurement behind it:
+     * these models reason before answering, and benchmarking put GLM 5.3
+     * Flash's median time-to-first-token on a reasoning-heavy suite in the tens
+     * of seconds. A reader mid-scene will have switched tabs, and
+     * coding-oriented reasoning is not known to help roleplay at all.
+     *
+     * WHAT DIFFERS BETWEEN THE TWO IS WHETHER THE ENDPOINT TAKES THE ANSWER.
+     * Z.AI answers `reasoning: {enabled:false}` on GLM 5.3 Flash with 400
+     * "Reasoning is mandatory for this endpoint and cannot be disabled", so
+     * "off" there was a rejection followed by a fallback to the endpoint's own
+     * default — the MOST reasoning, after two requests. The lowest effort it
+     * will serve is the nearest expressible version of the same intention.
+     * Qwen3.8 Flash takes "off" and keeps it.
      */
-    expect(modelCapabilities("openrouter", "glm-5.3-flash").reasoningDefault).toBe("off");
+    expect(modelCapabilities("openrouter", "glm-5.3-flash").reasoningDefault).toBe("low");
     expect(modelCapabilities("openrouter", "qwen3.8-flash").reasoningDefault).toBe("off");
     expect(modelCapabilities("openrouter", "glm-4.7").reasoningDefault).toBeUndefined();
   });

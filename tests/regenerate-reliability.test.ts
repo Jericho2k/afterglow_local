@@ -415,7 +415,7 @@ describeReal("regenerate is as reliable as send", () => {
   });
 
   /*
-   * The catalogue said GLM 5.3 Flash must not reason and nothing sent that.
+   * The catalogue's reasoning setting is what gets sent, and it is now sendable.
    *
    * `defaultReasoningFor` existed and was called by nothing, so a model added
    * precisely because it reasons before it speaks — a measured time-to-first-
@@ -423,8 +423,12 @@ describeReal("regenerate is as reliable as send", () => {
    * on a hybrid reasoning model is reasoning. Those tokens come out of the same
    * output envelope as the prose, which is how a Natural reply with 1,800
    * tokens of room got cut off mid-sentence.
+   *
+   * Wiring it up then met the second half of the problem: Z.AI refuses
+   * `{enabled:false}` outright. So GLM 5.3 Flash's declared setting is the
+   * lowest effort the endpoint serves, and that is what leaves the route.
    */
-  it("declines reasoning for a model whose catalogue entry declines it", async () => {
+  it("sends the catalogue's reasoning setting for a model that declares one", async () => {
     vi.stubEnv("ENABLE_OPENROUTER", "true");
     vi.stubEnv("OPENROUTER_API_KEY", "or-test-secret");
     vi.stubEnv("ALLOWED_MODELS", "glm-5.3-flash,glm-4.7");
@@ -436,7 +440,8 @@ describeReal("regenerate is as reliable as send", () => {
     await response.text();
 
     const options = openRouterStream.mock.calls[0][2] as { thinking?: unknown; modelId?: string };
-    expect(options.thinking).toBe("off");
+    // Not "off": that is the one thing this endpoint will not accept.
+    expect(options.thinking).toBe("low");
     expect(options.modelId).toBe("glm-5.3-flash");
 
     // And a model that declares no default keeps saying nothing, which is the

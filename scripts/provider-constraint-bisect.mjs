@@ -16,7 +16,7 @@
  *
  * ARMS (§1.6 of the sprint brief)
  *   A  model only                              the control
- *   B  + reasoning off                         what the catalogue now sends
+ *   B  + the catalogue's reasoning setting     off, on, or an effort level
  *   C  + data_collection: deny                 the privacy floor
  *   D  + max_price                             the cost ceiling
  *   E  + provider.only                         the approved pool
@@ -78,7 +78,10 @@ if (!apiKey) {
 export const constraints = {
   "glm-5.3-flash": {
     upstreamModel: "z-ai/glm-5.3-flash",
-    reasoning: "off",
+    // An effort level, not "off": this endpoint answers `{ enabled: false }`
+    // with 400 "Reasoning is mandatory for this endpoint and cannot be
+    // disabled", so "off" was never a setting production could send.
+    reasoning: "low",
     dataCollection: "deny",
     zdr: false,
     maxPrice: { prompt: 0.20, completion: 0.60 },
@@ -107,6 +110,23 @@ const catalogueIds = (option("models", option("model", "glm-5.3-flash"))).split(
 const maxTokens = Number(option("max-tokens", "48"));
 const streamed = flag("stream");
 
+/**
+ * The `reasoning` block for one declared setting, in the adapter's own shapes.
+ *
+ * Three of them, because the catalogue has three answers and an arm that sent
+ * the wrong shape would measure a request production does not build:
+ * `{enabled:true}` asks for reasoning, `{enabled:false}` declines it, and an
+ * effort level asks for it and says how much — the only "less, but not none"
+ * an endpoint that mandates reasoning will accept. Mirrors `commonFields` in
+ * src/lib/openrouter.ts.
+ */
+function reasoningBody(setting) {
+  if (!setting) return {};
+  if (setting === "on") return { reasoning: { enabled: true } };
+  if (setting === "off") return { reasoning: { enabled: false } };
+  return { reasoning: { effort: setting } };
+}
+
 /** One fixed, synthetic turn. Nothing here reads anybody's story. */
 const messages = [
   { role: "system", content: "You are a writer in a fictional scene. Answer in one short paragraph." },
@@ -129,7 +149,7 @@ function armsFor(catalogueId) {
       id: "B",
       label: `+ reasoning ${model.reasoning ?? "(model declares none — arm skipped)"}`,
       skip: !model.reasoning,
-      body: { reasoning: { enabled: model.reasoning === "on" } },
+      body: reasoningBody(model.reasoning),
     },
     {
       id: "C",
@@ -165,7 +185,7 @@ function armsFor(catalogueId) {
       id: "G",
       label: "exactly what production sends",
       body: {
-        ...(model.reasoning ? { reasoning: { enabled: model.reasoning === "on" } } : {}),
+        ...reasoningBody(model.reasoning),
         provider: {
           ...(model.order.length ? { order: model.order } : {}),
           ...(model.only.length ? { only: model.only } : {}),
