@@ -51,21 +51,20 @@ const writers = [
   /*
    * THE 2026-08 CANDIDATES.
    *
-   * GLM 5.3 Flash appears TWICE, as its two serving profiles. That is not
-   * redundancy: the whole open question about it is whether one endpoint class
-   * is cheap-and-slow and another dear-and-fast, and a single arm routed by
-   * OpenRouter's own preference would answer neither. Both arms are the same
-   * weights and the same slug, so any quality difference between them is a
-   * finding about SERVING — quantisation, truncation, a different sampler —
-   * rather than about the model, and that is worth knowing on its own.
+   * GLM 5.3 Flash appears ONCE, as the one serving profile the product ships.
+   * It used to appear twice, as "Fast" and "Economy" — the same weights and the
+   * same slug on different endpoints — and any quality gap between two such
+   * arms is a finding about SERVING — quantisation, truncation, a different
+   * sampler — rather than about the model, which is precisely why the catalogue stopped
+   * shipping two profiles of it: an unmeasured serving difference reaching
+   * readers as a choice between two names is the failure this field measures.
    *
    * Ling is here on price alone and Qwen3.8 Flash on curiosity: the community
    * research pass found no roleplay signal for either, and strong benchmarks in
    * coding and agentic work say nothing about holding a character for ninety
    * turns. Neither is promoted on anything this file has not measured.
    */
-  { id: "glm-5.3-flash", label: "GLM 5.3 Flash — Fast profile" },
-  { id: "glm-5.3-flash-economy", label: "GLM 5.3 Flash — Economy profile" },
+  { id: "glm-5.3-flash", label: "GLM 5.3 Flash" },
   { id: "ling-3.0-flash", label: "Ling 3.0 Flash (ultra-cheap candidate)" },
   { id: "qwen3.8-flash", label: "Qwen3.8 Flash (experimental)" },
   { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash (incumbent)" },
@@ -79,8 +78,8 @@ const writers = [
  * enough of what makes GLM 4.7 good to replace it for most readers". So GLM 4.7
  * is present as the incumbent to beat rather than as another candidate, Kimi is
  * the control that separates "every model does this" from "this model does
- * this", and the two GLM 5.3 profiles are held apart so a serving difference
- * cannot be mistaken for a model difference.
+ * this", and GLM 5.3 Flash appears as the single route production actually
+ * sends, so a result about it is a result about what readers get.
  *
  * The report at the end deliberately does NOT collapse into one score. A model
  * that is better at prose and worse at continuity is not "roughly equal", and

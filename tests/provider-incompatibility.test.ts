@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { adaptableRejection, classifyProviderFailure, providerSpecificRejection } from "@/lib/provider-errors";
-import { approvedProviderPool, costPolicyFor, dataPolicyFor, defaultReasoningFor, modelCapabilities, providerModelId } from "@/lib/provider";
+import { approvedProviderPool, costPolicyFor, dataPolicyFor, defaultReasoningFor, modelCapabilities, providerModelId, providerPolicyFor } from "@/lib/provider";
 import { streamCompletion } from "@/lib/llm";
 
 /**
@@ -70,7 +70,7 @@ describe("what a model says about reasoning is what gets sent", () => {
    */
   it("declines reasoning for the models that declare they should", () => {
     expect(defaultReasoningFor("glm-5.3-flash")).toBe("off");
-    expect(defaultReasoningFor("glm-5.3-flash-economy")).toBe("off");
+    expect(defaultReasoningFor("qwen3.8-flash")).toBe("off");
   });
 
   it("says nothing for a model that declares no default", () => {
@@ -94,7 +94,7 @@ describe("what a model says about reasoning is what gets sent", () => {
      */
     vi.stubEnv("RP_REASONING", "auto");
     expect(defaultReasoningFor("glm-5.3-flash")).toBe(null);
-    expect(defaultReasoningFor("glm-5.3-flash-economy")).toBe(null);
+    expect(defaultReasoningFor("qwen3.8-flash")).toBe(null);
     // And a model that never declared one is unaffected either way.
     expect(defaultReasoningFor("glm-4.7")).toBe(null);
   });
@@ -128,14 +128,14 @@ describe("the constraint bisect mirrors the real routing policy", () => {
   beforeEach(() => {
     vi.stubEnv("ENABLE_OPENROUTER", "true");
     vi.stubEnv("OPENROUTER_API_KEY", "or-test-secret");
-    vi.stubEnv("ALLOWED_MODELS", "glm-5.3-flash,glm-5.3-flash-economy,glm-4.7");
+    vi.stubEnv("ALLOWED_MODELS", "glm-5.3-flash,glm-4.7");
   });
 
   const script = readFileSync(new URL("../scripts/provider-constraint-bisect.mjs", import.meta.url), "utf8");
   const body = script.slice(script.indexOf("export const constraints = {"));
   type MirroredConstraints = {
     upstreamModel: string; reasoning: string | null; dataCollection: string | null; zdr: boolean;
-    maxPrice: { prompt: number; completion: number }; only: string[]; order: string[];
+    maxPrice: { prompt: number; completion: number }; only: string[]; order: string[]; allowFallbacks: boolean;
   };
 
   function evalConstraints(source: string): Record<string, MirroredConstraints> {
@@ -146,7 +146,7 @@ describe("the constraint bisect mirrors the real routing policy", () => {
   const mirrored = evalConstraints(body);
 
   it("mirrors at least the models the sprint is debugging", () => {
-    for (const id of ["glm-5.3-flash", "glm-5.3-flash-economy", "glm-4.7"]) {
+    for (const id of ["glm-5.3-flash", "glm-4.7"]) {
       expect(Object.keys(mirrored)).toContain(id);
     }
   });
@@ -160,6 +160,14 @@ describe("the constraint bisect mirrors the real routing policy", () => {
       expect(entry.maxPrice).toEqual(costPolicyFor(id)?.maxPrice);
       expect(entry.only).toEqual(approvedProviderPool(id));
       expect(entry.order).toEqual(modelCapabilities("openrouter", id).preferredProviders ?? []);
+      /*
+       * A dedicated model's whole point is the field the mirror could not see
+       * before: `allow_fallbacks: false`. An arm that pinned `only: ["z-ai"]`
+       * while still permitting fallbacks would measure a policy production does
+       * not ship, and would come back green on exactly the outage this routing
+       * exists to surface.
+       */
+      expect(entry.allowFallbacks).toBe(providerPolicyFor(id, 0, [])?.allowFallbacks ?? true);
     });
   }
 });
@@ -233,7 +241,7 @@ describe("what the adapter actually sends after being refused", () => {
     vi.stubEnv("ENABLE_OPENROUTER", "true");
     vi.stubEnv("OPENROUTER_API_KEY", "or-test-secret");
     vi.stubEnv("OPENROUTER_BASE_URL", "https://openrouter.test/api/v1");
-    vi.stubEnv("ALLOWED_MODELS", "glm-5.3-flash-economy");
+    vi.stubEnv("ALLOWED_MODELS", "glm-5.3-flash");
   }
 
   it("retries the same model, same host, without the reasoning key", async () => {
@@ -247,9 +255,9 @@ describe("what the adapter actually sends after being refused", () => {
       return new Response("data: [DONE]\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });
     }));
 
-    await streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash-economy" },
+    await streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash" },
       [{ role: "user", content: "Hi" }],
-      { modelId: "glm-5.3-flash-economy", thinking: "off", sessionId: "abc123" });
+      { modelId: "glm-5.3-flash", thinking: "off", sessionId: "abc123" });
 
     expect(bodies).toHaveLength(2);
     // Attempt one asked to decline reasoning, as the catalogue says it should.
@@ -276,8 +284,8 @@ describe("what the adapter actually sends after being refused", () => {
       return new Response("data: [DONE]\n\n", { status: 200 });
     }));
 
-    await streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash-economy" },
-      [{ role: "user", content: "Hi" }], { modelId: "glm-5.3-flash-economy", thinking: "off" });
+    await streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash" },
+      [{ role: "user", content: "Hi" }], { modelId: "glm-5.3-flash", thinking: "off" });
 
     // The retry does not exclude the endpoint that refused: it was never the
     // problem, and excluding it would throw away the preferred host over a
@@ -290,8 +298,8 @@ describe("what the adapter actually sends after being refused", () => {
     const calls = vi.fn(async () => new Response(JSON.stringify({ error: { message: "messages: field required", code: 400 } }), { status: 400 }));
     vi.stubGlobal("fetch", calls);
 
-    await expect(streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash-economy" },
-      [{ role: "user", content: "Hi" }], { modelId: "glm-5.3-flash-economy", thinking: "off" })).rejects.toThrow();
+    await expect(streamCompletion({ providerId: "openrouter", modelId: "glm-5.3-flash" },
+      [{ role: "user", content: "Hi" }], { modelId: "glm-5.3-flash", thinking: "off" })).rejects.toThrow();
     // One attempt. A bug is not fixed by asking three times.
     expect(calls).toHaveBeenCalledTimes(1);
   });

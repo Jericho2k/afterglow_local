@@ -36,9 +36,9 @@ not for a pin — see below.
 
 ## What production sends
 
-For any model declaring a `costCeiling` in `src/lib/provider.ts` (today: GLM 4.7,
-both GLM 5.3 Flash profiles, Ling 3.0 Flash, Qwen3.8 Flash and the DeepSeek 0731
-background candidate):
+For any **pooled** model declaring a `costCeiling` in `src/lib/provider.ts`
+(today: GLM 4.7, Ling 3.0 Flash, Qwen3.8 Flash and the DeepSeek 0731 background
+candidate):
 
 ```json
 { "session_id": "<per-conversation>",
@@ -47,6 +47,11 @@ background candidate):
                 "max_price": { "prompt": 0.65, "completion": 2.25 },
                 "data_collection": "deny" } }
 ```
+
+**GLM 5.3 Flash is not one of them any more.** It is *dedicated* rather than
+pooled — `provider.only: ["z-ai"]`, `allow_fallbacks: false`, no `order`, no
+`sort` — on every attempt, and no cost switch relaxes that. See
+`docs/glm-5.3-simplification-2026-09.md`.
 
 Three guards, each answering something the others cannot.
 

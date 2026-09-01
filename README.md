@@ -17,7 +17,7 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
 - Optional avatar URL and per-character visual accent
 - Provider/model/RP-engine catalog with conversation-level switching; changing the writer never resets Afterglow continuity
 - Streaming DeepSeek roleplay plus feature-gated OpenRouter models through the same provider adapter
-- Regenerate the latest reply, edit any message, or rewind the story from any point
+- Regenerate the latest reply, edit any message, or rewind the story from any point — and editing your own newest message, when nothing has replied to it yet, generates the reply straight away
 - Multiple named chats per character and chat breaks that preserve long-term memory
 - Three-layer continuity:
   - persistent character profile and response rules

@@ -609,17 +609,6 @@ export type ProviderDefinition = {
  */
 export type ModelCategory = "recommended" | "economy" | "free" | "experimental";
 
-/**
- * Two ways to serve ONE model, told apart by experience rather than by vendor.
- *
- * Some models are hosted by endpoints with genuinely different characters: one
- * costs almost nothing and streams slowly, another costs more and streams fast.
- * That is worth offering, and the vendor's name is not worth explaining, so the
- * distinction a reader sees is "Economy" or "Fast" and the routing that
- * implements it lives in the catalogue.
- */
-export type ModelSpeedProfile = "economy" | "fast";
-
 export type ModelDefinition = {
   id: string;
   providerId: string;
@@ -627,8 +616,6 @@ export type ModelDefinition = {
   description: string;
   supportsThinking: boolean;
   category: ModelCategory;
-  /** Set only where one model is offered as two serving profiles. */
-  speedProfile?: ModelSpeedProfile;
   /** Costs the reader nothing: a curated `:free` endpoint or the shared pool. */
   free: boolean;
   /**

@@ -66,17 +66,13 @@ const targets = [
     dataCollection: "deny",
   },
   {
+    // Dedicated, not pooled: one host, fallbacks off. The audit still checks
+    // that Z.AI serves the slug, is under the ceiling and discounts cache
+    // reads — for a single-host model those three answers are the model's
+    // whole availability story rather than one member's.
     id: "glm-5.3-flash",
     slug: "z-ai/glm-5.3-flash",
-    pool: ["z-ai", "novita", "deepinfra", "gmicloud", "makora"],
-    ceiling: { prompt: 0.20, completion: 0.60 },
-    requiresCacheReads: true,
-    dataCollection: "deny",
-  },
-  {
-    id: "glm-5.3-flash-economy",
-    slug: "z-ai/glm-5.3-flash",
-    pool: ["relace", "z-ai", "novita", "deepinfra"],
+    pool: ["z-ai"],
     ceiling: { prompt: 0.20, completion: 0.60 },
     requiresCacheReads: true,
     dataCollection: "deny",

@@ -115,6 +115,36 @@ export type ModelCapabilities = {
    */
   cacheCapableProviders?: string[];
   /**
+   * THE ONE UPSTREAM HOST THIS MODEL IS SERVED FROM, AND NO OTHER.
+   *
+   * A pool is the right shape when several endpoints serve one slug acceptably
+   * and the product is indifferent between them. It is the wrong shape when the
+   * product is NOT indifferent — when the model's own vendor is the route the
+   * deployment has chosen and every other host serving the slug is a different
+   * serving profile with its own quantisation, sampler, truncation and cache
+   * behaviour.
+   *
+   * GLM 5.3 Flash is the second case. Afterglow offers ONE GLM 5.3 Flash, and
+   * "one model" has to mean one writer rather than one name over whichever of
+   * twenty endpoints OpenRouter happened to draw — so the request names Z.AI
+   * with `provider.only` and turns fallbacks OFF. When Z.AI cannot serve it
+   * nothing else may, and the reader is told the model is temporarily
+   * unavailable, which is true and is a better answer than a different writer
+   * nobody chose.
+   *
+   * A dedicated model therefore sends NO `order` and NO `sort` on any attempt:
+   * both are ways of choosing between candidates, there is only one candidate,
+   * and OpenRouter documents that either turns its own sticky session routing
+   * off — which is the routing the prompt cache depends on.
+   *
+   * It is not a cost policy and is not lifted by one. `PROVIDER_ROUTING_MODE=auto`
+   * reverts the price ceiling; it does not re-open the other hosts, because
+   * which writer a story is written by is a product decision rather than an
+   * economic one. `PROVIDER_POOL_OVERRIDE` still moves the model deliberately,
+   * and `PIN_UPSTREAM_PROVIDER` in benchmark mode still measures another host.
+   */
+  dedicatedProvider?: string;
+  /**
    * What this model's traffic may let an upstream host do with a prompt.
    *
    * Roleplay transcripts are private conversations, and OpenRouter's own
@@ -330,41 +360,43 @@ const knownModels: InternalModelDefinition[] = [
     },
   },
   /*
-   * GLM 5.3 FLASH — the cheaper-writer candidate, offered as TWO SERVING
-   * PROFILES of one model.
+   * GLM 5.3 FLASH — ONE MODEL, ONE HOST, AND THAT IS THE WHOLE ENTRY.
    *
-   * From the reader's side these are not two models and must never be
-   * presented as two characters: same weights, same slug, same story. What
-   * differs is the endpoint underneath, and endpoints for this model differ
-   * enough to be worth choosing between — one class of host is extremely cheap
-   * and streams slowly, another costs more and streams fast. So the product
-   * distinction is "Economy" or "Fast", which is about experience, and the
-   * vendor names stay in `preferredProviders` where readers never see them.
+   * It used to be two catalogue entries, "Fast" and "Economy", which were the
+   * same weights and the same slug served by different endpoints. The premise
+   * underneath them — that one class of host is cheap-and-slow and another
+   * dear-and-fast — was never verified from this environment, so the product
+   * was asking readers to choose between two profiles nobody had measured, and
+   * both of them routed across a pool of up to five hosts whose quantisation,
+   * sampler and truncation behaviour differ. "Which writer wrote this" had no
+   * stable answer, and neither did "why did this reply come out differently
+   * from the last one".
    *
-   * WHAT IS VERIFIED AND WHAT IS NOT. The slug `z-ai/glm-5.3-flash` is current,
-   * the model is served by roughly twenty OpenRouter endpoints including
-   * Relace, and list pricing sits near $0.15/M in and $0.50/M out with a
-   * temporary launch discount around half that in force until 2026-09-09 —
-   * all read from a web search index on 2026-08-31, because egress to
-   * openrouter.ai is denied here. NOTHING per-endpoint was verifiable: the
-   * brief's premise that Relace is the cheap-and-slow route and Makora the
-   * dear-and-fast one could NOT be confirmed, and no benchmark could be run
-   * without a key. `scripts/serving-profile-benchmark.mjs` exists to settle it,
-   * and until it has been run the two profiles below carry the SAME price
-   * ceiling and differ only in which endpoints they prefer.
+   * So there is one GLM 5.3 Flash now, and it is served by Z.AI: the model's
+   * own vendor, and the one endpoint whose behaviour is the model's rather
+   * than a re-host's. `dedicatedProvider` is what carries that into the request
+   * — `provider.only: ["z-ai"]` with fallbacks OFF, and no `order` or `sort` on
+   * any attempt, because there is nothing to order and OpenRouter's own sticky
+   * routing is what keeps the prompt cache warm.
    *
-   * The ceiling is deliberately set from the LIST price, not from the
-   * discounted one. Building the product on a promotional rate that expires in
-   * nine days would mean every route silently falling out of its own guard on
-   * 2026-09-10.
+   * WHEN Z.AI IS DOWN, THE MODEL IS DOWN. That is deliberate and it is the
+   * point: OpenRouter answers 404 "no allowed providers are available", which
+   * classifies as `upstream_unavailable`, and the reader is told the model is
+   * temporarily unavailable. Quietly answering as a different serving profile
+   * would be cheaper for us and a change of writer nobody consented to.
    *
-   * REASONING DEFAULTS OFF for this model, and that is the one behavioural
-   * claim here with real evidence behind it: independent measurement of GLM 5.3
-   * Flash on a reasoning-heavy suite reported a median time-to-first-token in
-   * the tens of seconds because the model reasons before it speaks. A reader
-   * mid-scene will not wait that long, and coding-oriented reasoning is not
-   * known to help roleplay at all. `thinking: true` below says the endpoint
-   * ACCEPTS the parameter; `reasoningDefault` says what to send.
+   * WHAT SURVIVES FROM THE PREVIOUS ENTRY. The price ceiling stays as defence
+   * in depth — set from the LIST price, not from the launch discount that
+   * expires, so no route silently falls out of its own guard — and so does the
+   * privacy floor, which is never traded against availability. Prompt caching
+   * and the conversation-scoped `session_id` are unchanged, and are worth more
+   * now than they were: a single host is a single cache.
+   *
+   * REASONING STAYS OFF, and that is still the one behavioural claim here with
+   * evidence behind it: independent measurement of GLM 5.3 Flash on a
+   * reasoning-heavy suite reported a median time-to-first-token in the tens of
+   * seconds, because the model reasons before it speaks. `thinking: true` says
+   * the endpoint ACCEPTS the parameter; `reasoningDefault` says what to send.
    */
   {
     id: "glm-5.3-flash",
@@ -374,7 +406,6 @@ const knownModels: InternalModelDefinition[] = [
     description: "The newer, much cheaper GLM. Long context and quick replies for everyday stories.",
     supportsThinking: true,
     category: "recommended",
-    speedProfile: "fast",
     free: false,
     capabilities: {
       contextTokens: 1_310_720,
@@ -383,31 +414,7 @@ const knownModels: InternalModelDefinition[] = [
       jsonMode: true,
       promptCaching: true,
       costCeiling: { promptUsdPerMillion: 0.20, completionUsdPerMillion: 0.60 },
-      cacheCapableProviders: ["z-ai", "novita", "deepinfra", "gmicloud", "makora"],
-      dataPolicy: { dataCollection: "deny" },
-      reasoningDefault: "off",
-    },
-  },
-  {
-    id: "glm-5.3-flash-economy",
-    providerId: "openrouter",
-    providerModelId: "z-ai/glm-5.3-flash",
-    label: "GLM 5.3 Flash — Economy",
-    description: "The same writer as GLM 5.3 Flash, served as cheaply as possible. Replies may start and stream more slowly.",
-    supportsThinking: true,
-    category: "economy",
-    speedProfile: "economy",
-    free: false,
-    notice: "Cheapest routing. Replies can be slower to start.",
-    capabilities: {
-      contextTokens: 1_310_720,
-      maxOutputTokens: 131_072,
-      thinking: true,
-      jsonMode: true,
-      promptCaching: true,
-      costCeiling: { promptUsdPerMillion: 0.20, completionUsdPerMillion: 0.60 },
-      cacheCapableProviders: ["relace", "z-ai", "novita", "deepinfra"],
-      preferredProviders: ["relace"],
+      dedicatedProvider: "z-ai",
       dataPolicy: { dataCollection: "deny" },
       reasoningDefault: "off",
     },
@@ -738,7 +745,6 @@ function publicModel(model: InternalModelDefinition): ModelDefinition {
     description:model.description,
     supportsThinking:model.supportsThinking,
     category:model.category,
-    ...(model.speedProfile ? { speedProfile: model.speedProfile } : {}),
     free:model.free,
     ...(model.notice ? { notice: model.notice } : {}),
   };
@@ -983,7 +989,31 @@ function poolOverrideFor(modelId: string) {
 export function approvedProviderPool(modelId: string) {
   const override = poolOverrideFor(modelId);
   if (override) return override;
-  return knownModels.find((model) => model.id === modelId)?.capabilities.cacheCapableProviders?.filter((value) => safeId(value)) ?? [];
+  const capabilities = knownModels.find((model) => model.id === modelId)?.capabilities;
+  /*
+   * A DEDICATED MODEL'S POOL IS ITS ONE HOST.
+   *
+   * Answered here rather than by making the catalogue repeat the slug in two
+   * fields, so everything that reads a pool — the routing diagnostic, the
+   * request builder, `scripts/provider-pool-audit.mjs` — sees the same answer
+   * and none of them can disagree with the other.
+   */
+  const dedicated = capabilities?.dedicatedProvider;
+  if (dedicated && safeId(dedicated)) return [dedicated];
+  return capabilities?.cacheCapableProviders?.filter((value) => safeId(value)) ?? [];
+}
+
+/**
+ * Whether this model is served by exactly one upstream host, on purpose.
+ *
+ * Exported because it is the difference between "these hosts are all
+ * acceptable" and "this host or nothing", and both the request builder and the
+ * operator-facing diagnostics have to be able to tell them apart. See
+ * `ModelCapabilities.dedicatedProvider` for why GLM 5.3 Flash is the second.
+ */
+export function dedicatedProviderFor(modelId: string) {
+  const declared = knownModels.find((model) => model.id === modelId)?.capabilities.dedicatedProvider;
+  return declared && safeId(declared) ? declared : null;
 }
 
 /**
@@ -1092,6 +1122,42 @@ export function providerPolicyFor(
 ): ProviderRoutingPolicy | null {
   const pinned = pinnedProviderFor(modelId);
   if (pinned) return { only: [pinned], allowFallbacks: false };
+  /*
+   * A DEDICATED MODEL IS ONE HOST ON EVERY ATTEMPT, INCLUDING THE LAST.
+   *
+   * Answered before any of the cost machinery below, because it is not a cost
+   * decision and none of that machinery may lift it: `PROVIDER_ROUTING_MODE=auto`
+   * reverts the ceiling, `ENFORCE_PROVIDER_POOL=false` makes an ordinary pool
+   * advisory, and the emergency fallback lifts the ceiling on a final attempt —
+   * and every one of those, applied here, would answer a Z.AI outage with a
+   * different serving profile under the same name. That is the substitution
+   * this file exists to prevent, made silently and at the hour nobody is
+   * watching.
+   *
+   * So: `only` and nothing else. No `order` and no `sort`, because both are
+   * ways of choosing between candidates and there is one candidate — and both
+   * turn OpenRouter's sticky session routing off, which is what keeps the
+   * prompt cache warm. No `ignore` either: excluding the host that just failed
+   * would leave the candidate set empty, turning a retry into a guaranteed
+   * failure. Retrying the same host is what a transient 5xx deserves, and when
+   * the attempts are spent the reader is told the model is temporarily
+   * unavailable.
+   *
+   * The price ceiling and the privacy floor still travel with it. Neither can
+   * widen the route; both can still refuse it, which is the direction a guard
+   * is allowed to fail in.
+   */
+  const dedicated = dedicatedProviderFor(modelId);
+  if (dedicated) {
+    const dedicatedCost = costPolicyFor(modelId);
+    const dedicatedPrivacy = dataPolicyFor(modelId);
+    return {
+      only: approvedProviderPool(modelId),
+      allowFallbacks: false,
+      ...(dedicatedCost ? { maxPrice: dedicatedCost.maxPrice } : {}),
+      ...(dedicatedPrivacy ? { dataCollection: dedicatedPrivacy.dataCollection, ...(dedicatedPrivacy.zdr ? { zdr: true } : {}) } : {}),
+    };
+  }
   const preferred = knownModels.find((model) => model.id === modelId)?.capabilities.preferredProviders ?? [];
   const ignore = failedProviders.filter((value) => safeId(value));
   /*
