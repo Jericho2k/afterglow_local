@@ -42,7 +42,7 @@ import { claimDepth, justCreatedParam, rootDepth } from "@/lib/back-navigation";
 import { chatHref, commandFromSearch, isCurrentHref, routeFromSearch, viewHref, type AppView, type ShellView } from "@/lib/shell-route";
 import { savedCreationDestination } from "@/lib/creation-actions";
 import { mergeCreationLists } from "@/lib/shell-library";
-import { acceptsResponse, adoptChatView, chatFailed, chatLoaded, clearChatView, emptyChatView, openChatView, prependedMessages, type ChatView } from "@/lib/chat-view";
+import { acceptsResponse, adoptChatView, chatFailed, chatLoaded, clearChatView, emptyChatView, openChatView, prependedMessages, showsRoute, type ChatView } from "@/lib/chat-view";
 import { messageFingerprint } from "@/lib/message-identity";
 
 type WorldWithCount = StudioWorld;
@@ -295,9 +295,35 @@ export default function AppShell() {
     setError("");
   },[]);
 
+  /**
+   * The address, applied to the shell.
+   *
+   * IT NO LONGER RE-OPENS A CHAT THAT IS ALREADY OPEN, and that is the fix for
+   * "Back from a creation page and the chat is broken". `selectChat` clears the
+   * transcript, bumps the request nonce and sets `loading`, unconditionally.
+   * Called from `popstate` — which is exactly what pressing Back fires — it
+   * threw away a story the shell was already showing and asked for it again:
+   * a blank screen for a round trip, a second identical load racing the first,
+   * and if either failed, an error banner over a chat that had been fine. The
+   * transition looked broken because the chat underneath it genuinely was
+   * being rebuilt.
+   *
+   * A route that names the story already on screen is not a navigation, it is
+   * the same place. So it is a no-op — unless the view is in a state that
+   * cannot recover on its own, which is the one case where re-asking is right.
+   */
   const applyRoute=useCallback((route:ReturnType<typeof routeFromSearch>)=>{
     if(!route)return;
     if(route.view==="chat"){
+      if(showsRoute(chatViewRef.current,route.characterId,route.conversationId)){
+        // Already here. Keep the selection and the surface in step with the
+        // address, and leave the transcript — and any request in flight for
+        // it — completely alone.
+        setSelectedId(route.characterId);
+        setActiveView("chat");
+        setSidebarOpen(false);
+        return;
+      }
       selectChat(route.characterId,route.conversationId);
       return;
     }
@@ -459,10 +485,24 @@ export default function AppShell() {
    */
   const refreshChat = useCallback(async (characterId: string, conversationId?: string) => {
     const data = await loadChat(characterId, conversationId);
-    setChatView((view) => view.request?.characterId === characterId
-      ? { ...view, conversation: data.conversation, messages: data.messages, loading: false,
-          hasMoreBefore: Boolean(data.hasMoreBefore), windowStartPosition: data.windowStartPosition ?? 0 }
-      : view);
+    setChatView((view) => {
+      /*
+       * A REFRESH MAY ONLY LAND ON WHAT IT REFRESHED.
+       *
+       * The guard used to be the CREATION alone, which is not enough: one
+       * creation can have many stories, so a refresh started for story A could
+       * arrive after the reader had opened story B with the same character and
+       * paint A's transcript under B's header. It also had to be true that the
+       * reader had not moved on to a different creation entirely, which is
+       * what the second half still checks.
+       */
+      if (view.request?.characterId !== characterId) return view;
+      const refreshed = data.conversation?.id ?? conversationId ?? null;
+      const open = view.conversation?.id ?? view.request?.conversationId ?? null;
+      if (refreshed && open && refreshed !== open) return view;
+      return { ...view, conversation: data.conversation, messages: data.messages, loading: false,
+        hasMoreBefore: Boolean(data.hasMoreBefore), windowStartPosition: data.windowStartPosition ?? 0 };
+    });
     setConversations(data.conversations);
     // A refresh never starts a story. If the last one was just deleted there is
     // nothing to re-read, and creating one here is exactly the behaviour that
@@ -672,21 +712,29 @@ export default function AppShell() {
       .then((data) => {
         const opened = data.conversation;
         if (!opened) return;
-        setChatView((view) => {
-          if (!acceptsResponse(view, nonce)) return view;
-          setConversations(data.conversations);
-          return chatLoaded(view, nonce, opened, data.messages, Boolean(data.hasMoreBefore), data.windowStartPosition ?? 0);
-        });
+        // Same rule on the success path: decided once, outside the updater.
+        if (!acceptsResponse(chatViewRef.current, nonce)) return;
+        setConversations(data.conversations);
+        setChatView((view) => chatLoaded(view, nonce, opened, data.messages, Boolean(data.hasMoreBefore), data.windowStartPosition ?? 0));
         // Off the critical path: the transcript is on screen by now, and the
         // count beside Memories is not worth a round trip in front of it.
         loadMemories(characterId, opened.id);
       })
       .catch((reason) => {
-        setChatView((view) => {
-          if (!acceptsResponse(view, nonce)) return view;
-          setError(reason instanceof Error ? reason.message : "Could not open conversation");
-          return chatFailed(view, nonce);
-        });
+        /*
+         * A REQUEST THAT HAS BEEN SUPERSEDED MAY NOT SPEAK.
+         *
+         * The nonce check was already here and was already right; what was
+         * wrong was where the error came from. `setError` was called INSIDE the
+         * `setChatView` updater, which React may invoke more than once and
+         * invokes during render — so a stale failure could raise a banner over
+         * a chat that had loaded perfectly well. The check is now made against
+         * the ref, before anything is set, so nothing about a failed older load
+         * reaches a newer successful one.
+         */
+        if (!acceptsResponse(chatViewRef.current, nonce)) return;
+        setError(reason instanceof Error ? reason.message : "Could not open conversation");
+        setChatView((view) => chatFailed(view, nonce));
       });
   }, [authenticated, chatView.request, chatView.loading, loadChat, loadMemories]);
 
@@ -782,6 +830,9 @@ export default function AppShell() {
         buffer += decoder.decode(value, { stream: true }); const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.trim()) continue; const event = JSON.parse(line);
+          // Same rule as the catch below: a chunk for a story the reader has
+          // left is dropped rather than spliced into whatever is on screen now.
+          if (chatViewRef.current.conversation?.id !== conversation.id) continue;
           if (event.type === "delta") setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, content: m.content + event.content } : m));
           if (event.type === "done") {
             completed = true;
@@ -795,7 +846,9 @@ export default function AppShell() {
           if (event.type === "error") throw new Error(event.error);
         }
       }
-      if (completed) {
+      // The counts and the index below describe THIS conversation, so they are
+      // written only while it is still the one on screen.
+      if (completed && chatViewRef.current.conversation?.id === conversation.id) {
         // The streamed placeholder is already the canonical persisted message:
         // the server returns its final id, variants and recall references in
         // the done event. Re-fetching the whole transcript here used to keep
@@ -808,7 +861,18 @@ export default function AppShell() {
         void loadChatIndex().catch(() => undefined);
       }
     } catch (e) {
-      if (regenerationTargetId && conversation) await refreshChat(conversation.characterId,conversation.id).catch(() => undefined);
+      /*
+       * A GENERATION THAT OUTLIVED ITS CHAT MAY NOT TOUCH THE NEW ONE.
+       *
+       * Leaving the chat aborts nothing — the stream is still running — so a
+       * failure arriving after the reader has opened another story used to
+       * remove a message from it, refresh it, and raise a banner over it. Every
+       * one of those is a write about a conversation nobody is looking at any
+       * more. The check is the conversation this turn belongs to, read fresh
+       * from the ref rather than from the closure.
+       */
+      if (chatViewRef.current.conversation?.id !== conversation.id) return;
+      if (regenerationTargetId) await refreshChat(conversation.characterId,conversation.id).catch(() => undefined);
       else setMessages((items) => items.filter((m) => m.id !== placeholderId));
       setError(e instanceof Error ? e.message : "The reply was interrupted");
     } finally { setStreaming(false); }

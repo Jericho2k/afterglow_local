@@ -58,15 +58,24 @@ export type GenerationRecord = {
  * than a second one, and a row that already exists is NOT overwritten. That
  * asymmetry is the point — provenance is a statement about something that has
  * already happened, and nothing later is entitled to revise it.
+ *
+ * RETURNS WHETHER IT ACTUALLY WROTE, and that is a correction. `ON CONFLICT DO
+ * NOTHING` is the right behaviour and was the wrong silence: a second
+ * regeneration that computed the same variant index as the first wrote no row,
+ * reported success, and left a real generation with no provenance — which the
+ * inspector then reported as "not recorded" for a reply produced a second ago.
+ * The caller is now told, so a conflict is a log line an operator can find
+ * rather than a hole nobody sees.
  */
-export async function recordGeneration(client: PoolClient, record: GenerationRecord) {
-  await client.query(
+export async function recordGeneration(client: PoolClient, record: GenerationRecord): Promise<boolean> {
+  const result = await client.query(
     `INSERT INTO message_generations
      (id,message_id,conversation_id,user_id,variant_index,action,memory_versions,transcript_versions,
       arc_ids,canon_ids,scene_state_id,retrieval_run_id,transcript_messages,transcript_tokens,
       transcript_trimmed,summary_used,summary_characters,continuity_placement)
      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::uuid[],$10::uuid[],$11,$12,$13,$14,$15,$16,$17,$18)
-     ON CONFLICT (message_id,variant_index) DO NOTHING`,
+     ON CONFLICT (message_id,variant_index) DO NOTHING
+     RETURNING id`,
     [
       randomUUID(), record.messageId, record.conversationId, record.userId, record.variantIndex, record.action,
       JSON.stringify(record.memoryVersions), JSON.stringify(record.transcriptVersions),
@@ -75,6 +84,7 @@ export async function recordGeneration(client: PoolClient, record: GenerationRec
       record.summaryUsed, record.summaryCharacters, record.continuityPlacement,
     ],
   );
+  return Boolean(result.rowCount);
 }
 
 /** The generation that produced one stored variant, or null for a legacy reply. */

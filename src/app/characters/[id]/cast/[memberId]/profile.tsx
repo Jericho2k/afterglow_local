@@ -17,6 +17,20 @@ type Detail = {
   owner: boolean;
 };
 
+/** What this tab has already shown, so Back paints in the first frame. */
+const memberCacheLimit = 24;
+const memberCache = new Map<string, Detail>();
+
+function rememberMember(key: string, detail: Detail) {
+  memberCache.delete(key);
+  memberCache.set(key, detail);
+  while (memberCache.size > memberCacheLimit) {
+    const oldest = memberCache.keys().next().value;
+    if (oldest === undefined) break;
+    memberCache.delete(oldest);
+  }
+}
+
 /**
  * A cast member's own page.
  *
@@ -35,14 +49,39 @@ export default function CastMemberProfile({ creationId, memberId }: { creationId
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState("");
 
+  /*
+   * Same shape as the creation page above it, and for the same two reasons.
+   *
+   * A reader walks a cast: member, back, member, back. Each of those unmounts
+   * this component, so without the cache every step is a blank page and a round
+   * trip, and with two steps in quick succession the earlier fetch could land
+   * last and paint the wrong member. The abort ends the request and the token
+   * ends its handlers — including the catch, because an aborted fetch rejects
+   * and that rejection must not become the reader's error page.
+   */
   useEffect(() => {
-    fetch(`/api/characters/${creationId}/cast/${encodeURIComponent(memberId)}`)
+    const key = `${creationId}/${memberId}`;
+    const cached = memberCache.get(key);
+    if (cached) setDetail(cached);
+
+    const controller = new AbortController();
+    let current = true;
+    const stopped = () => !current || controller.signal.aborted;
+
+    fetch(`/api/characters/${creationId}/cast/${encodeURIComponent(memberId)}`, { signal: controller.signal })
       .then(async (response) => {
         const body = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(body.error || "Could not open this character");
+        if (stopped()) return;
         setDetail(body);
+        rememberMember(key, body);
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not open this character"));
+      .catch((reason) => {
+        if (stopped() || cached) return;
+        setError(reason instanceof Error ? reason.message : "Could not open this character");
+      });
+
+    return () => { current = false; controller.abort(); };
   }, [creationId, memberId]);
 
   if (error) return <main className={styles.state}>
@@ -58,7 +97,7 @@ export default function CastMemberProfile({ creationId, memberId }: { creationId
   return <main className={styles.page} style={accentVariables(creation.accent) as React.CSSProperties}>
     <div className={styles.hero}>
       <div className={styles.heroMedia}>
-        {portrait ? <img src={portrait} alt="" /> : <span className={styles.heroFallback}>{initials}</span>}
+        {portrait ? <img src={portrait} alt="" decoding="async" /> : <span className={styles.heroFallback}>{initials}</span>}
         <div className={styles.heroGlow} />
         <div className={styles.heroScrim} />
       </div>

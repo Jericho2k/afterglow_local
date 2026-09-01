@@ -231,16 +231,11 @@
 .ghostButton:hover { background: var(--creation-accent-glow, rgba(232, 121, 169, .12)); border-color: var(--creation-accent-border, rgba(232, 121, 169, .3)); }
 .ghostButton:disabled { opacity: .5; cursor: progress; }
 /*
- * New story, beside Continue.
- *
- * A square at phone width so three controls still fit on a 375px row with
- * 44px+ of thumb each, and a labelled control as soon as there is room —
- * because "start another one" is the action most worth spelling out on a page
- * whose main button now resumes rather than creates.
+ * `.ghostWide` and `.ghostLabel` were the "New story" `+` that sat between
+ * Continue and Save. The control is gone — one primary action per surface —
+ * and so are its rules. Beginning again lives in the chat's story drawer,
+ * spelled out.
  */
-.ghostWide { width: auto; min-width: 52px; padding: 0 15px; grid-auto-flow: column; gap: 8px; }
-.ghostLabel { display: none; font-family: var(--font-sans); font-size: 12.5px; white-space: nowrap; }
-@media (min-width: 560px) { .ghostLabel { display: inline; } }
 
 /*
  * Messages, saves and chats.
@@ -340,8 +335,14 @@
   border: 1px solid var(--edge); border-radius: 18px;
   background: linear-gradient(180deg, var(--surface-raised), var(--surface));
   padding: 18px; scroll-margin-top: 74px;
+  /* A section is as wide as the column it is in, never as wide as its widest
+     unbreakable descendant. See `.castList` for what that costs when it is not
+     stated. */
+  min-width: 0; max-width: 100%;
   transition: box-shadow .5s ease, border-color .5s ease;
 }
+/* Nothing a creator uploads may be wider than the card it is shown in. */
+.card img, .castCard img { max-width: 100%; }
 /* Section headings carry the creation's accent, lifted to stay legible. */
 .card > header { display: flex; align-items: center; gap: 9px; margin: 0 0 14px; color: var(--creation-accent-readable, var(--accent)); }
 .card > header h2 { margin: 0; flex: 1; font-size: 14px; font-weight: 620; letter-spacing: .01em; color: var(--ink); }
@@ -426,9 +427,26 @@
 }
 
 .castNote { margin: 0 0 4px; font-size: 11.5px; line-height: 1.5; color: var(--faint); }
-.castList { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+/*
+ * CAST CARDS WERE WIDER THAN THE SECTION THAT HOLDS THEM.
+ *
+ * `display:grid` with no declared columns makes one implicit `auto` track, and
+ * an `auto` track is sized to the MAX-CONTENT of its items. A member whose name,
+ * role or blurb has no break opportunity — one long word, a long unhyphenated
+ * Cyrillic role, a run of emoji — therefore set the width of the whole list,
+ * and the list set the width of the card holding it, and the card ran past the
+ * right edge of the page. Measured at every supported phone width by
+ * scripts/viewport-overflow-audit.mjs, which is where this fix came from.
+ *
+ * `minmax(0, 1fr)` removes the min-content floor from the track, and
+ * `min-width: 0` removes it from each card, so a card is exactly as wide as the
+ * section and its own text ellipsises or wraps inside it. Nothing about the
+ * type size changes; an unreadable card would be a worse fix than the bug.
+ */
+.castList { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 0; padding: 0; list-style: none; }
 .castCard {
   display: flex; align-items: stretch;
+  min-width: 0; max-width: 100%;
   padding: 11px; border-radius: 15px;
   border: 1px solid var(--edge); background: rgba(255, 255, 255, .022);
 }
@@ -442,7 +460,7 @@
  */
 .castLink {
   display: flex; align-items: center; gap: 11px;
-  width: 100%; min-width: 0;
+  width: 100%; min-width: 0; max-width: 100%;
   color: inherit; text-decoration: none;
   border-radius: 13px;
   transition: background .16s, transform .16s;
@@ -450,7 +468,7 @@
 a.castLink:hover { background: rgba(255, 255, 255, .04); }
 a.castLink:active { transform: scale(.99); }
 a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, var(--accent)); outline-offset: 2px; }
-.castCopy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.castCopy { display: flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 100%; flex: 1 1 auto; }
 .castCopy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .castCard p {
   margin: 2px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--muted);
@@ -665,41 +683,64 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
 /*
  * The two actions that matter, following the reader down a long page.
  *
- * Phones only. A creation page is hero, definition, cast, gallery, worlds and
- * comments, and the control that starts the story was at the top of all of it —
- * so on a phone the reader had to scroll back up to do the one thing they came
- * for. On a desktop the hero row stays in view for most of the page and a
- * floating bar would just be furniture, so it is not there.
+ * Phones only, and on a phone this is the ONLY place they appear: the hero's
+ * copies are not rendered there. Two instances of one primary action is a page
+ * with two answers to "what do I do here", and by the time a reader has decided,
+ * the copy at the top of a page this long is somewhere they cannot reach.
  *
- * `.page` grows its bottom padding by exactly the bar's height, which is what
- * stops it resting over the last line of the last comment. Both safe areas are
- * respected: the inset is added to the padding rather than replacing it, so the
- * bar clears a home indicator without floating in the middle of the screen on a
- * device that has none.
+ * WHY IT LOOKS LIKE THE PAGE NOW. It used to be a blurred translucent pane with
+ * a Save control shaped like nothing else here — a different button vocabulary
+ * from the one the page is built out of, floating over the content. That reads
+ * as an advertisement rather than as part of the page, which is exactly the
+ * complaint. So the fade, the saturation and the backdrop blur are gone; what
+ * is left is the page's own surface colour, one hairline to separate it from
+ * the content scrolling under it, and the page's own buttons.
+ *
+ * `.actionBarSave` no longer declares a look. It composes `.ghostButton` — the
+ * same border, radius, background and hover the hero uses — and only widens it
+ * enough to carry a word, because a bare icon at the bottom of a page has no
+ * neighbours to explain it.
+ *
+ * `.page` grows its bottom padding by the bar's height plus a margin, so the
+ * last line of the last comment is never under it. Both safe-area insets are
+ * ADDED to the padding rather than replacing it, so the buttons clear a home
+ * indicator on a device that has one and do not float on a device that has not.
  */
 .actionBar { display: none; }
 
 @media (max-width: 700px) {
-  .page { padding-bottom: calc(84px + max(12px, env(safe-area-inset-bottom))); }
+  /* The bar measures 93px on a device with no home indicator — a 52px control
+     with 14px above and 26px below it, plus its hairline — so 100px leaves a
+     little over 20px of clearance under the last line of content. The inset is
+     added on top, and the bar grows by exactly the same amount, so the
+     clearance is the same on a device that has one. Measured at 375, 390, 393
+     and 430; see scripts/viewport-overflow-audit.mjs. */
+  .page { padding-bottom: calc(100px + max(14px, env(safe-area-inset-bottom))); }
+  /* One instance of each action on a phone: this bar's. */
+  .ctaRow { display: none; }
   .actionBar {
     position: fixed;
     left: 0; right: 0; bottom: 0;
     z-index: 30;
-    display: flex; gap: 9px;
-    padding: 10px max(12px, env(safe-area-inset-left)) calc(10px + max(6px, env(safe-area-inset-bottom))) max(12px, env(safe-area-inset-right));
+    display: flex; align-items: center; gap: 12px;
+    padding:
+      14px
+      max(16px, env(safe-area-inset-right))
+      calc(16px + max(10px, env(safe-area-inset-bottom)))
+      max(16px, env(safe-area-inset-left));
     border-top: 1px solid var(--edge);
-    background: rgba(11, 8, 13, .82);
-    backdrop-filter: blur(20px) saturate(140%);
-    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    /* The page's own ground, opaque. No fade, no mask, no blur. */
+    background: var(--surface);
   }
-  .actionBar .primaryCta { min-height: 50px; font-size: 14.5px; }
+  .actionBar .primaryCta { flex: 1 1 auto; min-width: 0; min-height: 52px; }
+  /* Composed with `.ghostButton`, which already owns the border, the radius,
+     the background and the hover. This adds only the room for a label. */
   .actionBarSave {
-    flex: 0 0 auto; min-width: 74px; min-height: 50px;
-    display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-    border: 1px solid var(--edge); border-radius: 15px;
-    background: rgba(255, 255, 255, .04);
-    color: var(--muted); font-size: 10px; font-weight: 600; cursor: pointer;
+    width: auto; min-width: 88px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 0 16px;
+    font-family: var(--font-sans); font-size: 13px; font-weight: 600;
   }
-  .actionBarSave[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+  .actionBarSave[aria-pressed="true"] { color: var(--accent); border-color: var(--creation-accent-border, var(--accent)); }
   .actionBarSave:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 }

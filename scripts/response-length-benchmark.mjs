@@ -18,6 +18,9 @@
  *   … --models xiaomi/mimo-v2.5,z-ai/glm-4.7   the writer and one control
  *   … --samples 3                              repeats per cell, averaged
  *   … --scene intimacy                         which representative turn
+ *   … --reasoning on|off|unset                 reasoning tokens share the
+ *                                              output envelope with the prose,
+ *                                              so this is a length variable
  *   … --json                                   machine-readable rows
  *
  * The prompts are synthetic and shaped like Afterglow's. Nothing here reads a
@@ -38,6 +41,18 @@ const option = (name, fallback) => {
   return at === -1 || at === args.length - 1 ? fallback : args[at + 1];
 };
 const flag = (name) => args.includes(`--${name}`);
+
+/**
+ * What to send for `reasoning`, in the three states the app distinguishes.
+ * `off` is the default here because it is what the chat route now sends for
+ * every model whose catalogue entry declares it; `unset` reproduces the old
+ * behaviour of taking the endpoint's own default.
+ */
+const reasoningSetting = option("reasoning", "off");
+if (!["on", "off", "unset"].includes(reasoningSetting)) {
+  console.error("--reasoning takes on, off or unset");
+  process.exit(1);
+}
 
 const apiKey = process.env.OPENROUTER_API_KEY?.trim();
 if (!apiKey) {
@@ -154,6 +169,22 @@ async function askOnce(model, length) {
     max_tokens: plan.maxTokens,
     temperature: 0.95,
     usage: { include: true },
+    /*
+     * REASONING IS PART OF THE LENGTH QUESTION, not a separate one.
+     *
+     * Reasoning tokens are spent from the SAME output envelope as the prose, so
+     * a hybrid reasoning model that thinks before it speaks can consume most of
+     * a Natural reply's 1,800 tokens and then be cut off mid-sentence at
+     * `finish_reason: "length"` — which reads to a reader as "the writer stopped
+     * for no reason" and to an operator as nothing at all.
+     *
+     * Omitting the parameter takes the endpoint's default, which on such a model
+     * IS reasoning, so this defaults to declining it explicitly — the same thing
+     * the chat route now sends for a model whose catalogue entry says so.
+     * `--reasoning on` runs the other side of the comparison, which is what
+     * turns "the envelope is too small" into a measurement rather than a guess.
+     */
+    ...(reasoningSetting === "unset" ? {} : { reasoning: { enabled: reasoningSetting === "on" } }),
   };
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -172,8 +203,12 @@ async function askOnce(model, length) {
     paragraphs: paragraphsOf(text).length,
     words: wordsOf(text),
     completionTokens: data.usage?.completion_tokens ?? 0,
+    // The half of the envelope the reader never sees. A large number here beside
+    // a truncated reply is the whole diagnosis.
+    reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens ?? 0,
     budget: plan.maxTokens,
     truncated: finish === "length" || !endsCleanly(text),
+    atCeiling: finish === "length",
     finish,
     text,
   };
@@ -184,7 +219,8 @@ const pad = (value, width) => String(value).padStart(width);
 
 const rows = [];
 console.log(`scene=${sceneName}  samples=${samples}  models=${models.join(", ")}\n`);
-console.log("model                     length     paras   words   out-tok  budget  truncated");
+console.log(`reasoning=${reasoningSetting}\n`);
+console.log("model                     length     paras   words   out-tok  reason  budget  at-ceiling  truncated");
 
 for (const model of models) {
   for (const length of lengths) {
@@ -199,15 +235,18 @@ for (const model of models) {
       paragraphs: Number(average(results.map((result) => result.paragraphs)).toFixed(1)),
       words: Math.round(average(results.map((result) => result.words))),
       completionTokens: Math.round(average(results.map((result) => result.completionTokens))),
+      reasoningTokens: Math.round(average(results.map((result) => result.reasoningTokens))),
       budget: results[0].budget,
+      atCeiling: results.filter((result) => result.atCeiling).length,
       truncated: results.filter((result) => result.truncated).length,
       samples: results.length,
     };
     rows.push(row);
     console.log([
       model.padEnd(26), length.padEnd(11),
-      pad(row.paragraphs, 5), pad(row.words, 8), pad(row.completionTokens, 9), pad(row.budget, 8),
-      pad(`${row.truncated}/${row.samples}`, 11),
+      pad(row.paragraphs, 5), pad(row.words, 8), pad(row.completionTokens, 9),
+      pad(row.reasoningTokens, 8), pad(row.budget, 8),
+      pad(`${row.atCeiling}/${row.samples}`, 12), pad(`${row.truncated}/${row.samples}`, 11),
     ].join(""));
   }
 }

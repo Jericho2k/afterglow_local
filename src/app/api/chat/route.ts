@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { conversationCharacter, ownedConversation } from "@/lib/access";
-import { recordGeneration } from "@/lib/provenance";
+import { commitNewAssistantMessage, commitRegeneratedVariant, resolveRegenerationTarget } from "@/lib/regeneration";
+import { createWriterStreamParser, truncatedByLength } from "@/lib/stream-parse";
+import { logGeneration, reasonForCategory, type GenerationDiagnostic, type GenerationFailureReason, type GenerationStage } from "@/lib/generation-diagnostics";
 import { logTimeline, startTimeline } from "@/lib/request-timing";
 import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
 import { streamWriterCompletion, type LLMUsage } from "@/lib/llm";
@@ -16,7 +18,7 @@ import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
-import { modelCapabilities, modelVerbosity, providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
+import { defaultReasoningFor, modelCapabilities, modelVerbosity, providerModelId, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
 import { responseLengths, type AppSettings, type ResponseLength } from "@/lib/types";
 import { responseLengthPlan } from "@/lib/response-length";
 import { contextExceededMessage, fitConversation } from "@/lib/context-budget";
@@ -28,9 +30,6 @@ import { freeTierConfig } from "@/lib/free-tier";
 import { routeGenerationAllowed } from "@/lib/curated-routes";
 import { recordRouteOutcome } from "@/lib/route-health";
 import { isFreeModel } from "@/lib/provider";
-
-/** An error a provider delivered inside the stream rather than as a status. */
-type StreamFailure = { message: string; code?: number } | null;
 
 function writerErrorMessage(error: unknown, funding: InferenceFunding) {
   if (funding.type === "byok" && error instanceof ProviderError) {
@@ -64,6 +63,32 @@ export async function POST(request: Request) {
   if (!parsed.success) return Response.json({ error: "Invalid message" }, { status: 400 });
   const { conversationId, content, action, acceptFundedFallback: fundedFallbackAccepted } = parsed.data;
   if (action === "send" && !content) return Response.json({ error: "Message cannot be empty" }, { status: 400 });
+
+  /*
+   * THE TURN'S OWN RECORD.
+   *
+   * Send worked, Continue worked, Regenerate failed "almost every attempt", and
+   * nothing in the logs could say what was different about the third one —
+   * because the three were never recorded in a form that could be compared. So
+   * every turn now fills this in as it goes and writes exactly one line at the
+   * end, whichever way it ends. `stage` is the last thing that completed, so on
+   * a failure it IS the failing stage.
+   *
+   * Identifiers, enumerations and counts only. See generation-diagnostics.ts.
+   */
+  const diagnostic: GenerationDiagnostic = { conversationId, action, outcome: "failed", stage: "authorised" };
+  const at = (stage: GenerationStage) => { diagnostic.stage = stage; };
+  /** Ends the turn's record. Called on every exit, including the happy one. */
+  const finish = (outcome: GenerationDiagnostic["outcome"], reason?: GenerationFailureReason) => {
+    diagnostic.outcome = outcome;
+    if (reason) diagnostic.reason = reason;
+    logGeneration(diagnostic);
+  };
+  /** A refusal the reader can act on: recorded, then answered. */
+  const refuse = (body: Record<string, unknown>, status: number, reason: GenerationFailureReason) => {
+    finish("refused", reason);
+    return Response.json(body, { status });
+  };
 
   // Phase one: resolve and validate everything the prompt needs, inside a
   // single account-scoped transaction.
@@ -115,7 +140,8 @@ export async function POST(request: Request) {
     };
   });
   timeline.mark("conversation+creation+worlds+persona");
-  if ("error" in prepared) return Response.json({ error: prepared.error }, { status: 404 });
+  if ("error" in prepared) { finish("refused", "unknown"); return Response.json({ error: prepared.error }, { status: 404 }); }
+  at("conversation_loaded");
   const { row, character, settings, worlds, persona } = prepared;
   const conversationSelection = {
     providerId: String(row.provider_id || settings.providerId),
@@ -128,7 +154,7 @@ export async function POST(request: Request) {
     // A deployment routing mistake is an operator problem. The reader is told
     // what they can act on, not what the environment variable is called.
     console.error("[provider] RP_MODEL_ROUTE is misconfigured", error instanceof Error ? error.message : error);
-    return Response.json({ error: "This chat's model is not available on this deployment. Choose another model in chat tools.", reason: "model_unavailable" },{ status:409 });
+    return refuse({ error: "This chat's model is not available on this deployment. Choose another model in chat tools.", reason: "model_unavailable" }, 409, "model_unavailable");
   }
   const engineId = String(row.rp_engine_id || settings.roleplayPreset) as AppSettings["roleplayPreset"];
   const storedResponseLength = String(row.response_length || "");
@@ -148,13 +174,20 @@ export async function POST(request: Request) {
    * chose is never swapped for another one behind their back.
    */
   if (!conversationModelDefinition || !modelDefinition || !engineDefinition) {
-    return Response.json({
+    return refuse({
       error: !engineDefinition
         ? "This chat's roleplay engine is no longer available. Choose another one in chat tools."
         : "This chat's model is no longer available. Choose another model in chat tools — your story, memories and settings are untouched.",
       reason: !engineDefinition ? "engine_unavailable" : "model_unavailable",
-    }, { status: 409 });
+    }, 409, "model_unavailable");
   }
+  at("model_resolved");
+  diagnostic.provider = selection.providerId;
+  diagnostic.model = selection.modelId;
+  diagnostic.upstreamModel = providerModelId(selection.providerId, selection.modelId) ?? selection.modelId;
+  diagnostic.responseLength = responseLength;
+  diagnostic.temperature = temperature;
+  diagnostic.conversationMessages = Number(row.message_count || 0);
 
   /*
    * A CURATED ROUTE CAN BE WITHDRAWN BETWEEN CHOOSING IT AND USING IT.
@@ -167,12 +200,12 @@ export async function POST(request: Request) {
   if (isFreeModel(selection.modelId)) {
     const routeState = await routeGenerationAllowed(selection.modelId);
     if (!routeState.allowed) {
-      return Response.json({
+      return refuse({
         error: routeState.reason === "disabled"
           ? "This free model is no longer offered. Choose another model in chat tools — your story, memories and settings are untouched."
           : "This free model is temporarily unavailable. Choose another model in chat tools, or try again shortly.",
         reason: "model_unavailable",
-      }, { status: 409 });
+      }, 409, "model_unavailable");
     }
   }
 
@@ -212,19 +245,21 @@ export async function POST(request: Request) {
        * Afterglow will fund — and the funded option is named rather than taken,
        * because changing somebody's writer is their decision to make.
        */
-      return Response.json({
+      return refuse({
         error: decision.message,
         reason: "free_capacity_exhausted",
         remedies: decision.remedies,
         ...(decision.fundedModelId ? { fundedModelId: decision.fundedModelId } : {}),
         resetsAt: decision.resetsAt,
-      }, { status: 429 });
+      }, 429, "free_capacity_exhausted");
     }
     fundingPlan = decision;
   } catch (error) {
-    if (error instanceof ByokError) return Response.json({ error: error.message, reason: error.code }, { status: 409 });
+    if (error instanceof ByokError) return refuse({ error: error.message, reason: error.code }, 409, "auth");
+    finish("failed", "unknown");
     throw error;
   }
+  at("funding_planned");
   /*
    * The funding plan may name a different model from the one the conversation
    * stores — only ever when a deployment has set the funded fallback to `auto`,
@@ -233,6 +268,10 @@ export async function POST(request: Request) {
    */
   selection = fundingPlan.selection;
   const fundingSource = fundingPlan.kind;
+  diagnostic.fundingSource = fundingSource;
+  diagnostic.provider = selection.providerId;
+  diagnostic.model = selection.modelId;
+  diagnostic.upstreamModel = providerModelId(selection.providerId, selection.modelId) ?? selection.modelId;
   /** Settle exactly once, whichever way this request ends. */
   let fundingSettled = false;
   const settleFunding = async (ran: boolean) => {
@@ -257,6 +296,7 @@ export async function POST(request: Request) {
 
   const staged = await asUser(account.id, async (client) => {
     let regenerateTarget: ReturnType<typeof messageFromRow> | null = null;
+    let targetSource: GenerationDiagnostic["targetSource"] = "none";
     let userMessageId: string | null = null;
 
     if (action === "send") {
@@ -268,12 +308,30 @@ export async function POST(request: Request) {
         [conversationId, content.replace(/\s+/g, " "), account.id],
       );
     } else if (action === "regenerate") {
-      const last = await client.query("SELECT * FROM messages WHERE conversation_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1", [conversationId, account.id]);
-      if (last.rows[0]?.role === "assistant") regenerateTarget = messageFromRow(last.rows[0]);
+      /*
+       * WHICH REPLY IS BEING REGENERATED, ASKED RATHER THAN ASSUMED.
+       *
+       * This used to be "the newest row, if it is an assistant" and nothing
+       * else — the `assistantMessageId` the browser sends was read only as a
+       * fallback id for an INSERT. So when the newest row was not what the
+       * reader was looking at, the wrong reply was rewritten; and when it was
+       * a user turn, the target became null and the "regeneration" inserted a
+       * new message under a client-guessed id, which collides with a real row
+       * as often as not and surfaced as "That reply could not be saved".
+       *
+       * See src/lib/regeneration.ts for the three cases and why a superseded
+       * target is refused rather than substituted.
+       */
+      const resolved = await resolveRegenerationTarget(client, {
+        conversationId, userId: account.id, requestedMessageId: parsed.data.assistantMessageId ?? null,
+      });
+      if (!resolved.ok) return { regenerateFailure: resolved.reason };
+      regenerateTarget = resolved.message;
+      targetSource = resolved.source;
       // The reply about to be replaced may have moved the scene. Dropping the
       // state read out of it here means the discarded generation cannot leave
       // its location, cast, or open loops behind, whatever happens next.
-      if (regenerateTarget && sceneEnabled) await dropSceneStateForMessage(client,conversationId,regenerateTarget.id,account.id);
+      if (sceneEnabled) await dropSceneStateForMessage(client,conversationId,regenerateTarget.id,account.id);
     }
 
     /*
@@ -300,7 +358,26 @@ export async function POST(request: Request) {
       // scene is already out of the way.
       sceneEnabled ? currentSceneState(client,account.id,conversationId) : Promise.resolve(null),
     ]);
-    const knownMessageCount = Number(row.message_count || 0) + (action === "send" ? 1 : 0);
+    /*
+     * HOW MANY MESSAGES THE WINDOW IS BEING DRAWN FROM.
+     *
+     * This is the absolute reference `selectAnchoredMessages` quantises the
+     * window's start against, and it was wrong for exactly one action.
+     * Regenerate EXCLUDES its target from the rows it selects from, but the
+     * count still included it — so the anchor arithmetic was off by one and
+     * the window began one message earlier than the send that produced the
+     * same reply. That is a different first token, which is a complete prompt
+     * cache miss, on every regeneration, for the one model family whose whole
+     * routing policy is built on cache reads being most of the bill.
+     *
+     * Regenerate was therefore the only action that never hit a warm cache:
+     * slower, dearer, and far likelier to be refused by a pool bounded with
+     * `provider.only` and `max_price`. Subtracting the excluded row makes the
+     * regenerated turn's window byte-identical to the send's.
+     */
+    const knownMessageCount = Number(row.message_count || 0)
+      + (action === "send" ? 1 : 0)
+      - (regenerateTarget ? 1 : 0);
     const availableHistory = historyResult.rows.reverse().map(messageFromRow).filter((message) => message.id !== regenerateTarget?.id);
     // Anchored rather than strictly sliding: the same transcript the budget
     // would have selected, with its start quantised so a provider's prompt
@@ -308,15 +385,37 @@ export async function POST(request: Request) {
     const history = selectAnchoredMessages(availableHistory, Math.max(knownMessageCount, availableHistory.length), settings.contextMessages, settings.contextTokenBudget);
     const lastUserInput = [...history].reverse().find((message) => message.role === "user")?.content ?? content;
     const recallContext = recallText(history, lastUserInput || character.scenario || character.name);
-    return { regenerateTarget, userMessageId, history, lastUserInput, recallContext, sceneState, knownMessageCount };
+    return { regenerateTarget, targetSource, userMessageId, history, lastUserInput, recallContext, sceneState, knownMessageCount, transcriptRowsLoaded: historyResult.rowCount ?? historyResult.rows.length };
   });
   timeline.mark("transcript+scene");
 
-  const { regenerateTarget, userMessageId, history, lastUserInput, recallContext, sceneState, knownMessageCount } = staged;
+  /*
+   * A regeneration with nothing to regenerate is a product answer, not a 500.
+   *
+   * `target_superseded` means the reader's browser is looking at a story that
+   * has moved on — another tab replied, or their own Continue landed while
+   * their thumb was on Regenerate. Rewriting whatever is newest now would
+   * silently replace a reply they never chose.
+   */
+  if ("regenerateFailure" in staged) {
+    at("target_resolved");
+    diagnostic.targetMessageId = parsed.data.assistantMessageId ?? null;
+    return staged.regenerateFailure === "target_superseded"
+      ? refuse({ error: "This story has moved on since this reply was shown. Reload the chat and try again.", reason: "regenerate_target_stale" }, 409, "regenerate_target_missing")
+      : refuse({ error: "There is no reply to regenerate yet.", reason: "regenerate_target_missing" }, 409, "regenerate_target_missing");
+  }
+
+  const { regenerateTarget, targetSource, userMessageId, history, lastUserInput, recallContext, sceneState, knownMessageCount, transcriptRowsLoaded } = staged;
+  at("transcript_loaded");
+  diagnostic.targetMessageId = regenerateTarget?.id ?? null;
+  diagnostic.targetSource = targetSource;
+  diagnostic.existingVariants = regenerateTarget ? regenerateTarget.variants.length : null;
+  diagnostic.messagePosition = regenerateTarget ? Number(row.message_count || 0) : null;
+  diagnostic.transcriptRowsLoaded = transcriptRowsLoaded;
   // Selection stays relevance-driven. The cue is opt-in and additive so an
   // A/B comparison can separate grounding from ranking.
   const sceneRetrievalHint = sceneState && sceneStateRetrievalHintEnabled() ? sceneRetrievalCue(sceneFieldsOf(sceneState)) : "";
-  if (!lastUserInput && action !== "continue") return Response.json({ error: "Nothing to regenerate" }, { status: 400 });
+  if (!lastUserInput && action !== "continue") return refuse({ error: "Nothing to regenerate", reason: "regenerate_target_missing" }, 400, "regenerate_target_missing");
 
   const continuationRetrievalAnchor = action === "continue" && history.at(-1)?.role === "assistant" ? history.at(-1)!.content : "";
   let memories; let arcs; let coreCanon = [] as Awaited<ReturnType<typeof retrieveContinuityV2>>["coreCanon"];
@@ -359,6 +458,7 @@ export async function POST(request: Request) {
   // With the layer off, the writer prompt is byte-identical to today's: no
   // scene block, and no historical tags even on memories stamped while it was
   // on. That is what makes an enabled/disabled comparison mean something.
+  at("memory_retrieved");
   const groundedMemories = sceneEnabled ? memories : memories.map((memory) => ({ ...memory, scene: null }));
   const groundedArcs = sceneEnabled ? arcs : arcs.map((arc) => ({ ...arc, storyDayStart: null, storyDayEnd: null, locations: [] }));
   const writerPrompt = buildWriterPrompt(character, currentSummary, groundedMemories, groundedArcs, { ...settings, roleplayPreset: engineId, responseLength }, {
@@ -399,6 +499,7 @@ export async function POST(request: Request) {
    * tokens and a World can be 28,000 of them, so "assemble and hope" produced a
    * 400 that reached the reader as "Something went wrong".
    */
+  at("prompt_built");
   const capabilities = modelCapabilities(selection.providerId, selection.modelId);
   const placement = continuityPlacementFor(capabilities.promptCaching);
   const lengthPlan = responseLengthPlan(responseLength, settings.maxTokens, writerVerbosity);
@@ -419,7 +520,8 @@ export async function POST(request: Request) {
     }));
     // Nothing was generated, so nothing was spent: the free-tier slot goes back.
     await settleFunding(false);
-    return Response.json({ error: contextExceededMessage, reason: "context_exceeded" }, { status: 409 });
+    diagnostic.promptTokensEstimated = fitted.plan.promptTokens;
+    return refuse({ error: contextExceededMessage, reason: "context_exceeded" }, 409, "context_exceeded");
   }
   if (fitted.dropped) {
     // A quality change nobody asked for is worth recording even when it is the
@@ -429,6 +531,11 @@ export async function POST(request: Request) {
       promptTokens: fitted.plan.promptTokens, contextTokens: capabilities.contextTokens,
     }));
   }
+  at("budget_planned");
+  diagnostic.promptTokensEstimated = fitted.plan.promptTokens;
+  diagnostic.maxTokens = fitted.plan.maxTokens;
+  diagnostic.transcriptMessagesSent = fitted.messages.length;
+  diagnostic.transcriptTrimmed = fitted.dropped ?? 0;
   const completionMessages = writerMessages(writerPrompt, fitted.messages, placement);
   let writerFunding: InferenceFunding = { type: "afterglow" };
   try {
@@ -442,9 +549,10 @@ export async function POST(request: Request) {
       // A reservation taken for a request that is about to be refused has to go
       // back, or a configuration fault would quietly eat the reader's day.
       await settleFunding(false);
-      return Response.json({ error: error.message, reason: error.code }, { status: error.code === "server_configuration" ? 503 : 409 });
+      return refuse({ error: error.message, reason: error.code }, error.code === "server_configuration" ? 503 : 409, "auth");
     }
     await settleFunding(false);
+    finish("failed", "unknown");
     throw error;
   }
   // Response Length owns the output envelope as well as the directive. The
@@ -475,9 +583,31 @@ export async function POST(request: Request) {
      * `scripts/glm-routing-benchmark.mjs --reasoning`, and until somebody has
      * run it this stays where it is.
      */
+    /*
+     * WHAT THE CATALOGUE SAYS ABOUT THIS MODEL IS NOW ACTUALLY SENT.
+     *
+     * `defaultReasoningFor` has existed since the model expansion and was
+     * called by nothing at all, so GLM 5.3 Flash's `reasoningDefault: "off"` —
+     * added because that model reasons before it speaks, with a measured
+     * time-to-first-token in the TENS OF SECONDS — did nothing. Omitting the
+     * `reasoning` parameter is not declining reasoning, it is declining to have
+     * an opinion, and a hybrid reasoning model's own opinion is to reason.
+     *
+     * The consequence was not only latency. Reasoning tokens are spent from the
+     * SAME output envelope as the prose, so a Natural reply with 1,800 tokens
+     * of room could spend most of it thinking and then be cut off mid-sentence
+     * at `finish_reason: "length"` — which is the "responses are being cut off"
+     * report, arriving without an error because nothing was reading the finish
+     * reason.
+     *
+     * Precedence is unchanged and deliberate: an engine that WANTS reasoning
+     * still gets it; `RP_REASONING=off` is still the deployment-wide override;
+     * a model that declares no default still sends nothing, which is exactly
+     * today's behaviour for every model but the three that declare one.
+     */
     thinking: engineDefinition.thinking && capabilities.thinking
       ? true
-      : capabilities.thinking && process.env.RP_REASONING?.trim() === "off" ? "off" as const : false,
+      : capabilities.thinking && defaultReasoningFor(selection.modelId) === "off" ? "off" as const : false,
     /** The catalogue model id, so routing policy can be chosen per model. */
     modelId: selection.modelId,
     // Conversation-scoped provider stickiness. Sequential turns in one story
@@ -485,9 +615,12 @@ export async function POST(request: Request) {
     // warm; a different story is a different session and shares nothing.
     sessionId: inferenceSessionId("rp_generation", conversationId),
   };
+  diagnostic.sessionScoped = Boolean(completionOptions.sessionId);
+  diagnostic.reasoning = completionOptions.thinking === true ? "on" : completionOptions.thinking === "off" ? "off" : "unset";
   let upstream: ReadableStream<Uint8Array>;
   const requestStartedAt = Date.now();
   timeline.mark("provider-request-started");
+  at("provider_requested");
   try {
     upstream = await streamWriterCompletion(selection,completionMessages,writerFunding,completionOptions);
     // The provider accepted the request and handed back a stream. Everything
@@ -512,8 +645,21 @@ export async function POST(request: Request) {
       modelId: selection.modelId, ok: false,
       capacity: error instanceof ProviderError && error.category === "rate_limited",
     });
+    if (error instanceof ProviderError) {
+      diagnostic.category = error.category;
+      diagnostic.status = error.diagnostic.status;
+      diagnostic.attempt = error.diagnostic.attempt;
+      diagnostic.requestId = error.diagnostic.requestId;
+      diagnostic.upstreamProvider = error.diagnostic.upstreamProvider;
+      diagnostic.latencyMs = error.diagnostic.latencyMs ?? null;
+      diagnostic.detail = error.diagnostic.detail;
+    } else {
+      diagnostic.detail = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
+    }
+    finish("failed", error instanceof ProviderError ? reasonForCategory(error.category) : "unknown");
     return Response.json({ error: writerErrorMessage(error, writerFunding) }, { status: publicErrorStatus(error) });
   }
+  at("provider_accepted");
   /*
    * Analytics, not a precondition.
    *
@@ -531,122 +677,100 @@ export async function POST(request: Request) {
   timeline.mark("prompt-built");
 
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
   const assistantId = regenerateTarget?.id ?? parsed.data.assistantMessageId ?? randomUUID();
   const responseStream = new ReadableStream({
     async start(controller) {
-      let buffer = "";
-      let assistant = "";
       let usage: LLMUsage | null = null;
-      let providerRequestId: string | undefined;
       let actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
       let upstreamProvider: string | undefined;
       let ttftMs: number | undefined;
-      /*
-       * What the stream said about itself, so an empty reply can be diagnosed
-       * rather than guessed at.
-       *
-       * Three of these are recoverable failures the previous consumer could not
-       * tell apart from "the model said nothing":
-       *
-       *   AN ERROR DELIVERED INSIDE THE STREAM. OpenRouter reports a mid-stream
-       *   failure as a `data: {"error": …}` chunk. The parser only ever looked
-       *   at `choices[0].delta.content`, so the error was silently discarded and
-       *   surfaced as an empty response — losing both the reason and the retry.
-       *
-       *   REASONING WITH NO PROSE. A model asked to think can spend its whole
-       *   envelope on `delta.reasoning` and finish with no visible content. The
-       *   retry below turns reasoning off, which is the fix rather than a
-       *   second identical attempt.
-       *
-       *   A FINISH REASON THAT EXPLAINS IT. `content_filter` and `length` are
-       *   different failures with different remedies, and both used to be
-       *   reported as "the model did not return a reply".
-       */
-      /**
-       * Held in one object rather than three `let`s so the assignments made
-       * inside the stream reader below are visible to the code that reads them
-       * afterwards.
-       */
-      const signals: { error: StreamFailure; reasoningSeen: boolean; finishReason?: string } = { error: null, reasoningSeen: false };
-      /** Hosts that produced nothing, so a retry is asked to use another one. */
-      const exhaustedProviders: string[] = [];
+      let retried = false;
       const send = (event: object) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
-      const recordAttemptUsage = async () => {
-        if (!usage) return;
-        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, fundingSource, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
-      };
-      const consume = async (stream: ReadableStream<Uint8Array>,startedAt: number) => {
+      /*
+       * The stream, parsed by src/lib/stream-parse.ts rather than inline.
+       *
+       * The parser that used to live here dropped its final buffered line —
+       * a `data:` frame arriving without a trailing newline, which is what a
+       * connection closing on the last write produces — so the closing
+       * sentence of a reply could simply vanish. That is the reported
+       * "responses are being cut off", with no error to explain it because
+       * nothing had gone wrong from the route's point of view. It now also
+       * records `finish_reason`, which is the difference between "the model
+       * finished" and "we did not give it room".
+       */
+      const parser = createWriterStreamParser((delta) => {
+        if (ttftMs === undefined) { ttftMs = Math.max(0, Date.now() - streamStartedAt); timeline.mark("first-token"); at("first_token"); }
+        send({ type: "delta", content: delta });
+      });
+      let streamStartedAt = requestStartedAt;
+      const consume = async (stream: ReadableStream<Uint8Array>, startedAt: number) => {
+        streamStartedAt = startedAt;
         const reader = stream.getReader();
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue;
-              const payload = line.slice(6).trim();
-              if (!payload || payload === "[DONE]") continue;
-              try {
-                const data = JSON.parse(payload);
-                if (typeof data?.id === "string") providerRequestId = data.id;
-                if (typeof data?.model === "string") actualProviderModel = data.model;
-                if (typeof data?.provider === "string") upstreamProvider = data.provider;
-                // An upstream failure can arrive as a chunk rather than as a
-                // status. Recording it is what turns "empty" into a reason.
-                const error = data?.error;
-                if (error && typeof error === "object") {
-                  signals.error = {
-                    message: typeof error.message === "string" ? error.message.slice(0,500) : "upstream reported an error mid-stream",
-                    code: typeof error.code === "number" ? error.code : undefined,
-                  };
-                }
-                const choice = data?.choices?.[0];
-                if (typeof choice?.finish_reason === "string") signals.finishReason = choice.finish_reason;
-                if (typeof choice?.delta?.reasoning === "string" && choice.delta.reasoning) signals.reasoningSeen = true;
-                const delta = choice?.delta?.content;
-                if (typeof delta === "string" && delta) { if(ttftMs===undefined){ttftMs=Math.max(0,Date.now()-startedAt);timeline.mark("first-token");} assistant += delta; send({ type: "delta", content: delta }); }
-                if (data?.usage) usage = {
-                  ...data.usage,
-                  provider_request_id: providerRequestId,
-                  actual_model: actualProviderModel,
-                  latency_ms: Math.max(0,Date.now() - startedAt),
-                  ttft_ms:ttftMs,
-                  upstream_provider:upstreamProvider,
-                };
-              } catch { /* ignore malformed upstream chunks */ }
-            }
+            parser.push(value);
           }
-        } finally { reader.releaseLock(); }
+        } finally {
+          // Always, and before anything reads the outcome: this is what flushes
+          // a partial UTF-8 sequence and the unterminated final frame.
+          parser.end();
+          reader.releaseLock();
+        }
+        const outcome = parser.outcome;
+        if (outcome.providerRequestId) providerRequestId = outcome.providerRequestId;
+        if (outcome.model) actualProviderModel = outcome.model;
+        if (outcome.upstreamProvider) upstreamProvider = outcome.upstreamProvider;
+        if (outcome.usage) usage = {
+          ...(outcome.usage as LLMUsage),
+          provider_request_id: providerRequestId,
+          actual_model: actualProviderModel,
+          latency_ms: Math.max(0, Date.now() - startedAt),
+          ttft_ms: ttftMs,
+          upstream_provider: upstreamProvider,
+        };
+      };
+      let providerRequestId: string | undefined;
+      /** Hosts that produced nothing, so a retry is asked to use another one. */
+      const exhaustedProviders: string[] = [];
+      const recordAttemptUsage = async () => {
+        if (!usage) return;
+        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, fundingSource, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
       };
       /** Everything known about why a stream produced no prose. */
-      const emptyDiagnostic = () => ({
-        conversationId, provider: selection.providerId, model: selection.modelId,
-        actualModel: actualProviderModel, upstreamProvider,
-        detail: [
-          signals.error ? `upstream error: ${signals.error.message}` : "",
-          signals.finishReason ? `finish_reason=${signals.finishReason}` : "",
-          signals.reasoningSeen ? "reasoning tokens only" : "",
-        ].filter(Boolean).join("; ") || "no content and no reason given",
-      });
+      const emptyDiagnostic = () => {
+        const outcome = parser.outcome;
+        return {
+          conversationId, provider: selection.providerId, model: selection.modelId,
+          actualModel: actualProviderModel, upstreamProvider,
+          detail: [
+            outcome.error ? `upstream error: ${outcome.error.message}` : "",
+            outcome.finishReason ? `finish_reason=${outcome.finishReason}` : "",
+            outcome.nativeFinishReason ? `native_finish_reason=${outcome.nativeFinishReason}` : "",
+            outcome.reasoningSeen ? "reasoning tokens only" : "",
+            outcome.malformedFrames ? `malformed_frames=${outcome.malformedFrames}` : "",
+            outcome.doneSeen ? "" : "stream ended without [DONE]",
+          ].filter(Boolean).join("; ") || "no content and no reason given",
+        };
+      };
       try {
         await consume(upstream,requestStartedAt);
         // An error the stream reported about itself is that error, not silence.
         // It is classified and thrown so the reader gets the right sentence and
         // the retry policy gets the right answer about whether to try again.
-        if (!assistant.trim() && signals.error) {
-          throw new ProviderError(classifyProviderFailure(signals.error.code ?? 502, signals.error.message), {
-            ...emptyDiagnostic(), attempt: 1, status: signals.error.code,
+        if (!parser.outcome.text.trim() && parser.outcome.error) {
+          const streamError = parser.outcome.error;
+          throw new ProviderError(classifyProviderFailure(streamError.code ?? 502, streamError.message), {
+            ...emptyDiagnostic(), attempt: 1, status: streamError.code,
           });
         }
-        if (!assistant.trim() && signals.finishReason === "content_filter") {
+        if (!parser.outcome.text.trim() && parser.outcome.finishReason === "content_filter") {
           // A filtered generation is not a blip, and retrying it produces the
           // same refusal. The reader is told something true and specific.
           throw new ProviderError("content_filtered", { ...emptyDiagnostic(), attempt: 1 });
         }
-        if (!assistant.trim()) {
+        if (!parser.outcome.text.trim()) {
           // Some routed providers occasionally finish a successful HTTP stream
           // without text. Account for that attempt, then transparently retry
           // once so the user does not have to delete and resend their turn.
@@ -658,9 +782,10 @@ export async function POST(request: Request) {
           // would be papering over.
           await recordAttemptUsage();
           if (upstreamProvider) exhaustedProviders.push(upstreamProvider);
-          const spentOnReasoning = signals.reasoningSeen || signals.finishReason === "length";
-          buffer = ""; usage = null; providerRequestId = undefined; upstreamProvider=undefined; ttftMs=undefined;
-          signals.error = null; signals.reasoningSeen = false; signals.finishReason = undefined;
+          const spentOnReasoning = parser.outcome.reasoningSeen || truncatedByLength(parser.outcome);
+          retried = true;
+          usage = null; providerRequestId = undefined; upstreamProvider = undefined; ttftMs = undefined;
+          parser.reset();
           actualProviderModel = providerModelId(selection.providerId,selection.modelId) ?? selection.modelId;
           const retryStartedAt = Date.now();
           // The retry is DIFFERENT from the attempt that failed, which is the
@@ -684,9 +809,8 @@ export async function POST(request: Request) {
           });
           await consume(retry,retryStartedAt);
         }
-        if (!assistant.trim()) throw new ProviderError(signals.finishReason === "content_filter" ? "content_filtered" : "empty_response", { ...emptyDiagnostic(), attempt: 2 });
-        const variants: string[] = regenerateTarget ? [...regenerateTarget.variants, assistant] : [assistant];
-        const selectedVariant = variants.length - 1;
+        const assistant = parser.outcome.text;
+        if (!assistant.trim()) throw new ProviderError(parser.outcome.finishReason === "content_filter" ? "content_filtered" : "empty_response", { ...emptyDiagnostic(), attempt: 2 });
         const memoryIds = memories.map((memory) => memory.id);
         const arcIds = arcs.map((arc) => arc.id);
         /*
@@ -748,72 +872,117 @@ export async function POST(request: Request) {
           continuityPlacement: placement,
         };
 
-        // The reply is complete and every field the client needs is already
-        // known here, so the completion event is emitted before the write
-        // rather than after it. Holding it until the database round trips
-        // finished left the text sitting on screen for seconds with its
-        // controls still hidden, which read as a freeze.
+        /*
+         * WHEN THE READER IS TOLD THE REPLY IS FINISHED.
+         *
+         * A send or a continue may still announce completion before the write,
+         * because its variant list is known in advance: it is exactly one
+         * element, the text just streamed. Announcing early is what stopped the
+         * finished reply from sitting on screen with its controls hidden while
+         * two database round trips finished.
+         *
+         * A REGENERATION CANNOT DO THAT, and doing it anyway was the second
+         * half of this sprint's variant bug. Its variant index is not knowable
+         * until the row is read and locked, because another regeneration of the
+         * same reply may have appended one in the meantime. Computing it from a
+         * `variants` array read tens of seconds earlier is how two attempts
+         * both claimed index 1 — the later UPDATE dropping the earlier's text,
+         * and the later `INSERT … ON CONFLICT DO NOTHING` writing no provenance
+         * at all while reporting success.
+         *
+         * So the append is one locked transaction and its answer is what the
+         * client is told. See src/lib/regeneration.ts.
+         */
+        let variants: string[] = [assistant];
+        let selectedVariant = 0;
+        let persistenceFailed = false;
+
+        const outcome = parser.outcome;
+        const truncated = truncatedByLength(outcome);
         timeline.mark("stream-complete");
-        send({ type: "done", id: assistantId, userMessageId, variants, selectedVariant, ...(isAdminAccount(account)?{memoriesUsed: memoryIds, arcsUsed: arcIds, usage}: {}) });
+        at("stream_complete");
+        /**
+         * The completion event, with whatever is known when it is sent.
+         *
+         * `truncated` is stated and nothing is done about it automatically. A
+         * reply that stopped at the output ceiling is a fact the client is
+         * entitled to; generating a second turn about it without being asked
+         * would silently double a reply the reader may well be happy with, and
+         * bill for it.
+         */
+        const announce = () => send({
+          type: "done", id: assistantId, userMessageId, variants, selectedVariant,
+          ...(truncated ? { truncated: true } : {}),
+          ...(isAdminAccount(account) ? { memoriesUsed: memoryIds, arcsUsed: arcIds, usage, finishReason: outcome.finishReason } : {}),
+        });
+        // A send or a continue announces BEFORE the write, because its variant
+        // list is already known — one element, the text just streamed — and
+        // holding the event until two database round trips finished left the
+        // finished reply on screen with its controls hidden, which read as a
+        // freeze. A regeneration cannot: see above.
+        if (!regenerateTarget) announce();
 
         try {
-          // One statement per transaction: each extra round trip to a pooled
-          // remote database is latency the reader would otherwise wait through.
-          if (regenerateTarget) {
-            /*
-             * The message-level columns keep describing the CURRENTLY SELECTED
-             * variant, which is what they have always meant and what the older
-             * clients read. They are a denormalised convenience now; the row in
-             * message_generations below is the record that cannot be overwritten
-             * by the next regeneration.
-             */
-            await asUser(account.id, (client) => client.query(
-              `WITH saved AS (
-                 UPDATE messages SET content=$1,variants=$2::jsonb,selected_variant=$3,memory_ids=$4::uuid[],memory_arc_ids=$5::uuid[],context_provenance=$8::jsonb
-                 WHERE id=$6 AND user_id=$7 RETURNING conversation_id
-               )
-               UPDATE conversations SET updated_at=now() WHERE id=(SELECT conversation_id FROM saved) AND user_id=$7`,
-              [assistant,JSON.stringify(variants),selectedVariant,memoryIds,arcIds,assistantId,account.id,JSON.stringify(contextProvenance)],
-            ));
-          } else {
-            await asUser(account.id, (client) => client.query(
-              `WITH saved AS (
-                 INSERT INTO messages (id,conversation_id,user_id,role,content,variants,selected_variant,memory_ids,memory_arc_ids,context_provenance)
-                 VALUES ($1,$2,$3,'assistant',$4,$5::jsonb,0,$6::uuid[],$7::uuid[],$8::jsonb) RETURNING conversation_id
-               )
-               UPDATE conversations SET message_count=message_count+1,updated_at=now()
-               WHERE id=(SELECT conversation_id FROM saved) AND user_id=$3`,
-              [assistantId,conversationId,account.id,assistant,JSON.stringify(variants),memoryIds,arcIds,JSON.stringify(contextProvenance)],
-            ));
+          const commit = await asUser(account.id, (client) => regenerateTarget
+            ? commitRegeneratedVariant(client, {
+              messageId: assistantId, userId: account.id, conversationId, text: assistant,
+              memoryIds, arcIds, contextProvenance, generation: generationRecord,
+            })
+            : commitNewAssistantMessage(client, {
+              messageId: assistantId, userId: account.id, conversationId, text: assistant,
+              memoryIds, arcIds, contextProvenance, generation: generationRecord,
+            }));
+          if (!commit.ok) {
+            // The reply the regeneration targeted is gone — deleted from another
+            // tab while the model was writing. There is nothing to append to.
+            diagnostic.detail = `regeneration target ${commit.reason}`;
+            throw new ProviderError("unknown", { conversationId, detail: `regeneration target ${commit.reason}` });
           }
-          /*
-           * ONE IMMUTABLE ROW PER GENERATION.
-           *
-           * Written after the message so the foreign key resolves, and outside
-           * the branch above because the record is the same either way: what
-           * differs is only which variant index it claims. Regenerate appends,
-           * so the variant it produced is the last one; a send or a continue
-           * always writes variant 0 of a brand-new message.
-           *
-           * A failure here loses provenance for one reply and must not lose the
-           * reply, so it is logged rather than surfaced — the inspector reports
-           * "not recorded" for it, which is the truth.
-           */
-          await asUser(account.id, (client) => recordGeneration(client, {
-            ...generationRecord,
-            messageId: assistantId,
-            conversationId,
-            userId: account.id,
-            variantIndex: selectedVariant,
-          })).catch((error) => console.error("Generation provenance not recorded", error));
+          variants = commit.variants;
+          selectedVariant = commit.variantIndex;
+          diagnostic.variantIndex = commit.variantIndex;
+          if (!commit.provenanceRecorded) {
+            /*
+             * A generation with no provenance row. `ON CONFLICT DO NOTHING` is
+             * still right — provenance is a statement about something that has
+             * already happened and nothing later may revise it — but it used to
+             * be SILENT, so the inspector reported "not recorded" for a reply
+             * produced a second ago and nobody could see why.
+             */
+            diagnostic.reason = "variant_conflict";
+            console.error("[generation] provenance not recorded", JSON.stringify({
+              conversationId, action, messageId: assistantId, variantIndex: commit.variantIndex,
+            }));
+          }
         } catch (error) {
-          // The reader was already told the reply finished, so a failed write
-          // has to be reported rather than swallowed: the text on their screen
-          // would otherwise disappear on the next reload with no explanation.
+          persistenceFailed = true;
           console.error("Reply persistence failed", error);
-          send({ type: "error", error: "That reply could not be saved. Reload the chat before continuing." });
         }
 
+        if (regenerateTarget) announce();
+        diagnostic.finishReason = outcome.finishReason;
+        diagnostic.nativeFinishReason = outcome.nativeFinishReason;
+        diagnostic.truncated = truncated;
+        diagnostic.streamDone = outcome.doneSeen;
+        diagnostic.usageSeen = Boolean(outcome.usage);
+        diagnostic.malformedFrames = outcome.malformedFrames;
+        diagnostic.replyCharacters = assistant.length;
+        diagnostic.retried = retried;
+        diagnostic.ttftMs = ttftMs ?? null;
+        diagnostic.upstreamProvider = upstreamProvider;
+        diagnostic.requestId = providerRequestId;
+        diagnostic.promptTokens = (usage as LLMUsage | null)?.prompt_tokens ?? null;
+        diagnostic.completionTokens = (usage as LLMUsage | null)?.completion_tokens ?? null;
+        diagnostic.reasoningTokens = ((usage as LLMUsage | null)?.completion_tokens_details?.reasoning_tokens as number | undefined) ?? null;
+        diagnostic.latencyMs = (usage as LLMUsage | null)?.latency_ms ?? null;
+
+        if (persistenceFailed) {
+          // The reader was told the reply finished, so a failed write has to be
+          // reported rather than swallowed: the text on their screen would
+          // otherwise disappear on the next reload with no explanation.
+          send({ type: "error", error: "That reply could not be saved. Reload the chat before continuing." });
+        }
+        at("persisted");
         timeline.mark("persisted");
         /*
          * The timeline, emitted once the reply is on screen and saved.
@@ -851,6 +1020,7 @@ export async function POST(request: Request) {
           outputTokens: (usage as LLMUsage | null)?.completion_tokens ?? null,
           generationMs: (usage as LLMUsage | null)?.latency_ms ?? null,
         });
+        finish(persistenceFailed ? "failed" : "ok", persistenceFailed ? "persistence_failure" : undefined);
         controller.close();
         void (async () => {
           // Scene State first: consolidation stamps the memories it creates
@@ -863,6 +1033,7 @@ export async function POST(request: Request) {
           await maybeBackfillMemoryEmbeddings(account.id,conversationId);
         })().catch((error) => console.error("Memory maintenance failed",error));
       } catch (error) {
+        const streamed = parser.outcome.text;
         logProviderDiagnostic("rp generation failed mid-stream", error instanceof ProviderError
           ? error.withDiagnostic({ conversationId, provider: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, upstreamProvider })
           : error);
@@ -875,11 +1046,42 @@ export async function POST(request: Request) {
          * platform's allowance was spent, and crediting it back would make the
          * ledger disagree with what OpenRouter has already counted.
          */
-        void settleFunding(Boolean(assistant.trim())).catch((settleError) => console.error("Free-tier settlement failed", settleError));
+        void settleFunding(Boolean(streamed.trim())).catch((settleError) => console.error("Free-tier settlement failed", settleError));
         void recordRouteOutcome({
           modelId: selection.modelId, ok: false,
           capacity: error instanceof ProviderError && error.category === "rate_limited",
         });
+        /*
+         * The failure, recorded in the vocabulary an operator can act on.
+         *
+         * "Something went wrong while generating the response" is the reader's
+         * sentence and it is deliberately vague. It was ALSO everything the
+         * operator got, which is what made a Regenerate that failed most of the
+         * time undiagnosable. These fields are the answer to "which stage, and
+         * why" for the same turn.
+         */
+        const failed = parser.outcome;
+        diagnostic.finishReason = failed.finishReason;
+        diagnostic.nativeFinishReason = failed.nativeFinishReason;
+        diagnostic.streamDone = failed.doneSeen;
+        diagnostic.usageSeen = Boolean(failed.usage);
+        diagnostic.malformedFrames = failed.malformedFrames;
+        diagnostic.replyCharacters = streamed.length;
+        diagnostic.retried = retried;
+        diagnostic.ttftMs = ttftMs ?? null;
+        diagnostic.upstreamProvider = upstreamProvider;
+        diagnostic.requestId = providerRequestId;
+        if (error instanceof ProviderError) {
+          diagnostic.category = error.category;
+          diagnostic.status = error.diagnostic.status;
+          diagnostic.attempt = error.diagnostic.attempt;
+          diagnostic.detail = error.diagnostic.detail;
+        } else {
+          diagnostic.detail = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
+        }
+        finish("failed", error instanceof ProviderError
+          ? (failed.malformedFrames && error.category === "empty_response" ? "stream_parse_failure" : reasonForCategory(error.category))
+          : request.signal.aborted ? "client_aborted" : "unknown");
         send({ type: "error", error: writerErrorMessage(error, writerFunding) });
         controller.close();
       }
