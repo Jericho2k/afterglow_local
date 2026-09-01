@@ -2,14 +2,20 @@
 /**
  * STAGE 1: THE CHEAP TECHNICAL SCREEN, BEFORE ANYBODY SPENDS REAL MONEY ON RP.
  *
- * The sprint brief asserts a premise about GLM 5.3 Flash that could NOT be
- * verified from the build environment — that one class of endpoint (Relace) is
+ * A premise about GLM 5.3 Flash — that one class of endpoint (Relace) is
  * extremely cheap and slow, and another (Makora) dearer and substantially
- * faster. This script is how that premise becomes a measurement instead of a
- * sentence, and it is deliberately the FIRST thing run: a route with a
- * thirty-second time to first token is dead for interactive chat whatever its
- * prose is like, and finding that out costs pennies here rather than dollars in
- * a full roleplay evaluation.
+ * faster — could never be verified from the build environment, and the product
+ * has stopped pretending otherwise: GLM 5.3 Flash is served by Z.AI alone, and
+ * the catalogue no longer offers a second serving profile built on a sentence
+ * nobody measured.
+ *
+ * THIS HARNESS IS HOW ANOTHER HOST EARNS ITS PLACE. It takes upstream slugs and
+ * provider slugs directly rather than catalogue ids, so it can measure any
+ * endpoint OpenRouter serves without one existing in the product first — and it
+ * is deliberately the FIRST thing run: a route with a thirty-second time to
+ * first token is dead for interactive chat whatever its prose is like, and
+ * finding that out costs pennies here rather than dollars in a full roleplay
+ * evaluation.
  *
  * WHAT IT MEASURES, per model and per pinned endpoint:
  *
@@ -133,9 +139,11 @@ if (!apiKey) {
   console.error("OPENROUTER_API_KEY is required: this measures live endpoints on purpose.");
   console.error("");
   console.error("SKIPPED, LOUDLY. Nothing about Relace, Makora, or any other serving profile");
-  console.error("can be claimed without this run. The catalogue currently gives both GLM 5.3");
-  console.error("Flash profiles the SAME price ceiling for exactly that reason: the premise");
-  console.error("that one is cheap-and-slow and the other dear-and-fast is unverified.");
+  console.error("can be claimed without this run — which is why the catalogue no longer ships");
+  console.error("a second GLM 5.3 Flash profile built on the unverified premise that one host");
+  console.error("is cheap-and-slow and another dear-and-fast. GLM 5.3 Flash is served by Z.AI");
+  console.error("alone in production; this harness is how another host earns a place, and it");
+  console.error("takes upstream slugs directly, so it never depends on a catalogue entry.");
   process.exit(2);
 }
 

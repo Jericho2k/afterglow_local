@@ -299,7 +299,7 @@ policy denies `openrouter.ai`, and no key was available. So the following remain
 
 ```
 CHAT_GENERATION_DIAGNOSTICS=1                      # one line per turn, in production
-node scripts/provider-constraint-bisect.mjs --models glm-5.3-flash,glm-5.3-flash-economy --stream
+node scripts/provider-constraint-bisect.mjs --models glm-5.3-flash,glm-4.7 --stream
 grep '\[generation\] rp turn failed' … | grep '"action":"regenerate"'
 ```
 

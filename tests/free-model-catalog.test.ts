@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureSchema, query, setPoolForTesting } from "@/lib/db";
 import { curatedCatalog, curatedModels, routeGenerationAllowed } from "@/lib/curated-routes";
 import { healthState, recordRouteOutcome, routeHealth } from "@/lib/route-health";
-import { isFreeModel, modelCapabilities, modelCategory } from "@/lib/provider";
+import { availableModels, catalogModelIds, isFreeModel, modelCapabilities, modelCategory } from "@/lib/provider";
 
 /**
  * THE CATALOGUE, AND THE TWO THINGS IT MUST NEVER DO.
@@ -42,12 +42,11 @@ describe("what the picker is allowed to show", () => {
     /*
      * Provider infrastructure is not a product category. A reader choosing how
      * their story is written has no opinion about a quantisation or an endpoint,
-     * and the two shelves that exist because endpoints differ — Economy and
-     * Fast — are named after the experience rather than after the host.
+     * so every shelf is named after the experience rather than after the host —
+     * and a shelf is never used to sell one model twice.
      */
     expect(modelCategory("glm-4.7")).toBe("recommended");
     expect(modelCategory("glm-5.3-flash")).toBe("recommended");
-    expect(modelCategory("glm-5.3-flash-economy")).toBe("economy");
     expect(modelCategory("ling-3.0-flash")).toBe("economy");
     expect(modelCategory("qwen3.8-flash")).toBe("experimental");
     expect(modelCategory(freeRoute)).toBe("free");
@@ -55,18 +54,28 @@ describe("what the picker is allowed to show", () => {
     expect(modelCategory("something-nobody-declared")).toBe("experimental");
   });
 
-  it("offers the same writer as two serving profiles, not as two characters", () => {
+  it("offers exactly one GLM 5.3, on one shelf, under one name", () => {
     /*
-     * One model, one slug, one set of weights. What differs is the endpoint
-     * underneath, which is why the Economy profile prefers a different host and
-     * why neither profile is described to a reader as a different writer.
+     * IT USED TO BE TWO, AND THAT WAS THE PROBLEM.
+     *
+     * "Fast" and "Economy" were the same weights and the same slug served by
+     * different endpoints, and the premise that told them apart — one host
+     * cheap-and-slow, another dear-and-fast — was never measured. A picker that
+     * asks a reader to choose between two unverified serving profiles of one
+     * model is asking a question nobody can answer, and the answer changed what
+     * their story read like.
+     *
+     * Asserted over the whole catalogue rather than by naming the dead id, so a
+     * second profile reappearing under any name fails here.
      */
-    const fast = modelCapabilities("openrouter", "glm-5.3-flash");
-    const economy = modelCapabilities("openrouter", "glm-5.3-flash-economy");
-    expect(economy.preferredProviders).toEqual(["relace"]);
-    expect(fast.preferredProviders).toBeUndefined();
-    expect(economy.contextTokens).toBe(fast.contextTokens);
-    expect(economy.costCeiling).toEqual(fast.costCeiling);
+    const glm53 = catalogModelIds().filter((id) => id.startsWith("glm-5.3"));
+    expect(glm53).toEqual(["glm-5.3-flash"]);
+    const flash = availableModels().filter((model) => model.label.includes("GLM 5.3"));
+    expect(flash).toHaveLength(1);
+    expect(flash[0].label).toBe("GLM 5.3 Flash");
+    // Nothing in what reaches the browser advertises a serving profile any
+    // more; the shelf is the only distinction a reader is offered.
+    expect(Object.keys(flash[0])).not.toContain("speedProfile");
   });
 
   it("declines reasoning by default where a model thinks before it speaks", () => {

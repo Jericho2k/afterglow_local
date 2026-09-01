@@ -31,7 +31,7 @@
  * USAGE
  *   OPENROUTER_API_KEY=… node scripts/provider-constraint-bisect.mjs
  *   … --model glm-5.3-flash          an Afterglow catalogue id (default)
- *   … --models glm-5.3-flash,glm-5.3-flash-economy
+ *   … --models glm-5.3-flash,glm-4.7
  *   … --stream                       ask for a streamed response, as chat does
  *   … --max-tokens 64                the reply is not the point (default 48)
  *   … --json                         machine-readable rows
@@ -82,17 +82,13 @@ export const constraints = {
     dataCollection: "deny",
     zdr: false,
     maxPrice: { prompt: 0.20, completion: 0.60 },
-    only: ["z-ai", "novita", "deepinfra", "gmicloud", "makora"],
+    only: ["z-ai"],
     order: [],
-  },
-  "glm-5.3-flash-economy": {
-    upstreamModel: "z-ai/glm-5.3-flash",
-    reasoning: "off",
-    dataCollection: "deny",
-    zdr: false,
-    maxPrice: { prompt: 0.20, completion: 0.60 },
-    only: ["relace", "z-ai", "novita", "deepinfra"],
-    order: ["relace"],
+    // Dedicated: one host, fallbacks off. Arm E and arm G both say so, which is
+    // the difference between "prefer these" and "this or nothing" — and the
+    // whole reason a Z.AI outage must read as a failure rather than as a
+    // quietly different writer.
+    allowFallbacks: false,
   },
   "glm-4.7": {
     upstreamModel: "z-ai/glm-4.7",
@@ -102,6 +98,7 @@ export const constraints = {
     maxPrice: { prompt: 0.65, completion: 2.25 },
     only: ["deepinfra", "novita", "z-ai"],
     order: [],
+    allowFallbacks: true,
   },
 };
 
@@ -147,9 +144,9 @@ function armsFor(catalogueId) {
     },
     {
       id: "E",
-      label: `+ provider.only [${model.only.join(", ") || "none"}]`,
+      label: `+ provider.only [${model.only.join(", ") || "none"}]${model.allowFallbacks ? "" : " (fallbacks off)"}`,
       skip: !model.only.length,
-      body: { provider: { only: model.only, allow_fallbacks: true } },
+      body: { provider: { only: model.only, allow_fallbacks: model.allowFallbacks } },
     },
     {
       id: "F",
@@ -160,9 +157,10 @@ function armsFor(catalogueId) {
     {
       /*
        * Production's first attempt, as src/lib/provider.ts assembles it: the
-       * preferred order where a model declares one, the approved pool, the
-       * ceiling, the privacy floor, fallbacks on, no `sort`, plus the
-       * conversation-scoped session hint the chat route sends.
+       * preferred order where a model declares one, the approved pool or the
+       * one dedicated host, the ceiling, the privacy floor, fallbacks as the
+       * catalogue sets them, no `sort`, plus the conversation-scoped session
+       * hint the chat route sends.
        */
       id: "G",
       label: "exactly what production sends",
@@ -171,7 +169,7 @@ function armsFor(catalogueId) {
         provider: {
           ...(model.order.length ? { order: model.order } : {}),
           ...(model.only.length ? { only: model.only } : {}),
-          allow_fallbacks: true,
+          allow_fallbacks: model.allowFallbacks,
           max_price: model.maxPrice,
           data_collection: model.dataCollection,
           ...(model.zdr ? { zdr: true } : {}),

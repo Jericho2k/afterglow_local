@@ -206,6 +206,12 @@ See §4.
 
 ### What shipped in place of a measurement
 
+> **Superseded, 2026-09.** The two serving profiles were withdrawn: the premise
+> separating them was never measured, and a pool of several hosts made "which
+> writer wrote this" unanswerable. There is now one `glm-5.3-flash`, served by
+> Z.AI alone with fallbacks off. See `docs/glm-5.3-simplification-2026-09.md`.
+> The rest of this section records what shipped at the time.
+
 Two catalogue entries, `glm-5.3-flash` and `glm-5.3-flash-economy`, presented to
 readers as **Fast** and **Economy** — an experience, never a vendor. They carry
 the **same** price ceiling and the **same** capabilities, and differ only in

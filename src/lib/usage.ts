@@ -150,7 +150,6 @@ export const modelPricing: Record<string, TariffRates> = {
    * `recordUsageEvent` always prefers it.
    */
   "glm-5.3-flash": { cacheHit: 0.03, cacheMiss: 0.15, output: 0.50 },
-  "glm-5.3-flash-economy": { cacheHit: 0.03, cacheMiss: 0.15, output: 0.50 },
   "ling-3.0-flash": { cacheHit: 0.0042, cacheMiss: 0.021, output: 0.063 },
   "qwen3.8-flash": { cacheHit: 0.016, cacheMiss: 0.15, output: 0.47 },
   /*

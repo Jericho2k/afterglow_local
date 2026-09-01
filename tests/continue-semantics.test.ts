@@ -173,3 +173,77 @@ describe("Regenerate keeps its own semantics", () => {
     expect(messages.at(-1)).toEqual({ role: "user", content: "Tell me what you found." });
   });
 });
+
+/**
+ * THE GENERATION AN EDIT ASKS FOR.
+ *
+ * Editing your own newest message, when nothing has replied to it yet, now
+ * generates the reply — and it does so through this path rather than through a
+ * second inference implementation of its own. That makes the server-side
+ * contract worth stating here, next to the other two operations it must not be
+ * confused with:
+ *
+ *   the writer is asked from the EDITED text, because the edit is persisted
+ *   before the generation is asked for;
+ *
+ *   no second copy of the reader's turn is appended, which is what `send` would
+ *   have done and is why this is `continue`;
+ *
+ *   exactly one reply arrives, appended rather than replacing anything.
+ *
+ * The client-side half — WHEN this fires, and why tapping Save twice still
+ * produces one generation — is in tests/edit-autoreply.test.ts.
+ */
+describe("what an edited, unanswered turn generates", () => {
+  /** The reader's newest turn, rewritten in place exactly as the editor does. */
+  async function editNewestUserTurn(content: string) {
+    const newest = await query<{ id: string }>(
+      "SELECT id FROM messages WHERE conversation_id=$1 AND role='user' ORDER BY created_at DESC,id DESC LIMIT 1", [conversationId],
+    );
+    await query("UPDATE messages SET content=$1,content_version=content_version+1 WHERE id=$2", [content, newest.rows[0].id]);
+  }
+
+  it("answers the edited text, adds nothing of the reader's, and replies once", async () => {
+    await query("INSERT INTO messages (id,conversation_id,user_id,role,content,authored_event_id) VALUES ($1,$2,$3,'user','Waht did you fnid?',$1)", [crypto.randomUUID(), conversationId, owner]);
+    await query("UPDATE conversations SET message_count=message_count+1 WHERE id=$1", [conversationId]);
+    const before = await query<{ count: string }>("SELECT count(*) AS count FROM messages WHERE conversation_id=$1", [conversationId]);
+
+    await editNewestUserTurn("What did you find in the eastern wing?");
+    streamCompletion.mockResolvedValueOnce(textStream("*She taps the map twice.*"));
+    await events(await chat.POST(post({ conversationId, content: "", action: "continue" })));
+
+    // The writer reads the CORRECTED sentence, and reads it as the turn it is
+    // answering. Asking before the save landed would answer the typo.
+    expect(sent().at(-1)).toEqual({ role: "user", content: "What did you find in the eastern wing?" });
+    expect(sent().map((message) => message.content).join("")).not.toContain("Waht did you fnid?");
+    expect(sent().map((message) => message.content).join("")).not.toContain("[CONTINUE SCENE]");
+
+    const rows = await query<{ role: string; content: string }>(
+      "SELECT role,content FROM messages WHERE conversation_id=$1 ORDER BY created_at ASC,id ASC", [conversationId],
+    );
+    // One message added, and it is the reply. `send` would have appended a
+    // second copy of the reader's turn, which is the whole reason this is not
+    // that action.
+    expect(rows.rows).toHaveLength(Number(before.rows[0].count) + 1);
+    expect(rows.rows.at(-1)).toMatchObject({ role: "assistant", content: "*She taps the map twice.*" });
+    expect(rows.rows.filter((row) => row.content === "What did you find in the eastern wing?")).toHaveLength(1);
+  });
+
+  it("leaves the reply that already exists alone", async () => {
+    /*
+     * The negative case, at the layer that would do the damage. The client
+     * never asks for this — `editTriggersGeneration` refuses an edit with a
+     * reply after it — and if it ever did, Continue still APPENDS. Nothing here
+     * truncates, replaces or regenerates over a scene somebody has read.
+     */
+    await editNewestUserTurn("Tell me what you found, and be honest.");
+    streamCompletion.mockResolvedValueOnce(textStream(" *She exhales.*"));
+    await events(await chat.POST(post({ conversationId, content: "", action: "continue" })));
+
+    const replies = await query<{ content: string }>(
+      "SELECT content FROM messages WHERE conversation_id=$1 AND role='assistant' ORDER BY created_at ASC,id ASC", [conversationId],
+    );
+    expect(replies.rows[0].content).toBe(firstReply);
+    expect(replies.rows).toHaveLength(2);
+  });
+});

@@ -43,6 +43,7 @@ import { chatHref, commandFromSearch, isCurrentHref, routeFromSearch, viewHref, 
 import { savedCreationDestination } from "@/lib/creation-actions";
 import { mergeCreationLists } from "@/lib/shell-library";
 import { acceptsResponse, adoptChatView, chatFailed, chatLoaded, clearChatView, emptyChatView, openChatView, prependedMessages, showsRoute, type ChatView } from "@/lib/chat-view";
+import { claimGeneration, editTriggersGeneration, idleGenerationGate, releaseGeneration } from "@/lib/message-edit";
 import { messageFingerprint } from "@/lib/message-identity";
 
 type WorldWithCount = StudioWorld;
@@ -176,6 +177,19 @@ export default function AppShell() {
 
   const [creatingConversation, setCreatingConversation] = useState(false);
   const pinnedToBottomRef = useRef(true);
+  /*
+   * ONE GENERATION AT A TIME, ANSWERED IN THE SAME TICK IT IS ASKED.
+   *
+   * `streaming` state already keeps the composer and the message controls
+   * disabled, and it cannot close this race on its own: two taps landing before
+   * React re-renders both read `false` from the render they closed over. That
+   * did not matter much while every generation started at a tap on a control
+   * that visibly changes; it matters now that saving an edit starts one behind
+   * an await. See src/lib/message-edit.ts.
+   */
+  const generationGateRef = useRef(idleGenerationGate());
+  /** The edit currently being saved, so a second Save is a no-op rather than a second write. */
+  const editSaveRef = useRef<string | null>(null);
   const variantDesiredRef = useRef(new Map<string,{ message:Message; index:number; localIndex:number }>());
   const variantWorkersRef = useRef(new Set<string>());
   const branchPendingRef = useRef<string | null>(null);
@@ -807,6 +821,9 @@ export default function AppShell() {
 
   async function send(action: "send" | "regenerate" | "continue" = "send", regenerationTargetOverride?: string | null) {
     if (!conversation || streaming || (action === "send" && !composer.trim())) return;
+    // The synchronous half of the same guard: `streaming` is state and answers
+    // one render late, which is long enough for two callers to both start a turn.
+    if (!claimGeneration(generationGateRef.current)) return;
     setError(""); setStreaming(true);
     scrollToBottom();
     const content = action === "send" ? composer.trim() : "";
@@ -888,7 +905,7 @@ export default function AppShell() {
       if (regenerationTargetId) await refreshChat(conversation.characterId,conversation.id).catch(() => undefined);
       else setMessages((items) => items.filter((m) => m.id !== placeholderId));
       setError(e instanceof Error ? e.message : "The reply was interrupted");
-    } finally { setStreaming(false); }
+    } finally { releaseGeneration(generationGateRef.current); setStreaming(false); }
   }
 
   /**
@@ -1001,16 +1018,50 @@ export default function AppShell() {
     };
   }
 
+  /**
+   * Saving an edit — and, when the edit was the turn still being composed,
+   * asking for the reply the reader is plainly waiting for.
+   *
+   * The rule for when that happens is `editTriggersGeneration`, stated once in
+   * src/lib/message-edit.ts rather than as an index comparison here: the edited
+   * message is the reader's own AND it is the newest in the story, which is the
+   * answerable form of "nothing has replied to it yet". Correcting an older
+   * turn still saves and stops — the reply that followed it was already
+   * written and read, and throwing it away to regenerate is the destructive
+   * reading of the word "edit".
+   *
+   * The generation goes through `send` rather than through anything new, so it
+   * is the ordinary path with the ordinary transcript, funding, diagnostics and
+   * failure handling. `continue` is the action for "generate the next message
+   * without adding one of mine", which is exactly this: the reader's turn is
+   * already in the transcript, freshly edited, and asking for `send` would
+   * append a second copy of it.
+   *
+   * TWO GUARDS AGAINST DOING IT TWICE, because Save is a button a thumb can
+   * hit twice and the work behind it is a round trip. `editSaveRef` makes a
+   * second Save on the same message a no-op instead of a second PATCH, and
+   * `send` claims a synchronous gate so anything that gets past the first still
+   * cannot start a second turn.
+   */
   async function saveMessageEdit(message: Message, index: number) {
     const content = editDraft.trim();
     if (!content) return;
     if (content === message.content) { setEditingMessageId(null); return; }
+    if (editSaveRef.current === message.id) return;
+    editSaveRef.current = message.id;
+    // Read before the await: the transcript this decision is about is the one
+    // the reader was looking at when they pressed Save.
+    const generateReply = editTriggersGeneration(messages, message.id);
     try {
       const locator = await mutationLocator(message, index);
       const data = await api<{ message: Message }>(`/api/messages/${message.id}`, { method: "PATCH", body: JSON.stringify({ messageId: message.id, content, truncateAfter: false, ...locator }) });
       setMessages((items) => items.map((item) => item.id === message.id ? data.message : item));
       setEditingMessageId(null);
+      // Not awaited: the editor closes on the saved text and the reply streams
+      // in underneath it, exactly as it does after Send.
+      if (generateReply) void send("continue");
     } catch (e) { setError(e instanceof Error ? e.message : "Could not edit message"); }
+    finally { editSaveRef.current = null; }
   }
 
   function selectVariant(message: Message, index: number, localIndex: number) {
@@ -1741,9 +1792,8 @@ function WriterModelShelves({ models, freeTier, value, onChange }: { models: Mod
         <span>
           <strong>{model.label}</strong>
           <small>{model.description}</small>
-          {(model.free||model.speedProfile||model.availability)&&<span className="model-tags">
+          {(model.free||model.availability)&&<span className="model-tags">
             {model.free&&<em>Free</em>}
-            {model.speedProfile&&<i>{model.speedProfile==="fast"?"Fast":"Economy"}</i>}
             {model.availability&&model.availability!=="available"&&<i>{availabilityLabel[model.availability]}</i>}
           </span>}
           {model.notice&&<small className="model-notice">{model.notice}</small>}
