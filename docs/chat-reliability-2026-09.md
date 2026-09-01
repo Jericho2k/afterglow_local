@@ -205,9 +205,22 @@ request. Omitting the `reasoning` parameter is not declining reasoning; it is
 declining to have an opinion, and a hybrid reasoning model's own opinion is to
 reason.
 
-The chat route now consults it. Precedence is unchanged: an engine that wants
-reasoning still gets it, `RP_REASONING=off` is still the deployment-wide
-override, and a model that declares no default still sends nothing.
+The chat route now consults it. Precedence: an engine that wants reasoning still
+gets it, `RP_REASONING` is still the deployment-wide override, and a model that
+declares no default still sends nothing.
+
+**This changes what leaves the process**, and that is worth stating plainly: a
+`reasoning` key now appears in requests to GLM 5.3 Flash and Qwen3.8 Flash that
+previously carried none. That is the intended behaviour, and it is also a new
+parameter reaching upstream endpoints — an endpoint that rejects a parameter it
+does not implement answers 400, which reaches a reader as "Something went wrong
+while generating the response".
+
+So it has the same no-deploy revert every other routing switch in
+`src/lib/provider.ts` has: **`RP_REASONING=auto`** ignores the catalogue
+declarations and sends no `reasoning` key, restoring the previous request shape
+exactly. `off` still forces it everywhere. This was missing when the wiring
+first shipped, which was the omission.
 
 ### 1.4 Provider-specific 400s
 

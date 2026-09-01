@@ -145,8 +145,10 @@ export type ModelCapabilities = {
    * genuinely differs. On GLM 5.3 Flash it is the difference between a reply
    * that starts in a second and one that starts in tens of seconds, since the
    * model reasons before it speaks; on a model with no such habit it buys
-   * nothing. A deployment-wide `RP_REASONING=off` still overrides everything,
-   * and an engine that explicitly wants thinking still wins over this.
+   * nothing. Two deployment-wide overrides beat it — `RP_REASONING=off` forces
+   * it on every model, `RP_REASONING=auto` ignores these declarations and sends
+   * no `reasoning` key at all — and an engine that explicitly wants thinking
+   * still wins over all of them. See `defaultReasoningFor`.
    */
   reasoningDefault?: "on" | "off";
   /**
@@ -1034,12 +1036,37 @@ export function dataPolicyFor(modelId: string) {
 /**
  * What to send for `reasoning` on one model when the engine has not asked.
  *
- * `RP_REASONING=off` is a deployment-wide override and still wins; otherwise a
- * model that declares a default gets it, and a model that declares none keeps
- * today's behaviour of saying nothing at all.
+ * THREE VALUES, AND THE THIRD IS THE ONE THIS FILE'S OWN CONVENTION REQUIRED
+ * AND DID NOT HAVE.
+ *
+ *   off     deployment-wide: decline reasoning on every model that accepts the
+ *           parameter, whatever its catalogue entry says.
+ *   auto    deployment-wide: ignore catalogue defaults entirely and send NO
+ *           `reasoning` key, which is byte-for-byte the request shape this
+ *           deployment sent before `reasoningDefault` was wired up.
+ *   unset   the default. A model that declares a default gets it; a model that
+ *           declares none says nothing.
+ *
+ * `auto` exists because wiring `reasoningDefault` in changed what leaves this
+ * process for GLM 5.3 Flash and Qwen3.8 Flash: a `reasoning` key now appears in
+ * requests that previously carried none. That is the intended behaviour and it
+ * is also a new parameter reaching upstream endpoints, and an endpoint that
+ * rejects a parameter it does not implement answers 400 — which reaches a
+ * reader as "Something went wrong while generating the response".
+ *
+ * Every other switch in this file can be reverted from a dashboard without a
+ * deploy — `PROVIDER_ROUTING_MODE=auto`, `ENFORCE_PROVIDER_POOL=false`,
+ * `PROVIDER_POOL_OVERRIDE`, `PROMPT_CONTINUITY_PLACEMENT` — precisely so that a
+ * change of this shape can be undone at three in the morning by whoever is
+ * awake. This one shipped without that, which was the omission. It has it now.
+ *
+ * An engine that explicitly asks for thinking still wins over all three.
  */
 export function defaultReasoningFor(modelId: string): "on" | "off" | null {
-  if (process.env.RP_REASONING?.trim() === "off") return "off";
+  const configured = process.env.RP_REASONING?.trim();
+  if (configured === "off") return "off";
+  // The escape hatch: no opinion at all, which is the endpoint's own default.
+  if (configured === "auto") return null;
   return knownModels.find((model) => model.id === modelId)?.capabilities.reasoningDefault ?? null;
 }
 

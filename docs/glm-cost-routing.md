@@ -113,7 +113,7 @@ No attempt ever substitutes a different *model*.
 | `GLM_ALLOW_EMERGENCY_EXPENSIVE_FALLBACK` | `false` | Lets the **final** retry exceed the ceiling when every approved endpoint has failed. Off by default: a provider outage must not become a surprise on the invoice. |
 | `PIN_UPSTREAM_PROVIDER` | unset | `glm-4.7:deepinfra`. Requires `PROVIDER_ROUTING_MODE=benchmark`, so a forgotten pin is inert. |
 | `TRANSCRIPT_ANCHOR_STEP` | `16` | Messages the transcript anchor moves in one go. Clamped to 2–64. |
-| `RP_REASONING` | unset | `off` makes non-reasoning engines decline reasoning explicitly. See caveat. |
+| `RP_REASONING` | unset | `off` makes non-reasoning engines decline reasoning explicitly; `auto` sends no `reasoning` key at all, ignoring per-model defaults. See caveat. |
 | `PROMPT_CONTINUITY_PLACEMENT` | auto | Pre-existing. `system` reverts the tail layout. |
 
 An unrecognised `PROVIDER_ROUTING_MODE` falls back to `cost_guarded`, not to

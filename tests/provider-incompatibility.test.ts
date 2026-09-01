@@ -79,6 +79,29 @@ describe("what a model says about reasoning is what gets sent", () => {
   it("still lets a deployment decline reasoning everywhere", () => {
     vi.stubEnv("RP_REASONING", "off");
     expect(defaultReasoningFor("glm-4.7")).toBe("off");
+    expect(defaultReasoningFor("glm-5.3-flash")).toBe("off");
+  });
+
+  it("lets a deployment put the request shape back without a deploy", () => {
+    /*
+     * Wiring `reasoningDefault` in changed what leaves the process: a
+     * `reasoning` key now appears in requests to GLM 5.3 Flash that previously
+     * carried none. An endpoint that rejects a parameter it does not implement
+     * answers 400, which reaches a reader as "Something went wrong while
+     * generating the response" — so the change needs an off switch that does
+     * not need a release, exactly like every other routing switch here.
+     */
+    vi.stubEnv("RP_REASONING", "auto");
+    expect(defaultReasoningFor("glm-5.3-flash")).toBe(null);
+    expect(defaultReasoningFor("glm-5.3-flash-economy")).toBe(null);
+    // And a model that never declared one is unaffected either way.
+    expect(defaultReasoningFor("glm-4.7")).toBe(null);
+  });
+
+  it("ignores a value it does not recognise rather than guessing", () => {
+    // A typo in a deployment variable must not silently change behaviour.
+    vi.stubEnv("RP_REASONING", "yes");
+    expect(defaultReasoningFor("glm-5.3-flash")).toBe("off");
   });
 });
 
