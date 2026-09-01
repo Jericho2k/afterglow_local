@@ -837,6 +837,19 @@ export default function AppShell() {
           if (event.type === "done") {
             completed = true;
             setMessages((items) => items.map((m) => m.id === placeholderId ? { ...m, id: event.id, variants: event.variants, selectedVariant: event.selectedVariant, memoryIds: event.memoriesUsed ?? [], arcIds: event.arcsUsed ?? [] } : optimisticUserId && m.id === optimisticUserId && event.userMessageId ? { ...m, id: event.userMessageId } : m));
+            /*
+             * THE REPLY ARRIVED AND DID NOT FINISH, AND THOSE ARE BOTH TRUE.
+             *
+             * `incomplete` means the stream ended with nothing saying the
+             * generation was over — no finish reason, no [DONE] — so the text
+             * on screen is real and unfinished. It is kept, because every word
+             * of it was produced and paid for and it is the reader's scene; it
+             * is named, because a sentence that stops halfway with no
+             * explanation is the complaint this exists to answer; and nothing
+             * is generated to cover it, because Continue is the reader's
+             * decision to make and is already the control for it.
+             */
+            if (event.incomplete) setError("That reply was cut short before the writer finished it. What arrived is saved — use Continue to pick it up.");
             if (action === "send" && conversation.title.startsWith("Chat with ")) {
               const title = content.replace(/\s+/g," ").slice(0,120);
               setConversation((current) => current ? { ...current,title } : current);

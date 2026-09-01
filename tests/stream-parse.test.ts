@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createWriterStreamParser, truncatedByLength } from "@/lib/stream-parse";
+import { createWriterStreamParser, streamEnding, terminalEvidence, truncatedByLength } from "@/lib/stream-parse";
 
 /**
  * The end of a reply, against every way a network can deliver it.
@@ -168,5 +168,102 @@ describe("wire shapes that are legal and were not handled", () => {
     parser.push(encoder.encode(`${frames(delta("Second attempt."))}`));
     parser.end();
     expect(parser.outcome.text).toBe("Second attempt.");
+  });
+});
+
+
+/**
+ * DID THE GENERATION END, OR DID THE CONNECTION?
+ *
+ * The dropped-final-frame fix removed one way a reply could stop mid-thought.
+ * The other leaves no trace at all: prose arrives, the transport dies, and
+ * nothing in the protocol ever said the generation was over. Stored and
+ * announced as an ordinary success, that is indistinguishable from a reply that
+ * finished — which is exactly how it stayed invisible.
+ *
+ * A completion is claimed only on terminal evidence. These are the shapes that
+ * carry it, the shapes that do not, and the boundary between them.
+ */
+describe("how the stream ended", () => {
+  const done = "data: [DONE]\n\n";
+  const finished = (reason = "stop") => frames({ choices: [{ delta: {}, finish_reason: reason }] });
+
+  it("is complete with text, a finish reason and [DONE]", () => {
+    const outcome = parseInChunks(`${frames(delta("A whole reply."))}${finished()}${done}`, 6);
+    expect(streamEnding(outcome)).toEqual({ kind: "complete", evidence: "finish_reason" });
+    expect(terminalEvidence(outcome)).toBe("finish_reason");
+  });
+
+  it("is complete with a finish reason but no [DONE]", () => {
+    // A provider that closes on its last data frame has still said it finished.
+    const outcome = parseInChunks(`${frames(delta("A whole reply."))}${finished()}`, 6);
+    expect(streamEnding(outcome)).toEqual({ kind: "complete", evidence: "finish_reason" });
+  });
+
+  it("is complete with a native finish reason alone", () => {
+    const outcome = parseInChunks(`${frames(delta("A whole reply."), { choices: [{ delta: {}, native_finish_reason: "STOP" }] })}`, 6);
+    expect(streamEnding(outcome)).toEqual({ kind: "complete", evidence: "native_finish_reason" });
+  });
+
+  it("is complete with text and [DONE] but no finish reason", () => {
+    const outcome = parseInChunks(`${frames(delta("A whole reply."))}${done}`, 6);
+    expect(streamEnding(outcome)).toEqual({ kind: "complete", evidence: "done" });
+  });
+
+  it("is INTERRUPTED on an abrupt end of file with neither", () => {
+    // THE CASE THIS EXISTS FOR. Real prose, no protocol statement that the
+    // generation is over, and — before this — no way to tell it from a success.
+    const outcome = parseInChunks(frames(delta("She turns, and then—")), 5);
+    expect(outcome.text).toBe("She turns, and then—");
+    expect(terminalEvidence(outcome)).toBeNull();
+    expect(streamEnding(outcome)).toEqual({ kind: "interrupted", cause: "transport" });
+  });
+
+  it("is complete when the unterminated final frame is the one carrying the evidence", () => {
+    // The two failure modes compose: a frame with no trailing newline that
+    // holds the finish reason must still be read, and must still count.
+    const body = `${frames(delta("She turns, "))}data: ${JSON.stringify({ choices: [{ delta: { content: "and the door closes." }, finish_reason: "stop" }] })}`;
+    for (const outcome of everySplit(body)) {
+      expect(outcome.text).toBe("She turns, and the door closes.");
+      expect(streamEnding(outcome)).toEqual({ kind: "complete", evidence: "finish_reason" });
+    }
+  });
+
+  it("is complete, and truncated, at the output ceiling", () => {
+    // `length` is terminal evidence: the generation ended, deliberately, at a
+    // limit we set. It is a complete stream of an incomplete reply, and those
+    // are different facts with different remedies.
+    const outcome = parseInChunks(`${frames(delta("A reply that ran out of room mid-"))}${finished("length")}${done}`, 7);
+    expect(streamEnding(outcome)).toEqual({ kind: "complete", evidence: "finish_reason" });
+    expect(truncatedByLength(outcome)).toBe(true);
+  });
+
+  it("is INTERRUPTED when an error arrives after partial text", () => {
+    // Text existing is not a reason to ignore an upstream saying it failed.
+    const body = `${frames(delta("She turns, "), { error: { message: "upstream connection reset", code: 502 } })}`;
+    const outcome = parseInChunks(body, 6);
+    expect(outcome.text).toBe("She turns, ");
+    expect(streamEnding(outcome)).toEqual({ kind: "interrupted", cause: "upstream_error" });
+  });
+
+  it("is INTERRUPTED by an error even when a finish reason also arrived", () => {
+    const body = `${frames(delta("Partial."), { error: { message: "provider aborted", code: 500 } }, { choices: [{ delta: {}, finish_reason: "stop" }] })}${done}`;
+    expect(streamEnding(parseInChunks(body, 9))).toEqual({ kind: "interrupted", cause: "upstream_error" });
+  });
+
+  it("is EMPTY rather than interrupted when no prose arrived at all", () => {
+    // A stream with nothing in it is the retry path's question, not this one.
+    expect(streamEnding(parseInChunks(frames({ choices: [{ delta: { reasoning: "thinking…" } }] }), 5))).toEqual({ kind: "empty" });
+    expect(streamEnding(parseInChunks("", 1))).toEqual({ kind: "empty" });
+    expect(streamEnding(parseInChunks(`data: ${JSON.stringify({ error: { message: "no endpoints", code: 404 } })}\n\n`, 5))).toEqual({ kind: "empty" });
+  });
+
+  it("reaches the same verdict however the bytes are cut", () => {
+    for (const [body, expected] of [
+      [`${frames(delta("Done."))}${finished()}${done}`, { kind: "complete", evidence: "finish_reason" }],
+      [frames(delta("Cut off")), { kind: "interrupted", cause: "transport" }],
+    ] as const) {
+      for (const outcome of everySplit(body)) expect(streamEnding(outcome)).toEqual(expected);
+    }
   });
 });

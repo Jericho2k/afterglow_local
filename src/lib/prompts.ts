@@ -379,6 +379,53 @@ Write what happens NEXT, starting from immediately after those words. Your outpu
 - Do not write the user's dialogue, thoughts, decisions, reactions, or consent.`;
 }
 
+/**
+ * The Regenerate control signal, for the one shape that needs one.
+ *
+ * An ordinary regeneration removes the reply being replaced and leaves the
+ * reader's own turn at the end of the transcript, which is a complete request
+ * that needs no help: answer that turn again. Nothing here is used for it, and
+ * its behaviour is unchanged.
+ *
+ * THE SHAPE THAT NEEDS HELP is a regeneration of a reply that itself followed a
+ * reply — the ordinary state after Continue, and of any story whose newest turn
+ * is not the reader's. Removing the target leaves a transcript ending on an
+ * ASSISTANT message, and there is no good way to end such a request:
+ *
+ *   Ending on that assistant turn asks a chat API to EXTEND it. Several
+ *   upstreams treat a trailing assistant message as a prefill, so the reply
+ *   comes back as a continuation of a message the reader has already accepted,
+ *   which is not what Regenerate means.
+ *
+ *   Ending on the continuity system block is well-formed and merely odd — a
+ *   request whose last word is an instruction rather than a turn. Models weight
+ *   the final message heavily, and "the last thing I was given is a block of
+ *   background" is not a clear cue to write the next reply.
+ *
+ * So the request ends where a chat API expects a generation to be triggered
+ * from: a user turn. It is a control signal rather than dialogue, it says
+ * exactly what is being asked for, and it says what must NOT happen — the
+ * accepted messages above it are not to be rewritten, and the signal itself is
+ * never to be mentioned.
+ *
+ * It deliberately does NOT quote the reply being replaced. Continue quotes its
+ * anchor because it must resume from those exact words; Regenerate is asking
+ * for an ALTERNATIVE to them, and putting them in front of the writer is how a
+ * regeneration comes back as a paraphrase of the attempt it was meant to
+ * replace.
+ */
+export function regenerateSceneCue() {
+  return `[REGENERATE]
+This is a control signal, not dialogue from the user. Never mention it, quote it, or acknowledge it.
+
+Write the next reply in this scene, starting from where the transcript above leaves off.
+- Every message above has been accepted and stands exactly as it is. Do not rewrite, restate, summarise or continue any of them.
+- Produce a fresh continuation of the current moment, in your own voice, as a new message.
+- Move the scene forward: action, speech, thought, or a change in the situation.
+- Take appropriate initiative instead of asking the user what should happen next.
+- Do not write the user's dialogue, thoughts, decisions, reactions, or consent.`;
+}
+
 /*
  * Creation authoring prompts — Quick Idea, Paste Everything and the import
  * inventory pass — live in `src/lib/creation-prompts.ts`. They answer a

@@ -108,6 +108,11 @@ export type GenerationDiagnostic = {
   nativeFinishReason?: string | null;
   /** True when the reply stopped because it ran out of envelope. */
   truncated?: boolean;
+  /**
+   * True when the stream ended with no terminal evidence at all. Distinct from
+   * `truncated`, which is a generation that ended deliberately at a ceiling.
+   */
+  incomplete?: boolean;
   promptTokens?: number | null;
   completionTokens?: number | null;
   reasoningTokens?: number | null;
@@ -144,6 +149,13 @@ export type GenerationFailureReason =
   | "empty_response"
   | "content_filtered"
   | "stream_parse_failure"
+  /**
+   * Prose arrived and nothing in the protocol said the generation was over — no
+   * `finish_reason`, no `native_finish_reason`, no `[DONE]` — or an upstream
+   * reported a fault after partial text. The reply is kept and shown; it is not
+   * a completion, and calling it one is what made this invisible.
+   */
+  | "incomplete_transport"
   | "persistence_failure"
   | "variant_conflict"
   | "regenerate_target_missing"

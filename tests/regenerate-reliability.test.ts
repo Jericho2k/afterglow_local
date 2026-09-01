@@ -320,6 +320,10 @@ describeReal("regenerate is as reliable as send", () => {
    * began one message EARLIER than the send that produced the same reply — a
    * different first token, and therefore a guaranteed cache miss on every
    * single regeneration.
+   *
+   * That is a COST AND LATENCY regression and this test measures exactly that:
+   * whether the two requests share a prefix. It is not evidence that any
+   * provider refused anything, and nothing here claims it is.
    */
   it("sends the same transcript window as the send it is regenerating", async () => {
     for (let index = 0; index < 120; index += 1) {
@@ -342,24 +346,72 @@ describeReal("regenerate is as reliable as send", () => {
   }, 60_000);
 
   /*
-   * REGENERATING A REPLY THAT FOLLOWS ANOTHER REPLY.
+   * THE EXACT SHAPE OF THE OUTGOING REQUEST, FOR BOTH REGENERATE CASES.
    *
-   * The transcript then ends on an assistant turn, and the continuity block
-   * used to be inserted before it — producing `[…, user, system, assistant]`,
-   * a request whose final turn is the model's own. See src/lib/prompts.ts.
+   * A chat API generates from a trailing USER turn. Anything else is asking it
+   * for something different: a trailing assistant turn is a prefill to extend,
+   * and a trailing system message is background with no turn after it. Both are
+   * shapes this route produced, and both are asserted against here by role
+   * order rather than by description.
+   *
+   * The opening greeting is an assistant message, so the fixture's transcripts
+   * begin with one.
    */
-  it("never wedges the continuity block inside the transcript", async () => {
-    await run({ content: "Say something.", action: "send" });
-    await run({ action: "continue" });
-    await run({ action: "regenerate", assistantMessageId: (await newestReply())!.id });
+  describe("the outgoing request shape", () => {
+    it("ends on the reader's own turn when regenerating a reply to it", async () => {
+      // greeting → user → assistant(target); the target is removed.
+      await run({ content: "Say something.", action: "send" });
+      await run({ action: "regenerate", assistantMessageId: (await newestReply())!.id });
 
-    const sent = messagesSent(2);
-    expect(sent[0].role).toBe("system");
-    // Exactly two system messages, and neither is inside the transcript.
-    const systemPositions = sent.map((message, index) => (message.role === "system" ? index : -1)).filter((index) => index >= 0);
-    expect(systemPositions).toEqual([0, sent.length - 1]);
-    const middle = sent.slice(1, -1);
-    expect(middle.every((message) => message.role !== "system")).toBe(true);
+      expect(messagesSent(1).map((message) => message.role)).toEqual([
+        "system",     // the stable head
+        "assistant",  // the greeting
+        "system",     // continuity, immediately before the turn being answered
+        "user",       // the reader's message — unchanged behaviour
+      ]);
+      // And no control cue is added: there is nothing to disambiguate.
+      expect(messagesSent(1).at(-1)!.content).not.toContain("[REGENERATE]");
+    });
+
+    it("ends on an explicit control turn when regenerating a reply to a reply", async () => {
+      // greeting → user → assistant → assistant(target from Continue).
+      await run({ content: "Say something.", action: "send" });
+      await run({ action: "continue" });
+      await run({ action: "regenerate", assistantMessageId: (await newestReply())!.id });
+
+      const sent = messagesSent(2);
+      expect(sent.map((message) => message.role)).toEqual([
+        "system",     // the stable head
+        "assistant",  // the greeting
+        "user",       // the reader's message, already answered
+        "assistant",  // the reply the target continued from, still accepted
+        "system",     // continuity
+        "user",       // the control turn the generation is triggered from
+      ]);
+      const cue = sent.at(-1)!.content;
+      expect(cue).toContain("[REGENERATE]");
+      // It says what it is, what not to touch, and not to mention itself.
+      expect(cue).toContain("control signal");
+      expect(cue).toMatch(/Never mention it/i);
+      expect(cue).toMatch(/Do not rewrite/i);
+      // And it does not hand the writer the reply it is replacing, which is how
+      // a regeneration comes back as a paraphrase of the attempt it replaces.
+      expect(cue).not.toContain("reply 2");
+    });
+
+    it("never places a system message inside the transcript, in either case", async () => {
+      await run({ content: "Say something.", action: "send" });
+      await run({ action: "continue" });
+      await run({ action: "regenerate", assistantMessageId: (await newestReply())!.id });
+
+      for (const index of [1, 2]) {
+        const sent = messagesSent(index);
+        const systems = sent.map((message, at) => (message.role === "system" ? at : -1)).filter((at) => at >= 0);
+        // The head, and continuity immediately before the final turn.
+        expect(systems).toEqual([0, sent.length - 2]);
+        expect(sent.at(-1)!.role).toBe("user");
+      }
+    });
   });
 
   /*
@@ -394,6 +446,74 @@ describeReal("regenerate is as reliable as send", () => {
     openRouterStream.mockResolvedValueOnce(textStream("Another reply."));
     await (await chat.POST(post({ conversationId, content: "Again.", action: "send" }))).text();
     expect((openRouterStream.mock.calls[0][2] as { thinking?: unknown }).thinking).toBe(false);
+  });
+
+  /*
+   * A STORED VARIANT WITHOUT ITS GENERATION ROW IS THE ONE STATE
+   * `message_generations` EXISTS TO PREVENT.
+   *
+   * `recordGeneration` is `ON CONFLICT DO NOTHING`, which is right — provenance
+   * is a statement about something that already happened and nothing later may
+   * revise it — and used to be reported as a flag the caller merely logged. That
+   * left a stored reply whose provenance row belongs to a DIFFERENT generation,
+   * and an inspector confidently describing the wrong context for it.
+   *
+   * The conflict is provoked here by claiming the variant index out of band,
+   * which is the only way to reach it now that allocation happens under a lock.
+   */
+  it("abandons the whole variant rather than storing one with no provenance", async () => {
+    await run({ content: "Say something.", action: "send" });
+    const target = (await newestReply())!;
+    const before = { variants: target.variants as string[], selected: target.selected_variant, };
+    expect(before.variants).toHaveLength(1);
+
+    // Somebody else already owns (message, variant 1).
+    await query(
+      `INSERT INTO message_generations (id,message_id,conversation_id,user_id,variant_index,action)
+       VALUES ($1,$2,$3,$4,1,'regenerate')`,
+      [crypto.randomUUID(), target.id, conversationId, owner],
+    );
+
+    const blocked = await run({ action: "regenerate", assistantMessageId: target.id });
+    // The reader is told, rather than being left with a reply that will vanish.
+    expect(blocked.events.some((event) => event.type === "error")).toBe(true);
+    expect(String(blocked.events.at(-1)?.error)).toContain("could not be saved");
+
+    // AND THE ROW IS EXACTLY AS IT WAS. The UPDATE rolled back with the failed
+    // provenance write, so nothing was half-applied.
+    const after = await newestReply();
+    expect(after!.id).toBe(target.id);
+    expect(after!.variants).toEqual(before.variants);
+    expect(after!.selected_variant).toBe(before.selected);
+    const content = await query<{ content: string }>("SELECT content FROM messages WHERE id=$1", [target.id]);
+    expect(content.rows[0].content).toBe(before.variants[0]);
+
+    // And no second generation row was created beside the squatted one.
+    const generations = await query<{ variant_index: number }>(
+      "SELECT variant_index FROM message_generations WHERE message_id=$1 ORDER BY variant_index", [target.id]);
+    expect(generations.rows.map((row) => row.variant_index)).toEqual([0, 1]);
+  });
+
+  it("holds the same invariant for a send", async () => {
+    // A send writes variant 0 of a new row, so a conflict means the id was
+    // reused. The message must not survive its provenance either way.
+    const assistantId = crypto.randomUUID();
+    await query("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'user','Hello?')", [crypto.randomUUID(), conversationId, owner]);
+    // Claim (assistantId, 0) before the turn runs. The foreign key needs the
+    // message to exist, so it is created and removed around the claim.
+    await query("INSERT INTO messages (id,conversation_id,user_id,role,content) VALUES ($1,$2,$3,'assistant','placeholder')", [assistantId, conversationId, owner]);
+    await query(
+      `INSERT INTO message_generations (id,message_id,conversation_id,user_id,variant_index,action)
+       VALUES ($1,$2,$3,$4,0,'send')`,
+      [crypto.randomUUID(), assistantId, conversationId, owner],
+    );
+
+    const blocked = await run({ content: "Again.", action: "send", assistantMessageId: assistantId });
+    expect(String(blocked.events.at(-1)?.error)).toContain("could not be saved");
+    // The placeholder is untouched: the INSERT could not have succeeded anyway,
+    // and nothing partially applied around it.
+    const row = await query<{ content: string }>("SELECT content FROM messages WHERE id=$1", [assistantId]);
+    expect(row.rows[0].content).toBe("placeholder");
   });
 
   it("keeps a truncated reply and says it was truncated", async () => {
@@ -439,6 +559,80 @@ describeReal("regenerate is as reliable as send", () => {
     expect(regenerated.done?.selectedVariant).toBe(1);
     expect((regenerated.done?.variants as string[]).length).toBe(2);
     expect(regenerated.events.some((event) => event.type === "error")).toBe(false);
+  });
+
+  /*
+   * A STREAM THAT STOPS IS NOT A GENERATION THAT FINISHED.
+   *
+   * The dropped-final-frame fix removed one silent truncation. This is the
+   * other one: prose arrives, the transport dies, and nothing in the protocol
+   * ever says the generation ended. Stored and announced as an ordinary
+   * success, it is indistinguishable from a reply that finished — which is how
+   * it stayed invisible.
+   */
+  describe("an interrupted stream", () => {
+    /** Prose, then nothing: no finish reason, no [DONE], no error. */
+    function abruptStream(text: string) {
+      const encoder = new TextEncoder();
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ id: "gen", choices: [{ delta: { content: text } }] })}\n\n`));
+          controller.close();
+        },
+      });
+    }
+
+    it("keeps the partial reply and says it did not finish", async () => {
+      const result = await run({ content: "Say something.", action: "send" }, abruptStream("She turns, and then—"));
+
+      expect(result.text).toBe("She turns, and then—");
+      expect(result.done).toBeTruthy();
+      expect(result.done?.incomplete).toBe(true);
+      expect(result.done?.interruptedBy).toBe("transport");
+      // Every byte that arrived was produced and billed. Discarding it would
+      // lose the reader's scene and change nothing about the cost.
+      const stored = await newestReply();
+      expect((stored!.variants as string[])[0]).toBe("She turns, and then—");
+    });
+
+    it("does not quietly generate a second turn to cover it", async () => {
+      await run({ content: "Say something.", action: "send" }, abruptStream("Half a sentence"));
+      // One provider call. The empty-reply retry exists for a stream with NO
+      // prose; a partial reply is never silently doubled.
+      expect(streamCompletion.mock.calls.length).toBe(1);
+      const rows = await query("SELECT id FROM messages WHERE conversation_id=$1 AND role='assistant'", [conversationId]);
+      // The greeting and the one partial reply.
+      expect(rows.rowCount).toBe(2);
+    });
+
+    it("is not marked complete when the transport dies after an error frame", async () => {
+      const encoder = new TextEncoder();
+      const failing = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "Partial." } }] })}\n\n`));
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: "upstream connection reset", code: 502 } })}\n\n`));
+          controller.close();
+        },
+      });
+      const result = await run({ content: "Say something.", action: "send" }, failing);
+      expect(result.done?.incomplete).toBe(true);
+      expect(result.done?.interruptedBy).toBe("upstream_error");
+      expect(result.text).toBe("Partial.");
+    });
+
+    it("says nothing of the sort when the stream ended properly", async () => {
+      const result = await run({ content: "Say something.", action: "send" });
+      expect(result.done?.incomplete).toBeUndefined();
+      expect(result.done?.interruptedBy).toBeUndefined();
+    });
+
+    it("still calls a reply that stopped at the ceiling complete, and truncated", async () => {
+      // `length` IS terminal evidence: the generation ended, on purpose, at a
+      // limit we set. A complete stream of an incomplete reply.
+      const result = await run({ content: "Say something.", action: "send" }, textStream("Ran out of room mid-", "length"));
+      expect(result.done?.truncated).toBe(true);
+      expect(result.done?.incomplete).toBeUndefined();
+    });
   });
 
   it("delivers the final sentence when the stream closes without a trailing newline", async () => {
