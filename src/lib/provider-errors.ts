@@ -21,6 +21,18 @@ export type ProviderErrorCategory =
   | "upstream_unavailable"
   /** The request was accepted but produced no text. */
   | "empty_response"
+  /**
+   * THE ENVELOPE WENT ENTIRELY ON HIDDEN REASONING.
+   *
+   * `finish_reason: "length"`, reasoning tokens spent, and nothing visible. It
+   * is separated from `empty_response` because it has a different cause and a
+   * different remedy: the generation was not silent and the host is not at
+   * fault — the completion budget was too small to hold the model's mandatory
+   * thinking AND the reply it was asked for. Retrying the identical request
+   * reproduces it exactly, so the retry raises the envelope instead. See
+   * src/lib/reasoning.ts.
+   */
+  | "reasoning_budget_exhausted"
   /** The provider's safety layer refused. Retrying produces the same refusal. */
   | "content_filtered"
   /** The deployment's credentials are wrong. Nobody's turn will fix this. */
@@ -38,6 +50,9 @@ const publicMessages: Record<ProviderErrorCategory, string> = {
   rate_limited: "The model is temporarily busy. Please try again in a moment.",
   upstream_unavailable: "The model is temporarily unavailable. Please try again in a moment.",
   empty_response: "The model did not return a reply. Please try again.",
+  // The reader is not told about token envelopes. What they need is the same
+  // thing an empty reply needs: one calm sentence and their turn back.
+  reasoning_budget_exhausted: "The model did not return a reply. Please try again.",
   content_filtered: "This model declined to continue this scene. Try rephrasing, or choose a different model in chat tools.",
   auth: "Something went wrong while generating the response. Please try again.",
   billing: "Something went wrong while generating the response. Please try again.",
@@ -51,6 +66,13 @@ const retryable: Record<ProviderErrorCategory, boolean> = {
   rate_limited: true,
   upstream_unavailable: true,
   empty_response: true,
+  /*
+   * Retryable, but ONLY because the retry is different. The chat route raises
+   * the completion envelope once, inside the model's declared ceiling; a retry
+   * that repeated the same budget would buy a second identical failure and a
+   * second bill for the reasoning that caused it.
+   */
+  reasoning_budget_exhausted: true,
   // A refusal is a decision, not a blip. Asking the same model the same
   // question again produces the same answer and costs the reader another wait.
   content_filtered: false,

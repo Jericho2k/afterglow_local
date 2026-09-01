@@ -1,6 +1,7 @@
 import type { ModelCatalog, ModelCategory, ModelDefinition, ProviderDefinition, RoleplayEngineDefinition, RoleplayEngineId } from "./types";
 import { engineDefinitions } from "./engines";
 import type { ModelVerbosity } from "./response-length";
+import type { ReasoningBudget, ReasoningDirective } from "./reasoning";
 
 export type InferenceTask = "rp_generation" | "memory_consolidation" | "memory_curation" | "scene_state" | "character_import";
 export type InferenceSelection = { providerId: string; modelId: string };
@@ -172,15 +173,54 @@ export type ModelCapabilities = {
    * previously expressible.
    *
    * `"off"` is declared per model rather than set globally because the answer
-   * genuinely differs. On GLM 5.3 Flash it is the difference between a reply
-   * that starts in a second and one that starts in tens of seconds, since the
-   * model reasons before it speaks; on a model with no such habit it buys
-   * nothing. Two deployment-wide overrides beat it — `RP_REASONING=off` forces
-   * it on every model, `RP_REASONING=auto` ignores these declarations and sends
-   * no `reasoning` key at all — and an engine that explicitly wants thinking
-   * still wins over all of them. See `defaultReasoningFor`.
+   * genuinely differs. On a model that reasons before it speaks it is the
+   * difference between a reply that starts in a second and one that starts in
+   * tens of seconds; on a model with no such habit it buys nothing. Two
+   * deployment-wide overrides beat it — `RP_REASONING=off` forces it on every
+   * model, `RP_REASONING=auto` ignores these declarations and sends no
+   * `reasoning` key at all — and an engine that explicitly wants thinking still
+   * wins over all of them. See `defaultReasoningFor`.
+   *
+   * AN EFFORT IS THE THIRD ANSWER, AND SOME ENDPOINTS LEAVE NO OTHER. GLM 5.3
+   * Flash on Z.AI answers `reasoning: { enabled: false }` with a 400 —
+   * "Reasoning is mandatory for this endpoint and cannot be disabled" — so
+   * `"off"` there was never a setting, it was a rejection followed by a
+   * fallback to the endpoint's own default, which is MORE reasoning than
+   * anybody asked for. Naming an effort asks for the least the endpoint will
+   * agree to, which is the actual intention `"off"` was standing in for.
    */
-  reasoningDefault?: "on" | "off";
+  reasoningDefault?: ReasoningDirective;
+  /**
+   * WHETHER THIS ENDPOINT WILL LET US DECLINE REASONING AT ALL.
+   *
+   * Declared rather than discovered, because discovering it costs a reader's
+   * turn: the discovery mechanism is a 400 mid-scene, and the request that
+   * caused it is by definition the one a reader is waiting on. An endpoint that
+   * has told us in production that reasoning is mandatory should never be asked
+   * again — the first request has to be valid.
+   *
+   * It also outranks `RP_REASONING=off`. That switch is an operator saying
+   * "spend nothing on thinking anywhere"; it is not an operator asking to send
+   * a request we already know will be refused, and honouring it literally here
+   * would rebuild the failure this flag records. `RP_REASONING=auto` still
+   * removes the key entirely, which stays valid on a mandatory endpoint because
+   * silence takes its default rather than contradicting it.
+   */
+  reasoningMandatory?: boolean;
+  /**
+   * HOW MUCH HIDDEN THINKING THIS MODEL'S ENVELOPE HAS TO HOLD.
+   *
+   * Reasoning tokens are billed and counted as completion tokens, so on a model
+   * that must reason they come out of the same `max_tokens` as the prose. With
+   * no allowance for them, a Natural reply's 1,800 tokens were spent entirely
+   * on thinking and the generation ended at `finish_reason=length` with nothing
+   * visible in it at all.
+   *
+   * Declared per model and absent by default: see src/lib/reasoning.ts. A model
+   * that declares none sends exactly the envelope Response Length asked for,
+   * which is what it has always sent.
+   */
+  reasoningBudget?: ReasoningBudget;
   /**
    * How much this model writes when nothing stops it.
    *
@@ -392,11 +432,39 @@ const knownModels: InternalModelDefinition[] = [
    * and the conversation-scoped `session_id` are unchanged, and are worth more
    * now than they were: a single host is a single cache.
    *
-   * REASONING STAYS OFF, and that is still the one behavioural claim here with
-   * evidence behind it: independent measurement of GLM 5.3 Flash on a
-   * reasoning-heavy suite reported a median time-to-first-token in the tens of
-   * seconds, because the model reasons before it speaks. `thinking: true` says
-   * the endpoint ACCEPTS the parameter; `reasoningDefault` says what to send.
+   * REASONING IS NOT OPTIONAL HERE, AND ASKING FOR NONE WAS MAKING IT WORSE.
+   *
+   * The entry used to say `reasoningDefault: "off"`, on evidence that stands:
+   * independent measurement of GLM 5.3 Flash on a reasoning-heavy suite
+   * reported a median time-to-first-token in the tens of seconds, because the
+   * model reasons before it speaks. What did not stand was the assumption that
+   * the endpoint would accept the refusal. Production logs settled it:
+   *
+   *   1. Afterglow sent `reasoning: { enabled: false }`.
+   *   2. Z.AI answered 400 — "Reasoning is mandatory for this endpoint and
+   *      cannot be disabled."
+   *   3. The adapter dropped the parameter and asked again, which takes the
+   *      ENDPOINT'S default: the most reasoning, not the least.
+   *   4. The generation ended `finish_reason=length`, `native_finish_reason=
+   *      length`, reasoning tokens only, `replyCharacters=0`.
+   *
+   * Every reader turn therefore cost two requests to arrive at the opposite of
+   * the catalogue's intention, and then spent the whole 1,800-token envelope
+   * thinking. So the entry now says what is actually true of this endpoint and
+   * asks for the least reasoning it will agree to:
+   *
+   *   `reasoningMandatory`  the refusal is a known contract, not a discovery to
+   *                         be made again on somebody's turn.
+   *   `reasoningDefault`    the lowest effort on OpenRouter's scale that is not
+   *                         a refusal. `"minimal"` exists and is not chosen: a
+   *                         model that must reason and is given almost no room
+   *                         to do it is the same failure with a smaller bill.
+   *   `reasoningBudget`     hidden tokens ON TOP of the visible reply target,
+   *                         because they are spent from the same envelope. See
+   *                         src/lib/reasoning.ts.
+   *
+   * `thinking: true` still says only that the endpoint ACCEPTS the parameter.
+   * An engine that explicitly wants thinking continues to win over all of this.
    */
   {
     id: "glm-5.3-flash",
@@ -416,7 +484,25 @@ const knownModels: InternalModelDefinition[] = [
       costCeiling: { promptUsdPerMillion: 0.20, completionUsdPerMillion: 0.60 },
       dedicatedProvider: "z-ai",
       dataPolicy: { dataCollection: "deny" },
-      reasoningDefault: "off",
+      reasoningDefault: "low",
+      reasoningMandatory: true,
+      /*
+       * 2,000 hidden tokens above whatever Response Length asked to show, and
+       * 8,000 as the hard stop including the one escalation a retry may take.
+       *
+       * Read off the failure rather than guessed: a full 1,800-token envelope
+       * was consumed by an UNBOUNDED reasoning pass, so the headroom has to be
+       * of that order for a bounded one to finish inside it and still leave the
+       * visible reply whole. Natural therefore asks for 3,800 and Concise for
+       * 2,594 — the modes keep their relative sizes, and none of them competes
+       * with thinking for its own words any more.
+       *
+       * Deliberately conservative in both directions. It is a CEILING, not a
+       * spend: only tokens actually produced are billed, so the cost of being
+       * generous here is nothing when the model behaves and one bounded
+       * over-run when it does not.
+       */
+      reasoningBudget: { headroomTokens: 2_000, ceilingTokens: 8_000 },
     },
   },
   /*
@@ -1070,7 +1156,9 @@ export function dataPolicyFor(modelId: string) {
  * AND DID NOT HAVE.
  *
  *   off     deployment-wide: decline reasoning on every model that accepts the
- *           parameter, whatever its catalogue entry says.
+ *           parameter, whatever its catalogue entry says — except where the
+ *           endpoint has told us it will not accept the refusal, which is a
+ *           contract rather than a preference. See `reasoningIsMandatoryFor`.
  *   auto    deployment-wide: ignore catalogue defaults entirely and send NO
  *           `reasoning` key, which is byte-for-byte the request shape this
  *           deployment sent before `reasoningDefault` was wired up.
@@ -1092,12 +1180,46 @@ export function dataPolicyFor(modelId: string) {
  *
  * An engine that explicitly asks for thinking still wins over all three.
  */
-export function defaultReasoningFor(modelId: string): "on" | "off" | null {
+export function defaultReasoningFor(modelId: string): ReasoningDirective | null {
+  const declared = knownModels.find((model) => model.id === modelId)?.capabilities.reasoningDefault ?? null;
   const configured = process.env.RP_REASONING?.trim();
-  if (configured === "off") return "off";
+  /*
+   * `off` IS AN INTENTION, NOT AN INSTRUCTION TO SEND A REQUEST THAT FAILS.
+   *
+   * On an endpoint that has told us reasoning cannot be disabled, honouring
+   * this switch literally would send `reasoning: { enabled: false }`, collect
+   * the 400, drop the parameter and take the endpoint's own default — the MOST
+   * reasoning, for two requests and a reader's wait. The model's own declared
+   * floor is the nearest thing to the operator's intention that the endpoint
+   * will actually serve, so that is what it gets.
+   */
+  if (configured === "off") return reasoningIsMandatoryFor(modelId) ? declared : "off";
   // The escape hatch: no opinion at all, which is the endpoint's own default.
+  // Valid everywhere, including on a mandatory endpoint — silence takes its
+  // default rather than contradicting it.
   if (configured === "auto") return null;
-  return knownModels.find((model) => model.id === modelId)?.capabilities.reasoningDefault ?? null;
+  return declared;
+}
+
+/**
+ * Whether this endpoint refuses to be told not to reason.
+ *
+ * Read before a retry decides what to change: a generation that spent its
+ * envelope thinking is normally answered by asking for no thinking, and on a
+ * mandatory endpoint that answer is a 400. There, the thing to change is the
+ * envelope. See the chat route's empty-reply path.
+ */
+export function reasoningIsMandatoryFor(modelId: string) {
+  return knownModels.find((model) => model.id === modelId)?.capabilities.reasoningMandatory === true;
+}
+
+/**
+ * The hidden-token allowance this model's completion envelope has to carry, or
+ * null when it declares none — which is every model that never had the problem,
+ * and which sends exactly the envelope Response Length asked for.
+ */
+export function reasoningBudgetFor(modelId: string): ReasoningBudget | null {
+  return knownModels.find((model) => model.id === modelId)?.capabilities.reasoningBudget ?? null;
 }
 
 /**

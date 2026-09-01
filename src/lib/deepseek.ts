@@ -1,4 +1,5 @@
 import { ProviderError, classifyProviderFailure } from "./provider-errors";
+import { isReasoningEffort, type ReasoningEffort } from "./reasoning";
 
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 export type DeepSeekUsage = {
@@ -65,12 +66,14 @@ export async function completionWithUsage(
 
 export async function streamCompletion(
   messages: ChatMessage[],
-  options: { signal?: AbortSignal; model?: string; maxTokens?: number; temperature?: number; thinking?: boolean | "off" } = {},
+  options: { signal?: AbortSignal; model?: string; maxTokens?: number; temperature?: number; thinking?: boolean | "off" | ReasoningEffort } = {},
 ) {
   // Only `true` asks for reasoning. DeepSeek's own API already states the
   // negative case explicitly below, so `false` and `"off"` mean the same thing
   // here — but `Boolean("off")` is TRUE, so the string must never reach it.
-  const thinking = options.thinking === true;
+  // An effort level is a request TO reason with a size attached; DeepSeek's own
+  // API has no size, so it collapses to "enabled". Only `false`/"off" decline.
+  const thinking = options.thinking === true || isReasoningEffort(options.thinking);
   const response = await request({
     model: options.model || model(), messages,
     thinking: { type: thinking ? "enabled" : "disabled" },

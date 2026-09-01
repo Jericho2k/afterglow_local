@@ -1,6 +1,7 @@
 import type { LLMMessage, LLMUsage, ProviderAuthentication, ProviderCompletionOptions } from "./llm";
 import { adaptableRejection, ProviderError, classifyProviderFailure, providerSpecificRejection, redactProviderSecrets } from "./provider-errors";
 import { providerPolicyFor } from "./provider";
+import { isReasoningEffort } from "./reasoning";
 
 const baseUrl = () => (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
 
@@ -312,12 +313,21 @@ function commonFields(options: ProviderCompletionOptions) {
     usage: { include: true },
     ...(options.sessionId ? { session_id: options.sessionId } : {}),
     /*
-     * Three states, not two. See `CompletionOptions.thinking`: omitting
+     * Four states, not two. See `CompletionOptions.thinking`: omitting
      * `reasoning` takes the endpoint's own default, which on a hybrid reasoning
      * model means reasoning, and is therefore not a way to decline it.
+     *
+     * `effort` is OpenRouter's own normalisation of the several ways an
+     * upstream expresses a thinking budget, which is exactly why it is the
+     * shape sent rather than any provider's native spelling: the same key
+     * reaches Z.AI, Anthropic and OpenAI-shaped endpoints and OpenRouter maps
+     * an unsupported level to the nearest one it does support. It is the only
+     * expressible "less, but not none" — and on an endpoint that answers
+     * `{ enabled: false }` with a 400, none is not on offer.
      */
     ...(options.thinking === true ? { reasoning: { enabled: true } } : {}),
     ...(options.thinking === "off" ? { reasoning: { enabled: false } } : {}),
+    ...(isReasoningEffort(options.thinking) ? { reasoning: { effort: options.thinking } } : {}),
   };
 }
 

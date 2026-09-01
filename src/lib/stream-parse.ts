@@ -74,6 +74,40 @@ export function truncatedByLength(outcome: Pick<StreamOutcome, "finishReason" | 
   return reasons.some((reason) => reason === "length" || reason === "max_tokens" || reason === "max_output_tokens");
 }
 
+/** Reasoning tokens an upstream reported for this generation, or 0. */
+export function reasoningTokensIn(usage: Record<string, unknown> | null | undefined) {
+  const details = usage?.completion_tokens_details as { reasoning_tokens?: unknown } | undefined;
+  const tokens = details?.reasoning_tokens;
+  return typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0 ? tokens : 0;
+}
+
+/**
+ * THE ENVELOPE WENT ON THINKING, AND THERE WAS NONE LEFT FOR THE REPLY.
+ *
+ * Three facts together, and only together:
+ *
+ *   finish_reason == "length"   it stopped because it ran out of room
+ *   visible content == empty    none of that room reached the reader
+ *   reasoning tokens > 0        the room went on tokens the reader never sees
+ *
+ * This is a different failure from an empty response and it must not be logged
+ * as one, because the two have opposite remedies. An empty response is a host
+ * that produced nothing, and the answer is another host. This is a host that
+ * produced a great deal and none of it visible, and the answer is a larger
+ * envelope — retrying it against the same budget reproduces it exactly.
+ *
+ * The reasoning evidence is taken from EITHER source, because upstreams differ
+ * in which they give: `delta.reasoning` frames arrive only when the endpoint
+ * streams its thinking, while `usage.completion_tokens_details.reasoning_tokens`
+ * arrives on the final usage frame whether or not any of it was shown. Reading
+ * one alone misclassifies half of the endpoints that do this.
+ */
+export function reasoningBudgetExhausted(outcome: StreamOutcome) {
+  if (outcome.text.trim()) return false;
+  if (!truncatedByLength(outcome)) return false;
+  return outcome.reasoningSeen || reasoningTokensIn(outcome.usage) > 0;
+}
+
 /**
  * HOW THE STREAM ENDED, AND WHETHER ANYTHING ACTUALLY SAID SO.
  *
