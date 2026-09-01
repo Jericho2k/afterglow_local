@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { conversationCharacter, ownedConversation } from "@/lib/access";
-import { commitNewAssistantMessage, commitRegeneratedVariant, resolveRegenerationTarget } from "@/lib/regeneration";
-import { createWriterStreamParser, truncatedByLength } from "@/lib/stream-parse";
+import { commitNewAssistantMessage, commitRegeneratedVariant, ProvenanceConflictError, resolveRegenerationTarget } from "@/lib/regeneration";
+import { createWriterStreamParser, streamEnding, truncatedByLength } from "@/lib/stream-parse";
 import { logGeneration, reasonForCategory, type GenerationDiagnostic, type GenerationFailureReason, type GenerationStage } from "@/lib/generation-diagnostics";
 import { logTimeline, startTimeline } from "@/lib/request-timing";
 import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
 import { streamWriterCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { focusedRetrievalQuery, maybeBackfillMemoryEmbeddings, maybeCurateCanon, memoryRetrievalV2Enabled, retrieveContinuityV2 } from "@/lib/memory-v2";
-import { buildWriterPrompt, continueSceneCue, continuityPlacementFor, writerMessages } from "@/lib/prompts";
+import { buildWriterPrompt, continueSceneCue, continuityPlacementFor, regenerateSceneCue, writerMessages } from "@/lib/prompts";
 import { sceneStateEnabled, sceneStateRetrievalHintEnabled } from "@/lib/memory-flags";
 import { sceneFieldsOf, sceneRetrievalCue } from "@/lib/scene-state";
 import { currentSceneState, dropSceneStateForMessage, maybeUpdateSceneState } from "@/lib/scene-state-store";
@@ -370,10 +370,18 @@ export async function POST(request: Request) {
      * cache miss, on every regeneration, for the one model family whose whole
      * routing policy is built on cache reads being most of the bill.
      *
-     * Regenerate was therefore the only action that never hit a warm cache:
-     * slower, dearer, and far likelier to be refused by a pool bounded with
-     * `provider.only` and `max_price`. Subtracting the excluded row makes the
-     * regenerated turn's window byte-identical to the send's.
+     * Regenerate was therefore the only action that never hit a warm cache.
+     * WHAT THAT COSTS IS COST AND LATENCY, and that is the whole of the claim:
+     * every regeneration paid fresh input rates for a prompt the send beside it
+     * had cached, and waited for it. It is NOT a reason a provider would refuse
+     * the request — `max_price` filters endpoints on their LIST PRICING, not on
+     * what one prompt happens to bill, so a larger fresh-input bill cannot push
+     * a valid request through that ceiling. Whether anything about routing was
+     * refusing these requests in production is a separate question and an open
+     * one; see docs/chat-reliability-2026-09.md.
+     *
+     * Subtracting the excluded row makes the regenerated turn's window
+     * byte-identical to the send's.
      */
     const knownMessageCount = Number(row.message_count || 0)
       + (action === "send" ? 1 : 0)
@@ -490,6 +498,28 @@ export async function POST(request: Request) {
    */
   const continuedReply = action === "continue" && history.at(-1)?.role === "assistant" ? history.at(-1)!.content : "";
   if (action === "continue" && continuedReply.trim()) modelHistory.push({ role: "user", content: continueSceneCue(continuedReply) });
+
+  /*
+   * A REGENERATION MUST STILL END ON SOMETHING THAT TRIGGERS A GENERATION.
+   *
+   * Removing the target normally leaves the reader's own turn at the end of the
+   * transcript, which is a complete request and is left exactly alone.
+   *
+   * It does not when the reply being replaced itself followed a reply — the
+   * ordinary state after Continue. The transcript then ends on an ASSISTANT
+   * message, and a chat API given a trailing assistant turn is being asked to
+   * EXTEND it: several upstreams treat it as a prefill, so the "regeneration"
+   * comes back as a continuation of a message the reader has already accepted.
+   * Putting the continuity block last instead is well formed and merely odd —
+   * the final thing the writer reads is background rather than a turn.
+   *
+   * So this shape gets an explicit control turn, and the request ends where a
+   * chat API expects a generation to start from. See `regenerateSceneCue`; it
+   * deliberately does not quote the reply being replaced, because an
+   * alternative to a reply is not written by showing the writer that reply.
+   */
+  const regenerateTailIsReply = action === "regenerate" && modelHistory.at(-1)?.role === "assistant";
+  if (regenerateTailIsReply) modelHistory.push({ role: "user", content: regenerateSceneCue() });
 
   /*
    * Fit the request to the model before sending it.
@@ -893,26 +923,63 @@ export async function POST(request: Request) {
          * So the append is one locked transaction and its answer is what the
          * client is told. See src/lib/regeneration.ts.
          */
-        let variants: string[] = [assistant];
-        let selectedVariant = 0;
+        /*
+         * What the client is told if the write does not happen.
+         *
+         * The database's own answer, which for a regeneration whose transaction
+         * rolled back is the target exactly as it was. Announcing a one-element
+         * list there would describe a row that does not exist; the reader is
+         * separately told to reload, and this way the variant picker they see
+         * until they do matches what is actually stored.
+         */
+        let variants: string[] = regenerateTarget ? regenerateTarget.variants : [assistant];
+        let selectedVariant = regenerateTarget ? regenerateTarget.selectedVariant : 0;
         let persistenceFailed = false;
 
         const outcome = parser.outcome;
         const truncated = truncatedByLength(outcome);
+        /*
+         * DID THE GENERATION END, OR DID THE CONNECTION?
+         *
+         * Prose arriving is not evidence that a reply finished. A transport that
+         * dies mid-sentence produces exactly the same thing as one that ended on
+         * purpose, minus any `finish_reason`, `native_finish_reason` or
+         * `[DONE]` — and with nothing distinguishing them, an interrupted reply
+         * was stored, announced and logged as an ordinary success. The reader
+         * saw a sentence stop halfway and no explanation existed anywhere.
+         *
+         * `streamEnding` refuses to claim a completion without terminal
+         * evidence. What follows from an interruption is deliberately narrow:
+         *
+         *   THE TEXT IS KEPT. Every byte that arrived is real, was produced, and
+         *   was billed. Discarding it would lose the reader's scene and change
+         *   nothing about the cost.
+         *
+         *   NOTHING IS GENERATED TO COVER IT. Silently appending a second model
+         *   turn is the behaviour this sprint must not have: it would double a
+         *   reply on a guess and bill for that too.
+         *
+         *   IT IS NOT CALLED A SUCCESS. The client is told `incomplete`, the
+         *   diagnostic records `incomplete_transport`, and accounting is left
+         *   exactly as accurate as it was — the tokens happened.
+         */
+        const ending = streamEnding(outcome);
+        const interrupted = ending.kind === "interrupted";
         timeline.mark("stream-complete");
         at("stream_complete");
         /**
          * The completion event, with whatever is known when it is sent.
          *
-         * `truncated` is stated and nothing is done about it automatically. A
-         * reply that stopped at the output ceiling is a fact the client is
-         * entitled to; generating a second turn about it without being asked
-         * would silently double a reply the reader may well be happy with, and
-         * bill for it.
+         * `truncated` and `incomplete` are two different statements and both are
+         * made. Truncated means the generation ended, deliberately, at a ceiling
+         * we set; incomplete means nothing said it ended at all. Neither causes
+         * another turn to be generated: that is the reader's decision, and
+         * Continue is already the control for it.
          */
         const announce = () => send({
           type: "done", id: assistantId, userMessageId, variants, selectedVariant,
           ...(truncated ? { truncated: true } : {}),
+          ...(interrupted ? { incomplete: true, interruptedBy: ending.cause } : {}),
           ...(isAdminAccount(account) ? { memoriesUsed: memoryIds, arcsUsed: arcIds, usage, finishReason: outcome.finishReason } : {}),
         });
         // A send or a continue announces BEFORE the write, because its variant
@@ -941,21 +1008,22 @@ export async function POST(request: Request) {
           variants = commit.variants;
           selectedVariant = commit.variantIndex;
           diagnostic.variantIndex = commit.variantIndex;
-          if (!commit.provenanceRecorded) {
-            /*
-             * A generation with no provenance row. `ON CONFLICT DO NOTHING` is
-             * still right — provenance is a statement about something that has
-             * already happened and nothing later may revise it — but it used to
-             * be SILENT, so the inspector reported "not recorded" for a reply
-             * produced a second ago and nobody could see why.
-             */
-            diagnostic.reason = "variant_conflict";
-            console.error("[generation] provenance not recorded", JSON.stringify({
-              conversationId, action, messageId: assistantId, variantIndex: commit.variantIndex,
-            }));
-          }
         } catch (error) {
           persistenceFailed = true;
+          /*
+           * A variant whose provenance could not be written is not stored at
+           * all: `commitRegeneratedVariant` throws and the transaction rolls
+           * back, message row included. That is deliberate — a stored reply
+           * carrying some other generation's provenance would make the Context
+           * inspector confidently wrong, which is worse than the failure.
+           */
+          if (error instanceof ProvenanceConflictError) {
+            diagnostic.reason = "variant_conflict";
+            diagnostic.variantIndex = error.variantIndex;
+            console.error("[generation] variant abandoned: provenance conflict", JSON.stringify({
+              conversationId, action, messageId: error.messageId, variantIndex: error.variantIndex,
+            }));
+          }
           console.error("Reply persistence failed", error);
         }
 
@@ -975,6 +1043,12 @@ export async function POST(request: Request) {
         diagnostic.completionTokens = (usage as LLMUsage | null)?.completion_tokens ?? null;
         diagnostic.reasoningTokens = ((usage as LLMUsage | null)?.completion_tokens_details?.reasoning_tokens as number | undefined) ?? null;
         diagnostic.latencyMs = (usage as LLMUsage | null)?.latency_ms ?? null;
+        if (interrupted) {
+          diagnostic.incomplete = true;
+          diagnostic.detail = ending.cause === "upstream_error"
+            ? `stream interrupted: ${outcome.error?.message ?? "upstream reported a fault after partial text"}`
+            : "stream ended without finish_reason or [DONE]";
+        }
 
         if (persistenceFailed) {
           // The reader was told the reply finished, so a failed write has to be
@@ -1014,13 +1088,30 @@ export async function POST(request: Request) {
          * a separate probe against it.
          */
         void settleFunding(true).catch((error) => console.error("Free-tier settlement failed", error));
-        void recordRouteOutcome({
-          modelId: selection.modelId, ok: true,
-          ttftMs: ttftMs ?? null,
-          outputTokens: (usage as LLMUsage | null)?.completion_tokens ?? null,
-          generationMs: (usage as LLMUsage | null)?.latency_ms ?? null,
-        });
-        finish(persistenceFailed ? "failed" : "ok", persistenceFailed ? "persistence_failure" : undefined);
+        /*
+         * Route health is "did this route deliver a whole reply", so an
+         * interruption is not a success for it — the latency numbers describe a
+         * generation that did not finish, and averaging them in would make a
+         * route that cuts replies off look healthy.
+         */
+        void recordRouteOutcome(interrupted
+          ? { modelId: selection.modelId, ok: false, capacity: false }
+          : {
+            modelId: selection.modelId, ok: true,
+            ttftMs: ttftMs ?? null,
+            outputTokens: (usage as LLMUsage | null)?.completion_tokens ?? null,
+            generationMs: (usage as LLMUsage | null)?.latency_ms ?? null,
+          });
+        /*
+         * An interruption is not a normal completion, and saying it is was the
+         * whole defect. It is not a total failure either — the text is stored
+         * and shown, the tokens are accounted for — so it is recorded as failed
+         * with a reason that says exactly which of the two it is.
+         */
+        finish(
+          persistenceFailed || interrupted ? "failed" : "ok",
+          persistenceFailed ? "persistence_failure" : interrupted ? "incomplete_transport" : undefined,
+        );
         controller.close();
         void (async () => {
           // Scene State first: consolidation stamps the memories it creates

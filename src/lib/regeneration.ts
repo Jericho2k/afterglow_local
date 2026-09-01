@@ -99,8 +99,36 @@ export async function resolveRegenerationTarget(client: PoolClient, input: {
 }
 
 export type VariantCommit =
-  | { ok: true; variants: string[]; variantIndex: number; provenanceRecorded: boolean }
-  | { ok: false; reason: "target_missing" | "variant_conflict" };
+  | { ok: true; variants: string[]; variantIndex: number }
+  | { ok: false; reason: "target_missing" };
+
+/**
+ * A variant index that already has a generation row.
+ *
+ * Thrown rather than returned, because the only correct response is to abandon
+ * the transaction: `message_generations` is UNIQUE on (message_id,
+ * variant_index) and `recordGeneration` is `ON CONFLICT DO NOTHING`, so a
+ * conflict means the row this generation would have claimed belongs to a
+ * DIFFERENT generation. Storing the variant anyway would leave a stored reply
+ * whose provenance describes something else — which is worse than the failure,
+ * and is precisely the invariant `message_generations` exists to hold.
+ *
+ * The locked read makes this unreachable within one database; it is reachable
+ * across two writers that are not both holding the lock, and by anything that
+ * writes provenance out of band. Reaching it is a bug somewhere, so it is an
+ * error with a name rather than a boolean nobody checks.
+ */
+export class ProvenanceConflictError extends Error {
+  readonly messageId: string;
+  readonly variantIndex: number;
+
+  constructor(messageId: string, variantIndex: number) {
+    super("A generation row already exists for this message and variant");
+    this.name = "ProvenanceConflictError";
+    this.messageId = messageId;
+    this.variantIndex = variantIndex;
+  }
+}
 
 /**
  * Appends one generated variant to an existing reply, and records it.
@@ -108,9 +136,9 @@ export type VariantCommit =
  * ONE TRANSACTION, AND THE ROW IS LOCKED FOR IT. `SELECT … FOR UPDATE` is what
  * makes the read-modify-write of `variants` atomic; without it two
  * regenerations racing on one message both read the same array and one of them
- * is lost. Provenance is written in the same transaction as the message, so
- * there is no window in which a stored variant has no record of what produced
- * it.
+ * is lost. Provenance is written in the same transaction as the message and a
+ * failure to write it ABANDONS the transaction, so there is no state in which a
+ * stored variant lacks the record of what produced it.
  *
  * The message-level columns keep describing the CURRENTLY SELECTED variant,
  * which is what they have always meant and what older clients read. The row in
@@ -150,17 +178,26 @@ export async function commitRegeneratedVariant(client: PoolClient, input: {
   );
   await client.query("UPDATE conversations SET updated_at=now() WHERE id=$1 AND user_id=$2", [input.conversationId, input.userId]);
 
-  const provenanceRecorded = await recordGeneration(client, {
+  /*
+   * A VARIANT IS NEVER STORED WITHOUT ITS GENERATION ROW.
+   *
+   * This used to return the conflict as a flag and let the caller log it, which
+   * left exactly the state `message_generations` exists to prevent: a stored
+   * variant whose provenance row belongs to some other generation, and an
+   * inspector confidently describing the wrong context. Throwing rolls the
+   * whole transaction back — the `UPDATE` above included — so the message is
+   * left exactly as it was and the reader is told the reply could not be saved,
+   * which is true.
+   */
+  const recorded = await recordGeneration(client, {
     ...input.generation,
     messageId: input.messageId,
     conversationId: input.conversationId,
     userId: input.userId,
     variantIndex,
   });
-  // The index came from a locked read a moment ago, so a conflict here means
-  // something outside this transaction claimed it — which is worth reporting
-  // rather than hiding, even though the reply itself is safely stored.
-  return { ok: true, variants, variantIndex, provenanceRecorded };
+  if (!recorded) throw new ProvenanceConflictError(input.messageId, variantIndex);
+  return { ok: true, variants, variantIndex };
 }
 
 /**
@@ -187,12 +224,17 @@ export async function commitNewAssistantMessage(client: PoolClient, input: {
     "UPDATE conversations SET message_count=message_count+1,updated_at=now() WHERE id=$1 AND user_id=$2",
     [input.conversationId, input.userId],
   );
-  const provenanceRecorded = await recordGeneration(client, {
+  // Same invariant, same remedy. A send or a continue writes variant 0 of a row
+  // that did not exist a moment ago, so a conflict here means the id was reused
+  // — and a reply stored under provenance describing a different generation is
+  // not an outcome worth having.
+  const recorded = await recordGeneration(client, {
     ...input.generation,
     messageId: input.messageId,
     conversationId: input.conversationId,
     userId: input.userId,
     variantIndex: 0,
   });
-  return { ok: true as const, variants: [input.text], variantIndex: 0, provenanceRecorded };
+  if (!recorded) throw new ProvenanceConflictError(input.messageId, 0);
+  return { ok: true as const, variants: [input.text], variantIndex: 0 };
 }

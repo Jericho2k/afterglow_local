@@ -9,6 +9,42 @@ mid-sentence — followed by the mobile layout and navigation regressions.
 
 ---
 
+## 0. What is established, and what is not
+
+This distinction runs through the whole report and is worth stating once at the
+top, because the temptation with an asymmetric production failure is to find a
+real defect and then narrate it as *the* cause.
+
+**Confirmed offline.** Every item below is a defect reproduced in a test, fixed,
+and re-asserted:
+
+| | Kind |
+|---|---|
+| Regenerate's transcript window began one message earlier than the equivalent Send | cost and latency regression (cache miss) |
+| Regenerating a reply that follows a reply built a request ending on an assistant turn, or on a system block | request-shape correctness |
+| The regeneration target was resolved as "newest row", ignoring the id the browser sent | correctness — wrong reply rewritten, or an id collision |
+| The variant index was allocated before the model ran | correctness — lost text, and provenance silently not written |
+| A stored variant could survive a failed provenance write | correctness — provenance invariant |
+| The stream parser discarded an unterminated final frame | correctness — lost text |
+| A stream that died mid-reply was reported as a completion | correctness — silent truncation |
+| `defaultReasoningFor` was dead code | reasoning ran where the catalogue said it must not |
+| The chat header and cast cards were wider than the phone | layout, measured in a browser |
+| Back re-opened a chat that was already open | navigation |
+
+**NOT established.** The production failure category itself. Nothing in this
+sprint reached a paid provider, so no claim is made about *which* of the above —
+if any — produced the reported "Something went wrong while generating the
+response", nor about what GLM 5.3 Flash was actually returning.
+
+In particular, the cache-miss defect is **not** advanced as a refusal mechanism.
+`max_price` filters endpoints on their list pricing; a prompt that bills more
+because it missed a cache does not thereby exceed that ceiling. It cost money
+and time. Whether it cost availability is unknown.
+
+§1.5 lists the open questions and the commands that close them.
+
+---
+
 ## 1. Regenerate
 
 ### 1.1 What was different about Regenerate
@@ -18,6 +54,7 @@ provider outage, which is what the asymmetry in the report already implied: Send
 and Continue worked on the same conversations, on the same models, minutes apart.
 
 **A. Regenerate was the only action that could never hit a prompt cache.**
+*(Confirmed: cost and latency. Not a refusal mechanism — see §0.)*
 
 The transcript window is *anchored*: its start is quantised against the
 conversation's absolute message count so that the first token of the request
@@ -37,15 +74,23 @@ send        36 messages, window starts at "assistant turn 183"
 regenerate  37 messages, window starts at "user turn 183"     ← different prefix
 ```
 
-A different first token is a total cache miss. So every regeneration paid full
-fresh-input price and full cold latency, on a model whose approved endpoint pool
-is bounded by `provider.only` and `max_price` — the conditions under which a
-cold, expensive request is most likely to be refused or throttled. After the fix
-the two windows are byte-identical up to the continuity block; asserted in
-`tests/regenerate-reliability.test.ts`.
+A different first token is a total cache miss, so every regeneration paid full
+fresh-input rates for a prompt the send beside it had cached, and waited for it.
+
+**What that is, and what it is not.** It is a confirmed cost and latency
+regression, measured above and asserted in
+`tests/regenerate-reliability.test.ts`. It is **not** a mechanism by which a
+provider would refuse the request, and this report does not claim one:
+`max_price` filters endpoints on their **list pricing**, so a larger fresh-input
+bill cannot push an otherwise valid request through that ceiling. Whether
+routing policy was refusing anything in production is a separate, still-open
+question — §1.5.
+
+After the fix the two windows are byte-identical up to the continuity block.
 
 **B. Regenerating a reply that follows another reply produced a malformed
 request.**
+*(Confirmed: request-shape correctness.)*
 
 With tail continuity placement (every caching model), `writerMessages` inserted
 the changing half of the prompt "before the last message". When the transcript
@@ -58,14 +103,45 @@ like — the result was:
 ```
 
 A system message wedged between the reader's turn and the model's own, and a
-request whose final message is an assistant turn. Several upstreams read that as
-a prefill to be extended rather than a turn to be answered, and some reject it.
-Now the block goes before the last **user** message when there is one, and after
-the whole transcript when there is not — which satisfies the rule the placement
-actually exists for (nothing after the reader's own words) in both cases.
+request whose final message is an assistant turn. A chat API given a trailing
+assistant turn is being asked to **extend** it — several upstreams treat it as a
+prefill — so the "regeneration" comes back as a continuation of a message the
+reader has already accepted.
+
+Two changes, because moving the continuity block alone only got halfway. It now
+goes before the last **user** message when there is one and after the whole
+transcript when there is not, which satisfies the rule the placement exists for
+(nothing after the reader's own words) in both cases — but that leaves a request
+whose final message is a system block, which is well formed and merely odd: the
+last thing the writer reads is background rather than a turn.
+
+So a regeneration whose transcript ends on an assistant turn now gets an
+explicit `[REGENERATE]` **user** control turn (`regenerateSceneCue`), and the
+request ends where a chat API expects a generation to be triggered from. The cue
+says what is being asked for, says that every message above it is accepted and
+must not be rewritten, and says never to mention itself. It deliberately does
+**not** quote the reply being replaced — Continue quotes its anchor because it
+must resume from those exact words, while Regenerate is asking for an
+*alternative* to them, and showing the writer that reply is how a regeneration
+comes back as a paraphrase of the attempt it was meant to replace.
+
+Ordinary regenerate-after-a-user-turn is untouched and gets no cue: the reader's
+own message is already a complete request.
+
+The two shapes are asserted by exact role order in
+`tests/regenerate-reliability.test.ts`:
+
+```
+user → assistant(target) → regenerate
+  system, assistant, system, user                       ← the reader's own turn
+
+user → assistant → assistant(target from Continue) → regenerate
+  system, assistant, user, assistant, system, user      ← the control turn
+```
 
 **C. Regenerate resolved its target by "whatever row is newest", ignoring the
 id the browser sent.**
+*(Confirmed: correctness.)*
 
 `assistantMessageId` was read only as a fallback id for an INSERT. So when the
 newest row was not the reply the reader was looking at, a *different* reply was
@@ -82,6 +158,7 @@ on), or it names nothing in the database (a stale optimistic id from a reply
 whose write failed, which falls back to the newest reply as before).
 
 **D. The variant index was allocated before the model ran.**
+*(Confirmed: correctness.)*
 
 `variants.length` was read at the start of the turn and used tens of seconds
 later. Two regenerations of one reply therefore both claimed the same index: the
@@ -92,8 +169,22 @@ provenance, and the Context inspector reported "not recorded" for a reply
 produced a second earlier.
 
 The allocation is now inside one locked transaction that also writes the message
-and its provenance (`commitRegeneratedVariant`), and `recordGeneration` returns
-whether it actually wrote, so a conflict is a log line rather than a hole.
+and its provenance (`commitRegeneratedVariant`).
+
+**And a provenance failure abandons the variant.** Reporting the conflict as a
+flag the caller logged was not enough: it still left a stored reply whose
+`message_generations` row belongs to a *different* generation, which makes the
+Context inspector confidently wrong about what that reply was written from —
+precisely the state the table exists to prevent. `recordGeneration` returning
+false now throws `ProvenanceConflictError`, which rolls the transaction back with
+the message `UPDATE` inside it. The reader is told the reply could not be saved,
+which is true, and the row is left exactly as it was.
+
+`VariantCommit` no longer carries an unreachable `variant_conflict` arm or a
+`provenanceRecorded` flag nobody could act on; the conflict is an error with a
+name. `commitNewAssistantMessage` holds the same invariant for variant 0. Both
+are asserted by provoking a real conflict and checking the row is untouched
+afterwards.
 
 ### 1.2 Why Send and Continue were fine
 
@@ -175,7 +266,54 @@ frame in the middle of the text, usage after the final text, `finish_reason` on
 its own frame, CRLF, `data:` with no space, SSE comments, a non-streamed
 `message.content` body, and multi-byte characters split across chunks.
 
-### 2.2 Nothing recorded how a generation ended
+### 2.2 A stream that stopped was reported as a generation that finished
+
+The dropped-final-frame fix removed one silent truncation. It did not remove the
+other, which leaves no trace at all: prose arrives, the transport dies, and there
+is no `finish_reason`, no `native_finish_reason` and no `[DONE]`. With nothing
+distinguishing that from a generation that ended on purpose, it was stored,
+announced and logged as an ordinary success — a sentence stopping halfway with
+no explanation anywhere.
+
+So "the stream ended" and "the generation completed" are now separate questions.
+`streamEnding` claims a completion only on **terminal evidence** — something in
+the protocol stating the generation is over:
+
+| Ending | Condition |
+|---|---|
+| `complete` | `finish_reason`, or `native_finish_reason`, or `[DONE]` |
+| `empty` | no prose at all — the existing retry path's question |
+| `interrupted` (`transport`) | prose, and none of the above |
+| `interrupted` (`upstream_error`) | prose, and an error frame after it |
+
+What follows from an interruption is deliberately narrow:
+
+- **The text is kept.** Every byte arrived, was produced, and was billed.
+  Discarding it loses the reader's scene and changes nothing about the cost.
+- **Nothing is generated to cover it.** No second model turn on a guess.
+- **It is not called a success.** The completion event carries
+  `incomplete: true` and `interruptedBy`; the client keeps the prose and says
+  the reply was cut short, pointing at Continue, which is already the control
+  for picking it up.
+- **The diagnostic says which.** `reason: "incomplete_transport"`, outcome
+  `failed`, with the cause in `detail`.
+- **Accounting stays accurate.** Usage is recorded and the free-tier slot is
+  spent, because the tokens really happened. Route health records the turn as
+  *not* successful — averaging an interrupted generation's latency in would make
+  a route that cuts replies off look healthy.
+
+A reply that stopped at `finish_reason: "length"` is **complete and truncated**,
+which is a different fact: the generation ended, deliberately, at a limit we set.
+Both are reported, and neither triggers a continuation on its own.
+
+`tests/stream-parse.test.ts` covers every ending shape — text with a finish
+reason and `[DONE]`; a finish reason and no `[DONE]`; `[DONE]` and no finish
+reason; a native finish reason alone; abrupt EOF with neither; an unterminated
+final frame that *carries* the evidence; length truncation; and an error after
+partial text — each at every byte boundary. `tests/regenerate-reliability.test.ts`
+carries the same cases end to end through the route.
+
+### 2.3 Nothing recorded how a generation ended
 
 `finish_reason` was read only to tell an empty reply from a filtered one, so a
 reply that *was* produced and *was* cut off at the output ceiling was
@@ -187,7 +325,7 @@ read. The turn's diagnostic records all of them plus `truncated`,
 `completionTokens` and `reasoningTokens`, and the completion event carries
 `truncated: true` to the client.
 
-### 2.3 The output envelope
+### 2.4 The output envelope
 
 Unchanged, deliberately. The measured cause available offline is §1.3: reasoning
 tokens are spent from the **same** envelope as the prose, so a hybrid reasoning
@@ -208,7 +346,7 @@ sends, reports reasoning tokens beside completion tokens, and separates
 "ended at the ceiling" from "ended mid-sentence". A run at `--reasoning off` and
 `--reasoning unset` is what turns "the envelope is too small" into a measurement.
 
-### 2.4 Truncation is stated, never papered over
+### 2.5 Truncation is stated, never papered over
 
 A reply that stopped at the ceiling is reported — in the log and in the
 completion event — and nothing generates a second turn about it. Silently
@@ -357,7 +495,7 @@ was added.
 
 | | |
 |---|---|
-| `npm test` | 119 files, 1736 passed, 7 skipped |
+| `npm test` | 119 files, 1756 passed, 7 skipped |
 | `npm run lint` | clean |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles |
@@ -366,8 +504,27 @@ was added.
 The isolation suites need a PostgreSQL with `pgvector`; CI provides
 `pgvector/pgvector:pg16`.
 
-**Requires a live paid provider, and is therefore not verified here:** the
-production regenerate success rate before and after, GLM 5.3 Flash's actual
-error categories and finish-reason distribution, whether any routing constraint
-excludes every endpoint for that slug, and whether the response-length envelopes
-need retuning once reasoning is genuinely off.
+### Confirmed offline
+
+Every defect in §0's table, each reproduced in a test before being fixed. The
+80-turn acceptance run — 20 sends, 20 continues, 40 regenerations including
+repeats on one reply — completes with no failures and 80 distinct provenance
+rows, against real PostgreSQL. The overflow audit runs in a real browser.
+
+That is a statement about what Afterglow builds, writes and renders. It is not a
+statement about what an upstream does with any of it.
+
+### Still requires live provider validation
+
+- The production regenerate success rate, before and after. Nothing here
+  measures it.
+- **Which defect, if any, produced the reported failures.** Four were fixed;
+  none is claimed to be *the* cause.
+- GLM 5.3 Flash's actual error categories, and how often it returns
+  `finish_reason: "length"` now that reasoning is genuinely declined.
+- How often streams terminate without terminal evidence in production. The new
+  `incomplete_transport` diagnostic is what will say; the rate is unknown today.
+- Whether any routing constraint excludes every endpoint serving
+  `z-ai/glm-5.3-flash`. `scripts/provider-constraint-bisect.mjs` answers it.
+- Whether the response-length envelopes need retuning once reasoning is off.
+  `scripts/response-length-benchmark.mjs --reasoning off|unset` answers it.

@@ -74,6 +74,60 @@ export function truncatedByLength(outcome: Pick<StreamOutcome, "finishReason" | 
   return reasons.some((reason) => reason === "length" || reason === "max_tokens" || reason === "max_output_tokens");
 }
 
+/**
+ * HOW THE STREAM ENDED, AND WHETHER ANYTHING ACTUALLY SAID SO.
+ *
+ * Fixing the dropped final frame removed one way a reply could stop mid-thought.
+ * It did not remove the other one, which leaves no trace at all: prose arrives,
+ * the transport dies, and there is no `finish_reason`, no `native_finish_reason`
+ * and no `[DONE]`. Every byte that arrived is real and worth keeping, and the
+ * reply is still unfinished — but with nothing to distinguish it from a
+ * generation that ended on purpose, it was stored, announced and logged as an
+ * ordinary success. The reader saw a sentence stop halfway and no explanation
+ * existed anywhere.
+ *
+ * So "the stream ended" and "the generation completed" are separated. A
+ * completion is only claimed on TERMINAL EVIDENCE — something in the protocol
+ * that states the generation is over:
+ *
+ *   finish_reason         the OpenAI-shaped reason, including `length`
+ *   native_finish_reason  the upstream's own, when it reports one
+ *   [DONE]                the SSE sentinel
+ *
+ * Anything else with prose in it is INTERRUPTED. That is not a failure of the
+ * whole turn — the text is kept, stored and shown, and the tokens were really
+ * produced and are really accounted for — but it is not a success either, and
+ * calling it one is what made this invisible.
+ *
+ * An error frame that arrives AFTER prose is the same shape of problem with a
+ * known cause, so it is reported as an interruption with that cause rather than
+ * being ignored because text happened to exist.
+ */
+export type StreamEnding =
+  | { kind: "complete"; evidence: "finish_reason" | "native_finish_reason" | "done" }
+  | { kind: "empty" }
+  | { kind: "interrupted"; cause: "transport" | "upstream_error" };
+
+/** What in the protocol, if anything, said the generation was over. */
+export function terminalEvidence(outcome: Pick<StreamOutcome, "finishReason" | "nativeFinishReason" | "doneSeen">) {
+  if (outcome.finishReason) return "finish_reason" as const;
+  if (outcome.nativeFinishReason) return "native_finish_reason" as const;
+  if (outcome.doneSeen) return "done" as const;
+  return null;
+}
+
+export function streamEnding(outcome: StreamOutcome): StreamEnding {
+  // No prose at all is a different question with a different answer — the
+  // caller retries it, and `error`/`finish_reason` explain it. See the chat
+  // route's empty-reply path.
+  if (!outcome.text.trim()) return { kind: "empty" };
+  // An upstream that reported a fault mid-stream did not finish, whatever else
+  // it sent afterwards.
+  if (outcome.error) return { kind: "interrupted", cause: "upstream_error" };
+  const evidence = terminalEvidence(outcome);
+  return evidence ? { kind: "complete", evidence } : { kind: "interrupted", cause: "transport" };
+}
+
 export type WriterStreamParser = {
   /** Feed one network chunk. Boundaries are arbitrary and may split anything. */
   push: (chunk: Uint8Array) => void;
