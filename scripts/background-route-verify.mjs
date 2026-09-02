@@ -1,21 +1,20 @@
 #!/usr/bin/env node
 /**
- * WHAT ARE THE UPSTREAM HOSTS ACTUALLY CALLED?
+ * ARE THE PINNED UPSTREAM TAGS STILL SERVED?
  *
  * Two of the memory candidates exist to pin one upstream host each —
- * "OpenInference" and "Relace" serving DeepSeek V4 Flash 0731 — and pinning a
- * host means `provider.only` with fallbacks off. That makes the slug load
- * bearing in a way an ordinary route's is not: a wrong `order` entry is
+ * `open-inference/fp8` and `relace/fp4` serving DeepSeek V4 Flash 0731 — and
+ * pinning a host means `provider.only` with fallbacks off. That makes the tag
+ * load bearing in a way an ordinary route's is not: a wrong `order` entry is
  * ignored and the request goes somewhere sensible, while a wrong `only` entry
  * is a request with an empty candidate set. For a background job that means
  * every consolidation fails, quietly, because background jobs never reach a
  * reader to complain.
  *
- * The catalogue therefore carries the plausible lowercase forms and refuses to
- * let anybody select them until an operator has confirmed the real ones. This
- * script is the confirmation: it asks OpenRouter which endpoints actually serve
- * a model and prints the slugs, the prices, and the line to put in the
- * environment.
+ * Those two tags are verified. This script is how they STAY verified: a third
+ * party can rename or retire a tag without telling us, so it asks OpenRouter
+ * which endpoints actually serve the model, checks the exact strings the
+ * catalogue pins, and prints the prices and the environment line.
  *
  * USAGE
  *   OPENROUTER_API_KEY=… node scripts/background-route-verify.mjs
@@ -46,16 +45,34 @@ if (!key) {
 const base = (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
 
 /**
- * The hosts the brief named, lowercased.
+ * THE TAGS THE CATALOGUE NOW PINS, EXACTLY AS `provider.only` MATCHES THEM.
  *
- * Matched loosely against what the catalogue returns, because a provider's
- * display name and its routing slug are not the same string and the whole
- * point of this script is that we do not know which is which.
+ * These were guesses once — "openinference" and "relace", the obvious lowercase
+ * forms of two host names — and the guesses were wrong in two different ways:
+ * a hyphen nobody would have added, and a quantisation suffix nobody would have
+ * known to look for. So the script no longer hunts for a plausible-looking host
+ * and reports what it found. It asks whether THESE EXACT STRINGS are still
+ * served, which is the only question `provider.only` cares about.
+ *
+ * `label` is only for reading the output. `tag` is the load-bearing value and
+ * must stay identical to `dedicatedProvider` in src/lib/provider.ts.
  */
-const wanted = ["openinference", "relace"];
+const wanted = [
+  { label: "OpenInference", tag: "open-inference/fp8" },
+  { label: "Relace", tag: "relace/fp4" },
+];
 
-function normalise(value) {
-  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+/**
+ * A host that is plausibly the same one under a changed tag.
+ *
+ * Reported, never accepted. If OpenRouter renames `relace/fp4` to `relace/fp8`
+ * this finds it and says so — and still refuses to print it into the
+ * environment line, because the catalogue entry has to be corrected first or
+ * the pin will point at a tag the code does not carry.
+ */
+function looksRelated(slug, tag) {
+  const root = (value) => String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8);
+  return root(String(slug).split("/")[0]) === root(tag.split("/")[0]);
 }
 
 const response = await fetch(`${base}/models/${model}/endpoints`, {
@@ -101,26 +118,38 @@ for (const row of rows) {
   ].join("  "));
 }
 
-console.log("\nThe two hosts the memory candidates pin:\n");
+console.log("\nThe exact tags the memory candidates pin:\n");
 const confirmed = [];
 for (const target of wanted) {
-  const match = rows.find((row) => normalise(row.slug) === target || normalise(row.name).includes(target));
-  if (!match) {
-    console.log(`  ${target}: NOT FOUND on this model. Do not enable the candidate; either the host does not serve`);
-    console.log("             this slug, or it is called something else in the list above.");
+  const exact = rows.find((row) => String(row.slug) === target.tag);
+  if (exact) {
+    console.log(`  ${target.tag}  (${target.label})  STILL SERVED`);
+    console.log(`      prices: $${exact.promptUsdPerMillion?.toFixed(4) ?? "—"}/M fresh, ${exact.cachedReadUsdPerMillion === null ? "NO discounted cache reads" : `$${exact.cachedReadUsdPerMillion.toFixed(4)}/M cached`}, $${exact.completionUsdPerMillion?.toFixed(4) ?? "—"}/M output`);
+    if (exact.quantization) console.log(`      quantisation: ${exact.quantization}`);
+    confirmed.push(target.tag);
     continue;
   }
-  const exact = normalise(match.slug) === target;
-  console.log(`  ${target}: found as "${match.slug}"${exact ? "" : "  ← DIFFERENT SLUG: the catalogue entry in src/lib/provider.ts must be corrected first"}`);
-  console.log(`             caching: ${match.supportsCaching ? `yes, cached reads at $${match.cachedReadUsdPerMillion?.toFixed(4)}/M` : "NO discounted cache reads"}`);
-  if (exact) confirmed.push(match.slug);
+  console.log(`  ${target.tag}  (${target.label})  NOT SERVED under this exact tag.`);
+  const related = rows.filter((row) => looksRelated(row.slug, target.tag)).map((row) => row.slug);
+  if (related.length) {
+    console.log(`      The same host appears as: ${related.join(", ")}`);
+    console.log("      DO NOT paste that into the environment. `provider.only` matches the tag");
+    console.log("      the catalogue carries, so src/lib/provider.ts must be corrected first.");
+  } else {
+    console.log("      That host is not in the list above at all. Leave the candidate disabled.");
+  }
 }
 
 console.log("");
+if (confirmed.length === wanted.length) {
+  console.log("Both tags confirmed. If you are willing to send background memory work to these hosts, set:\n");
+} else if (confirmed.length) {
+  console.log("Some tags confirmed. Opt into only the ones you are willing to use:\n");
+}
 if (confirmed.length) {
-  console.log("If you are willing to send background memory work to these hosts, set:\n");
   console.log(`  BACKGROUND_ROUTE_VERIFIED_UPSTREAMS=${confirmed.join(",")}\n`);
-  console.log("Until that variable names a host, the admin selector lists its candidate and refuses it.");
+  console.log("The tag being served is not consent to use it. Until that variable names a host,");
+  console.log("the admin selector lists its candidate, explains the gate, and refuses to select it.");
 } else {
   console.log("Nothing confirmed. Leave BACKGROUND_ROUTE_VERIFIED_UPSTREAMS unset — the candidates stay listed and unselectable.");
 }

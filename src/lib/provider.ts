@@ -743,18 +743,37 @@ const knownModels: InternalModelDefinition[] = [
    * figure and every quality note separates by host without anybody having to
    * join on `upstream_provider` afterwards.
    *
-   * THE SLUGS BELOW ARE NOT VERIFIED FROM THIS ENVIRONMENT. OpenRouter's
-   * endpoint list for a model is only readable with a key, and this deployment
-   * has none at build time; "openinference" and "relace" are the obvious
-   * lowercase forms of the two host names the brief asked for and an obvious
-   * form is a guess. A wrong host slug plus `provider.only` is not a degraded
-   * route, it is a background task that fails every time it runs.
+   * THE SLUGS ARE NOW VERIFIED, AND THEY WERE NOT WHAT ANYBODY WOULD HAVE
+   * GUESSED.
    *
-   * That is why neither is selectable on the strength of being catalogued.
-   * `src/lib/background-routing.ts` keeps both behind an explicit operator
-   * confirmation — `BACKGROUND_ROUTE_VERIFIED_UPSTREAMS` — and
-   * `scripts/background-route-verify.mjs` prints the live host list a deployment
-   * with a key can confirm them against.
+   * The first version of these entries carried "openinference" and "relace",
+   * the obvious lowercase forms of the two host names in the brief. Checked
+   * against OpenRouter's endpoint list for `deepseek/deepseek-v4-flash-0731`,
+   * the real routing tags are `open-inference/fp8` and `relace/fp4` — a
+   * hyphen nobody would have added, and a serving-profile suffix nobody would
+   * have known to look for. That is the whole argument for having refused to
+   * enable them on a plausible-looking guess: `provider.only` with a wrong tag
+   * is not a degraded route, it is a background task that fails on every run,
+   * silently, because background jobs never reach a reader to complain.
+   *
+   * THE SUFFIX IS PART OF THE ROUTE, NOT DECORATION. `fp8` and `fp4` name the
+   * quantisation the host serves this model at, which is precisely the
+   * difference the per-host A/B exists to measure: two runs of "the same model"
+   * at different numeric precision are two different models for the purpose of
+   * deciding which of a reader's promises get marked kept.
+   *
+   * Both remain gated behind `BACKGROUND_ROUTE_VERIFIED_UPSTREAMS` even now
+   * they are correct, because the gate is an operator saying "I am willing to
+   * send readers' transcripts to this host", which is a different sentence from
+   * "this host exists". `scripts/background-route-verify.mjs` re-prints the live
+   * list, so a tag that is renamed upstream is caught by running it again rather
+   * than by a fortnight of failed consolidations.
+   *
+   * Verified prices, per million tokens, at the time of checking — both inside
+   * the ceiling below, which is left exactly where it was:
+   *
+   *   open-inference/fp8   $0.05 fresh   $0.013 cached   $0.16 output
+   *   relace/fp4           $0.065 fresh  $0.016 cached   $0.18 output
    *
    * `backgroundOnly` keeps them out of the writer picker. They are one model
    * appearing three times, which is a meaningful distinction for a memory A/B
@@ -765,7 +784,7 @@ const knownModels: InternalModelDefinition[] = [
     providerId: "openrouter",
     providerModelId: "deepseek/deepseek-v4-flash-0731",
     label: "DeepSeek V4 Flash 0731 — OpenInference",
-    description: "The 0731 revision served only by OpenInference. Background memory evaluation route.",
+    description: "The 0731 revision served only by OpenInference, at fp8. Background memory evaluation route.",
     supportsThinking: true,
     category: "experimental",
     free: false,
@@ -776,7 +795,7 @@ const knownModels: InternalModelDefinition[] = [
       thinking: true,
       jsonMode: true,
       promptCaching: true,
-      dedicatedProvider: "openinference",
+      dedicatedProvider: "open-inference/fp8",
       costCeiling: { promptUsdPerMillion: 0.10, completionUsdPerMillion: 0.40 },
       dataPolicy: { dataCollection: "deny" },
     },
@@ -786,7 +805,7 @@ const knownModels: InternalModelDefinition[] = [
     providerId: "openrouter",
     providerModelId: "deepseek/deepseek-v4-flash-0731",
     label: "DeepSeek V4 Flash 0731 — Relace",
-    description: "The 0731 revision served only by Relace. Background memory evaluation route.",
+    description: "The 0731 revision served only by Relace, at fp4. Background memory evaluation route.",
     supportsThinking: true,
     category: "experimental",
     free: false,
@@ -797,7 +816,7 @@ const knownModels: InternalModelDefinition[] = [
       thinking: true,
       jsonMode: true,
       promptCaching: true,
-      dedicatedProvider: "relace",
+      dedicatedProvider: "relace/fp4",
       costCeiling: { promptUsdPerMillion: 0.10, completionUsdPerMillion: 0.40 },
       dataPolicy: { dataCollection: "deny" },
     },
@@ -884,6 +903,51 @@ const engines: RoleplayEngineDefinition[] = engineDefinitions();
 
 function safeId(value: string) {
   return /^[a-zA-Z0-9._-]{1,100}$/.test(value);
+}
+
+/**
+ * AN UPSTREAM PROVIDER ENDPOINT TAG, WHICH IS NOT AN IDENTIFIER.
+ *
+ * `safeId` guards catalogue model ids, environment keys and anything that has
+ * to survive being pasted into a variable or a query string, and it rejects
+ * `/` for good reasons that all still hold. But OpenRouter's routing tags are
+ * not identifiers of ours — they are values that arrive from a third party's
+ * catalogue, and several of them carry a serving-profile suffix after a slash:
+ *
+ *   open-inference/fp8
+ *   relace/fp4
+ *
+ * Verified against OpenRouter's endpoint list for
+ * `deepseek/deepseek-v4-flash-0731`. Running those through `safeId` returned
+ * false, which meant `dedicatedProviderFor` answered null and
+ * `approvedProviderPool` answered an empty list — so a model that had
+ * DELIBERATELY been pinned to one host would silently have been routed by
+ * OpenRouter's own default policy instead. A guard that rejects a valid value
+ * by turning a hard pin into no pin at all is worse than no guard: it fails
+ * open, quietly, in exactly the direction the pin exists to prevent.
+ *
+ * So this is a SEPARATE, NARROWER predicate, used only where an upstream
+ * routing tag is validated, and never for a model id or an environment key.
+ * Widening `safeId` itself would have let a slash into places where it means
+ * something — a path segment, a cache key, a catalogue id — to fix a problem in
+ * one of them.
+ *
+ * WHAT IT STILL REFUSES, and why the shape is this tight. These values are
+ * placed verbatim into `provider.only`, `provider.order` and `provider.ignore`
+ * in a JSON request body, so the exposure is malformed routing rather than
+ * injection — but a tag that cannot be typed by mistake is a tag that cannot be
+ * wrong by mistake. Empty segments, a leading or trailing slash, `.` or `..` as
+ * a segment, whitespace, quotes and every other punctuation mark are rejected,
+ * and the depth is bounded at three segments because no published tag has more
+ * than two and an unbounded one is a wildcard wearing a regex.
+ */
+const providerTagSegment = /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,58}[a-zA-Z0-9])?$/;
+
+export function safeProviderTag(value: string) {
+  if (typeof value !== "string" || value.length < 1 || value.length > 120) return false;
+  const segments = value.split("/");
+  if (segments.length > 3) return false;
+  return segments.every((segment) => providerTagSegment.test(segment));
 }
 
 export function openRouterEnabled() {
@@ -1051,7 +1115,7 @@ export function pinnedProviderFor(modelId: string) {
   if (!configured) return null;
   for (const entry of configured.split(",")) {
     const [model, provider] = entry.split(":").map((value) => value.trim());
-    if (model === modelId && provider && safeId(provider)) return provider;
+    if (model === modelId && provider && safeProviderTag(provider)) return provider;
   }
   return null;
 }
@@ -1147,7 +1211,7 @@ function poolOverrideFor(modelId: string) {
     const separator = entry.indexOf(":");
     if (separator < 1) continue;
     if (entry.slice(0, separator).trim() !== modelId) continue;
-    const slugs = entry.slice(separator + 1).split("|").map((value) => value.trim()).filter((value) => safeId(value));
+    const slugs = entry.slice(separator + 1).split("|").map((value) => value.trim()).filter((value) => safeProviderTag(value));
     return slugs.length ? slugs : null;
   }
   return null;
@@ -1173,8 +1237,8 @@ export function approvedProviderPool(modelId: string) {
    * and none of them can disagree with the other.
    */
   const dedicated = capabilities?.dedicatedProvider;
-  if (dedicated && safeId(dedicated)) return [dedicated];
-  return capabilities?.cacheCapableProviders?.filter((value) => safeId(value)) ?? [];
+  if (dedicated && safeProviderTag(dedicated)) return [dedicated];
+  return capabilities?.cacheCapableProviders?.filter((value) => safeProviderTag(value)) ?? [];
 }
 
 /**
@@ -1187,7 +1251,7 @@ export function approvedProviderPool(modelId: string) {
  */
 export function dedicatedProviderFor(modelId: string) {
   const declared = knownModels.find((model) => model.id === modelId)?.capabilities.dedicatedProvider;
-  return declared && safeId(declared) ? declared : null;
+  return declared && safeProviderTag(declared) ? declared : null;
 }
 
 /**
@@ -1369,7 +1433,16 @@ export function providerPolicyFor(
     };
   }
   const preferred = knownModels.find((model) => model.id === modelId)?.capabilities.preferredProviders ?? [];
-  const ignore = failedProviders.filter((value) => safeId(value));
+  /*
+   * The hosts that already failed this request, so recovery routes around them.
+   *
+   * Validated as PROVIDER TAGS rather than as ids, because that is what they
+   * are: they come from OpenRouter's `x-openrouter-provider` header or from the
+   * `order` the previous attempt asked for, so a slashed tag must be able to be
+   * excluded. Filtering it out here would send the next attempt straight back
+   * to the host that just went quiet.
+   */
+  const ignore = failedProviders.filter((value) => safeProviderTag(value));
   /*
    * THE CEILING AND THE POOL SURVIVE EVERY ATTEMPT.
    *

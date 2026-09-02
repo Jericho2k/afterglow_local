@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   arcSceneTag, locationLabel, mergeSceneState, normalizeSceneUpdate, renderCurrentScene,
-  sceneRetrievalCue, sceneStateTokens, sceneTag, timeLabel, unknownScene, type SceneStateFields,
+  renderSceneLedger, scenePersistenceRule, sceneRetrievalCue, sceneStateTokens, sceneTag,
+  timeLabel, unknownScene, type SceneStateFields,
 } from "@/lib/scene-state";
+import { estimateTokens } from "@/lib/context";
 import { roleplayPrompt } from "@/lib/prompts";
 import { arc, benchmarkCharacter, memory, present, scene, scenarioCreation } from "./fixtures/scene-continuity";
 
@@ -319,6 +321,69 @@ describe("scene ledger rendering", () => {
     for (const gone of ["Physical arrangement", "left hand", "right hand", "Contact:", "Constraints:", "Active situation"]) {
       expect(rendered).not.toContain(gone);
     }
+  });
+});
+
+/**
+ * TWO AUDIENCES, TWO RENDERINGS.
+ *
+ * The persistence rule — "Everyone listed under Present is still here" — is an
+ * instruction to a writer, not something the ledger believes. It was inside the
+ * one rendering function, so the administrator diagnostic displayed it as
+ * though it were stored state.
+ *
+ * The fix is structural rather than a filter: the facts have their own function
+ * that cannot reach the rule, so the leak cannot come back by somebody
+ * forgetting to strip a line.
+ */
+describe("the ledger a human reads and the block a writer receives", () => {
+  const populated = scene({
+    storyDay: 5, dateKind: "exact", dateText: "2026-09-02",
+    time: { kind: "approximate", text: "around 9 PM" },
+    location: { place: "Maya's apartment", sub: "living room", confidence: "stated" },
+    present: [{ name: "User", position: "on sofa" }, { name: "Maya", position: "beside User" }, { name: "Anna", position: "near window" }],
+  });
+
+  it("shows the diagnostic the state and no instruction at all", () => {
+    const ledger = renderSceneLedger(populated);
+    expect(ledger).toContain("Story day: 5");
+    expect(ledger).toContain("Date: 2026-09-02");
+    expect(ledger).toContain("Time: around 9 PM (approximate)");
+    expect(ledger).toContain("Location: Maya's apartment — living room");
+    expect(ledger).toContain("Present: User (on sofa), Maya (beside User), Anna (near window)");
+
+    expect(ledger).not.toContain(scenePersistenceRule);
+    // Nothing imperative at all: a panel showing stored data must not read as
+    // though the ledger holds a rule about how to write.
+    for (const instruction of ["Do not", "Never", "Always", "must", "still here"]) {
+      expect(ledger, instruction).not.toContain(instruction);
+    }
+  });
+
+  it("still hands the writer the persistence rule, after the facts", () => {
+    const block = renderCurrentScene(populated);
+    expect(block).toContain(scenePersistenceRule);
+    expect(block.startsWith(renderSceneLedger(populated))).toBe(true);
+    // Facts first, rule last: a rule stated before the list it governs is a
+    // rule about nothing.
+    expect(block.indexOf("Present:")).toBeLessThan(block.indexOf(scenePersistenceRule));
+  });
+
+  it("reaches the writer prompt, and only through the writer prompt", () => {
+    const prompt = roleplayPrompt(benchmarkCharacter, "", [], [], undefined, { sceneState: populated });
+    expect(prompt).toContain(scenePersistenceRule);
+    expect(prompt).toContain("Present: User (on sofa), Maya (beside User), Anna (near window)");
+  });
+
+  it("keeps both empty when nothing is established", () => {
+    expect(renderSceneLedger(unknownScene)).toBe("");
+    expect(renderCurrentScene(unknownScene)).toBe("");
+  });
+
+  it("prices the writer block, not the diagnostic", () => {
+    // The stored token count exists to say what a reply is paying for, so it
+    // measures what the writer receives — rule included.
+    expect(sceneStateTokens(populated)).toBeGreaterThan(estimateTokens(renderSceneLedger(populated)));
   });
 
   it("tags a historical event only when it kept grounding", () => {

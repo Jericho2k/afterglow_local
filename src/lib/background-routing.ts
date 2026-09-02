@@ -74,18 +74,22 @@ export type BackgroundCandidate = {
    */
   upstreamProvider?: string;
   /**
-   * Whether the upstream host slug has been confirmed against OpenRouter's live
-   * endpoint list.
+   * Whether an operator has to name this candidate's host before it can be
+   * selected.
    *
-   * False means the slug in the catalogue is the plausible lowercase form of a
-   * host name somebody wrote in a brief. Combined with `provider.only` — which
-   * is what pinning a host means — a wrong slug is not a slower route or a
-   * dearer one, it is a background job that fails on every single run, silently,
-   * because background jobs are not allowed to reach a reader. So an unverified
-   * candidate is listed, explained, and refused until an operator confirms it.
-   * See `scripts/background-route-verify.mjs`.
+   * NOT the same question as "is the tag correct", and the difference matters
+   * now that both tags have been verified. `open-inference/fp8` and
+   * `relace/fp4` are the real routing tags, confirmed against OpenRouter's
+   * endpoint list — and a pinned host is still `provider.only` with fallbacks
+   * off, aimed at a third party's catalogue that can rename or retire a tag
+   * without telling us, carrying readers' transcripts.
+   *
+   * So the gate stays, and what it asks for is CONSENT rather than spelling: an
+   * operator naming a host in `BACKGROUND_ROUTE_VERIFIED_UPSTREAMS` is saying "I
+   * have checked this route today and I am willing to send readers' stories
+   * through it". `scripts/background-route-verify.mjs` is how they check it.
    */
-  upstreamVerified: boolean;
+  requiresUpstreamOptIn: boolean;
 };
 
 /**
@@ -103,7 +107,7 @@ export const backgroundCandidates: BackgroundCandidate[] = [
     description: "DeepSeek's own endpoint. The incumbent and the quality control for every comparison.",
     tasks: ["memory_consolidation", "memory_curation", "scene_state"],
     selection: { providerId: "deepseek", modelId: "deepseek-v4-flash" },
-    upstreamVerified: true,
+    requiresUpstreamOptIn: false,
   },
   {
     id: "deepseek_0731",
@@ -111,25 +115,25 @@ export const backgroundCandidates: BackgroundCandidate[] = [
     description: "The re-post-trained 0731 revision via OpenRouter, host chosen by the usual routing policy. The control for the two pinned routes below.",
     tasks: ["memory_consolidation", "memory_curation", "scene_state"],
     selection: { providerId: "openrouter", modelId: "deepseek-v4-flash-0731" },
-    upstreamVerified: true,
+    requiresUpstreamOptIn: false,
   },
   {
     id: "deepseek_0731_openinference",
-    label: "DeepSeek V4 Flash 0731 — OpenInference",
-    description: "The 0731 revision, pinned to OpenInference. Host slug not yet confirmed against the live catalogue.",
+    label: "DeepSeek V4 Flash 0731 — OpenInference (fp8)",
+    description: "The 0731 revision, pinned to OpenInference at fp8. $0.05/M fresh, $0.013/M cached, $0.16/M output.",
     tasks: ["memory_consolidation", "memory_curation", "scene_state"],
     selection: { providerId: "openrouter", modelId: "deepseek-v4-flash-0731-openinference" },
-    upstreamProvider: "openinference",
-    upstreamVerified: false,
+    upstreamProvider: "open-inference/fp8",
+    requiresUpstreamOptIn: true,
   },
   {
     id: "deepseek_0731_relace",
-    label: "DeepSeek V4 Flash 0731 — Relace",
-    description: "The 0731 revision, pinned to Relace. Host slug not yet confirmed against the live catalogue.",
+    label: "DeepSeek V4 Flash 0731 — Relace (fp4)",
+    description: "The 0731 revision, pinned to Relace at fp4. $0.065/M fresh, $0.016/M cached, $0.18/M output.",
     tasks: ["memory_consolidation", "memory_curation", "scene_state"],
     selection: { providerId: "openrouter", modelId: "deepseek-v4-flash-0731-relace" },
-    upstreamProvider: "relace",
-    upstreamVerified: false,
+    upstreamProvider: "relace/fp4",
+    requiresUpstreamOptIn: true,
   },
   {
     id: "mimo_v25",
@@ -137,7 +141,7 @@ export const backgroundCandidates: BackgroundCandidate[] = [
     description: "Xiaomi's long-context writer. Already funded and already trusted for structured output.",
     tasks: ["memory_consolidation", "memory_curation", "scene_state"],
     selection: { providerId: "openrouter", modelId: "mimo-v2.5" },
-    upstreamVerified: true,
+    requiresUpstreamOptIn: false,
   },
   {
     id: "ling_3_flash",
@@ -145,7 +149,7 @@ export const backgroundCandidates: BackgroundCandidate[] = [
     description: "The cheapest route in the lineup. Experimental for memory; the intended default for the Scene Ledger.",
     tasks: ["memory_consolidation", "memory_curation", "scene_state"],
     selection: { providerId: "openrouter", modelId: "ling-3.0-flash" },
-    upstreamVerified: true,
+    requiresUpstreamOptIn: false,
   },
   {
     /*
@@ -161,7 +165,7 @@ export const backgroundCandidates: BackgroundCandidate[] = [
     description: "Run no extractor at all. The ledger stops updating and the writer sees whatever it last held.",
     tasks: ["scene_state"],
     selection: null,
-    upstreamVerified: true,
+    requiresUpstreamOptIn: false,
   },
 ];
 
@@ -174,11 +178,17 @@ export function candidatesForTask(task: BackgroundTask) {
 }
 
 /**
- * The host slugs an operator has confirmed exist.
+ * The upstream hosts an operator has opted this deployment into.
  *
- * A list rather than a boolean because the two pinned routes are confirmed
+ * A list rather than a boolean because the pinned routes are opted into
  * separately: OpenRouter can perfectly well serve one of them and not the
- * other, and "we checked" is a claim about one host.
+ * other, they are priced differently and quantised differently, and "we are
+ * willing to use this" is a claim about one host.
+ *
+ * Entries are the full routing tag, suffix included —
+ * `open-inference/fp8,relace/fp4` — because the suffix is part of the route and
+ * naming `open-inference` alone would opt into a host at a precision nobody
+ * looked at.
  */
 function verifiedUpstreams() {
   return new Set(
@@ -210,11 +220,11 @@ export function candidateAvailability(task: BackgroundTask, candidate: Backgroun
   if (!resolveModel(candidate.selection.providerId, candidate.selection.modelId)) {
     return { candidate, selectable: false, reason: "That provider is not enabled on this deployment." };
   }
-  if (!candidate.upstreamVerified && !verifiedUpstreams().has(candidate.upstreamProvider?.toLowerCase() ?? candidate.id)) {
+  if (candidate.requiresUpstreamOptIn && !verifiedUpstreams().has(candidate.upstreamProvider?.toLowerCase() ?? candidate.id)) {
     return {
       candidate,
       selectable: false,
-      reason: `The upstream host slug "${candidate.upstreamProvider}" has not been confirmed. Run scripts/background-route-verify.mjs and add it to BACKGROUND_ROUTE_VERIFIED_UPSTREAMS.`,
+      reason: `Pinned to the upstream host "${candidate.upstreamProvider}", which nobody has opted into on this deployment. Add it to BACKGROUND_ROUTE_VERIFIED_UPSTREAMS; scripts/background-route-verify.mjs re-checks the tag against OpenRouter's live endpoint list first.`,
     };
   }
   return { candidate, selectable: true, reason: "" };

@@ -35,10 +35,11 @@ import type { Memory, Message } from "@/lib/types";
  *   MEMORY_EVAL=1 OPENROUTER_API_KEY=… ENABLE_OPENROUTER=true \
  *     npx vitest run tests/eval/memory-models.test.ts
  *
- * An unverified host pin (see BACKGROUND_ROUTE_VERIFIED_UPSTREAMS) is REPORTED
- * AND SKIPPED rather than attempted: `provider.only` with a wrong slug fails
- * every request, and a column of failures next to a column of results reads
- * like a quality finding when it is a spelling one.
+ * A host pin nobody has opted into (see BACKGROUND_ROUTE_VERIFIED_UPSTREAMS) is
+ * REPORTED AND SKIPPED rather than attempted. Both pinned tags are verified —
+ * `open-inference/fp8` and `relace/fp4` — so the gate is now consent rather than
+ * spelling; either way a column of failures beside a column of results reads
+ * like a quality finding when it is a configuration one.
  */
 
 const enabled = process.env.MEMORY_EVAL === "1" && Boolean(process.env.OPENROUTER_API_KEY);
@@ -330,26 +331,38 @@ describe("the memory-model decision, when nobody has run the comparison", () => 
     expect(ids).not.toContain("off");
   });
 
-  it("refuses a host pin whose slug nobody has verified", () => {
+  it("refuses a host pin nobody has opted into, and unlocks it by its exact tag", () => {
     vi.stubEnv("ENABLE_OPENROUTER", "true");
     vi.stubEnv("OPENROUTER_API_KEY", "or-test-secret");
     vi.stubEnv("BACKGROUND_ROUTE_VERIFIED_UPSTREAMS", "");
     /*
-     * A pinned host is `provider.only` with fallbacks off, so a wrong slug is
-     * not a slower route — it is a background job that fails on every run,
-     * silently, because background jobs never reach a reader to complain. The
-     * catalogue carries the plausible lowercase form and the selector refuses
-     * it until an operator has confirmed it against the live endpoint list.
+     * A pinned host is `provider.only` with fallbacks off, aimed at a third
+     * party's catalogue and carrying readers' transcripts. The tags are now
+     * verified — `open-inference/fp8` and `relace/fp4` — and the gate is
+     * therefore no longer about spelling: it asks an operator to say they are
+     * willing to send stories through that host.
      */
     const openinference = availabilityForTask("memory_consolidation").find((entry) => entry.candidate.id === "deepseek_0731_openinference");
     expect(openinference?.selectable).toBe(false);
+    expect(openinference?.reason).toContain("BACKGROUND_ROUTE_VERIFIED_UPSTREAMS");
     expect(openinference?.reason).toContain("background-route-verify");
 
-    vi.stubEnv("BACKGROUND_ROUTE_VERIFIED_UPSTREAMS", "openinference");
+    // The suffix is part of the route. Opting into the bare host name is not
+    // opting into a precision nobody looked at.
+    vi.stubEnv("BACKGROUND_ROUTE_VERIFIED_UPSTREAMS", "open-inference");
+    expect(availabilityForTask("memory_consolidation").find((entry) => entry.candidate.id === "deepseek_0731_openinference")?.selectable).toBe(false);
+
+    vi.stubEnv("BACKGROUND_ROUTE_VERIFIED_UPSTREAMS", "open-inference/fp8");
     const confirmed = availabilityForTask("memory_consolidation").find((entry) => entry.candidate.id === "deepseek_0731_openinference");
     expect(confirmed?.selectable).toBe(true);
-    // Confirming one host says nothing about the other.
+    // Opting into one host says nothing about the other.
     expect(availabilityForTask("memory_consolidation").find((entry) => entry.candidate.id === "deepseek_0731_relace")?.selectable).toBe(false);
+
+    // The Railway line, exactly as it will be set.
+    vi.stubEnv("BACKGROUND_ROUTE_VERIFIED_UPSTREAMS", "open-inference/fp8,relace/fp4");
+    for (const id of ["deepseek_0731_openinference", "deepseek_0731_relace"]) {
+      expect(availabilityForTask("memory_consolidation").find((entry) => entry.candidate.id === id)?.selectable, id).toBe(true);
+    }
     vi.unstubAllEnvs();
   });
 

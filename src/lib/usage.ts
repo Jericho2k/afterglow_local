@@ -57,8 +57,14 @@ export const pricingAsOf = "2026-08-31";
  * Bumped whenever a rate in this file changes. Stored on every new event so a
  * re-priced analysis can tell which table produced a given row, without
  * touching the row.
+ *
+ * 5 — added the two host-pinned DeepSeek 0731 routes at their verified endpoint
+ * prices. `pricingAsOf` is deliberately NOT moved with it: those two rates were
+ * read on 2026-09-02, and every other rate in this file was last checked on the
+ * date below. Re-dating the whole table because two entries were added would
+ * claim a re-check that did not happen.
  */
-export const pricingVersion = 4;
+export const pricingVersion = 5;
 
 /** How a stored cost figure was arrived at. */
 export type CostBasis =
@@ -164,6 +170,23 @@ export const modelPricing: Record<string, TariffRates> = {
    */
   // The 0731 background candidate, at the dearest rate its ceiling admits.
   "deepseek-v4-flash-0731": { cacheHit: 0.02, cacheMiss: 0.10, output: 0.40 },
+  /*
+   * THE TWO HOST-PINNED 0731 ROUTES, AT THE PRICES THEIR HOSTS ACTUALLY LIST.
+   *
+   * These are not a ceiling and not a guess: each of these routes is
+   * `provider.only` against exactly one endpoint, so there is precisely one
+   * price it can be served at, and it was read off OpenRouter's endpoint list
+   * alongside the routing tags themselves.
+   *
+   * Recorded because the alternative is worse than an approximation. Without an
+   * entry a generation whose response arrived without `usage.cost` is stored as
+   * `unpriced` and counted as costing NOTHING — and the whole point of these two
+   * routes is a cost comparison, so a candidate that silently reads as free
+   * would win it. Provider-reported cost still overrides this every time it is
+   * present; see `recordUsageEvent`.
+   */
+  "deepseek-v4-flash-0731-openinference": { cacheHit: 0.013, cacheMiss: 0.05, output: 0.16 },
+  "deepseek-v4-flash-0731-relace": { cacheHit: 0.016, cacheMiss: 0.065, output: 0.18 },
   "ling-3.0-flash-free": { cacheHit: 0, cacheMiss: 0, output: 0 },
   "minimax-m2.5-free": { cacheHit: 0, cacheMiss: 0, output: 0 },
 };

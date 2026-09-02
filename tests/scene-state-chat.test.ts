@@ -106,6 +106,18 @@ describe("scene state in the reply pipeline", () => {
     expect(prompt).toContain("Story day: 12");
     expect(prompt).toContain("[Day 11 · afternoon · Uki's mother's house — couch]");
     expect(prompt).toContain("PAST EVENTS");
+    /*
+     * The persistence rule, end to end through the real reply pipeline.
+     *
+     * It lives outside the ledger's factual rendering now — the diagnostic must
+     * not display an instruction as stored state — so this is the assertion
+     * that it did not go missing on the way to the model. Without it a writer
+     * reads a roster it has not seen mentioned in twenty replies and quietly
+     * writes those characters out, which is the failure the whole Present line
+     * exists to prevent.
+     */
+    expect(prompt).toContain("Everyone listed under Present is still here. Do not write them out of the scene unless the story moves them.");
+    expect(prompt.indexOf("Present:")).toBeLessThan(prompt.indexOf("Everyone listed under Present is still here"));
   });
 
   /*
