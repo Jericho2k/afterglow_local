@@ -106,11 +106,23 @@ describe("Ling 3.0 Flash — structured output it does not implement", () => {
     expect(JSON.parse(result.content)).toMatchObject({ location: { place: "the flat" } });
   });
 
-  it("sends no reasoning key at all, because the endpoint does not take one", () => {
-    // Ling declares no reasoning support. Sending `reasoning: {enabled:false}`
-    // to an endpoint that has never heard of the parameter is a 400 with a
-    // background job attached to it, so silence is the correct answer.
-    expect(backgroundReasoningFor("ling-3.0-flash")).toBeUndefined();
+  it("explicitly disables reasoning for background extraction", async () => {
+    enableOpenRouter();
+    const bodies = captureBodies();
+    await completionWithUsage(
+      { providerId: "openrouter", modelId: "ling-3.0-flash" },
+      consolidationRequest,
+      { ...backgroundOptions("ling-3.0-flash"), maxTokens: 400 },
+    );
+
+    // Production showed Ling consuming the entire 400-token Scene Ledger
+    // envelope as hidden reasoning and returning content:null. Ling is a hybrid
+    // reasoning model, so background extraction must actively decline thinking.
+    expect(modelCapabilities("openrouter", "ling-3.0-flash").thinking).toBe(true);
+    expect(backgroundReasoningFor("ling-3.0-flash")).toBe("off");
+    expect(bodies[0].reasoning).toEqual({ enabled: false });
+    expect(bodies[0]).not.toHaveProperty("response_format");
+    expect(bodies[0].max_tokens).toBe(400);
   });
 });
 
