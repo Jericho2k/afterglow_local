@@ -92,8 +92,10 @@ export async function GET(request: Request) {
         description: entry.candidate.description,
         providerId: entry.candidate.selection?.providerId ?? null,
         modelId: entry.candidate.selection?.modelId ?? null,
+        /** The exact OpenRouter routing tag this candidate pins, suffix included. */
         upstreamProvider: entry.candidate.upstreamProvider ?? null,
-        upstreamVerified: entry.candidate.upstreamVerified,
+        /** True when an operator must name that host before this can be chosen. */
+        requiresUpstreamOptIn: entry.candidate.requiresUpstreamOptIn,
         selectable: entry.selectable,
         reason: entry.reason,
       })),

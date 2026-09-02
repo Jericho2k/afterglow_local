@@ -72,35 +72,78 @@ indistinguishable from two weeks of a stale environment variable.
 |---|---|---|
 | `direct_deepseek` | `deepseek:deepseek-v4-flash` | yes — the incumbent and the control |
 | `deepseek_0731` | `openrouter:deepseek-v4-flash-0731` | yes — host chosen by the usual policy |
-| `deepseek_0731_openinference` | `openrouter:deepseek-v4-flash-0731-openinference` (`provider.only: openinference`) | **no — host slug unverified** |
-| `deepseek_0731_relace` | `openrouter:deepseek-v4-flash-0731-relace` (`provider.only: relace`) | **no — host slug unverified** |
+| `deepseek_0731_openinference` | `openrouter:deepseek-v4-flash-0731-openinference` (`provider.only: open-inference/fp8`) | **gated — needs operator opt-in** |
+| `deepseek_0731_relace` | `openrouter:deepseek-v4-flash-0731-relace` (`provider.only: relace/fp4`) | **gated — needs operator opt-in** |
 | `mimo_v25` | `openrouter:mimo-v2.5` | yes |
 | `ling_3_flash` | `openrouter:ling-3.0-flash` | yes |
 | `off` | — | Scene Ledger only |
 
-### Why two of them are refused
+### The verified tags, and why the guesses were wrong
 
-The brief named "OpenInference" and "Relace" as upstream hosts. Pinning a host
-means `provider.only` with fallbacks off, so a wrong slug is not a slower route
-— it is a background job that fails on **every** run, silently, because
-background jobs never reach a reader to complain. `openinference` and `relace`
-are the plausible lowercase forms of two host names in a brief, and a plausible
-form is a guess. OpenRouter's endpoint list for a model is only readable with a
-key and this environment has none.
+The first version of these entries carried `openinference` and `relace` — the
+obvious lowercase forms of two host names. Checked against OpenRouter's endpoint
+list for `deepseek/deepseek-v4-flash-0731`, the real routing tags are:
 
-So both are catalogued, listed in the selector, explained, and refused until an
-operator confirms them:
+| tag | fresh | cached | output |
+|---|---|---|---|
+| `open-inference/fp8` | $0.05/M | $0.013/M | $0.16/M |
+| `relace/fp4` | $0.065/M | $0.016/M | $0.18/M |
+
+A hyphen nobody would have added, and a quantisation suffix nobody would have
+known to look for. That is the argument for having refused to enable them on a
+plausible-looking guess: pinning a host is `provider.only` with fallbacks off,
+so a wrong tag is not a slower route — it is a background job that fails on
+**every** run, silently, because background jobs never reach a reader to
+complain.
+
+**The suffix is part of the route, not decoration.** `fp8` and `fp4` name the
+quantisation the host serves this model at, which is precisely the difference
+the per-host A/B exists to measure. Opting into `relace` is not opting into a
+precision nobody looked at, and the selector refuses the bare host name.
+
+### `safeId` silently unpinned both of them
+
+`safeId` rejects `/`, correctly, for the things it guards — catalogue model ids,
+environment keys, anything that has to survive being pasted into a variable.
+Running `open-inference/fp8` through it returned false, which produced **no
+error anywhere**: `dedicatedProviderFor` answered null and
+`approvedProviderPool` answered an empty list, so a model deliberately pinned to
+one host would have been routed by OpenRouter's own default policy instead. A
+hard pin failing *open*, quietly, in exactly the direction the pin exists to
+prevent.
+
+The fix is a second, narrower predicate — `safeProviderTag` — used **only**
+where an upstream routing tag is validated:
+
+- `dedicatedProviderFor` / `approvedProviderPool` (the pins and the pools)
+- `poolOverrideFor` (`PROVIDER_POOL_OVERRIDE`)
+- `pinnedProviderFor` (`PIN_UPSTREAM_PROVIDER`)
+- the `ignore` list built from hosts that already failed this request — a
+  slashed tag has to be excludable or recovery goes straight back to the host
+  that just went quiet.
+
+It accepts up to three `[A-Za-z0-9._-]` segments separated by `/`, each starting
+and ending alphanumeric; it refuses empty segments, leading and trailing
+slashes, `.`/`..`, whitespace, quotes and every other punctuation mark.
+`safeId` is unchanged and still guards `ALLOWED_MODELS`.
+
+### Staying verified
 
 ```
 OPENROUTER_API_KEY=… node scripts/background-route-verify.mjs
-# prints every upstream endpoint for deepseek/deepseek-v4-flash-0731 with its
-# routing slug, prices, cached-read rate and quantisation, then the exact line:
-BACKGROUND_ROUTE_VERIFIED_UPSTREAMS=openinference,relace
 ```
 
-If the script reports a **different** slug, the catalogue entry in
-`src/lib/provider.ts` must be corrected first — the variable confirms a slug, it
-does not define one.
+It no longer hunts for a plausible-looking host: it asks whether those two exact
+strings are still served, prints their live prices and quantisation, and prints
+the environment line. A tag that has been renamed upstream is reported as
+related-but-different and deliberately **not** printed into the line — the
+catalogue entry in `src/lib/provider.ts` has to be corrected first, or the pin
+points at a tag the code does not carry.
+
+The gate stays even though the tags are correct, because what it asks for is
+consent rather than spelling: naming a host in
+`BACKGROUND_ROUTE_VERIFIED_UPSTREAMS` is an operator saying they are willing to
+send readers' transcripts through it.
 
 ## 4 — Memory prompt layout, before and after
 
@@ -208,6 +251,26 @@ one for thirty messages, the other two used to evaporate.
 A day advance clears the roster (yesterday's room is not evidence about this
 morning). A relocation keeps the people and clears the positions (walking to the
 kitchen together leaves nobody behind, and "on the sofa" is not true there).
+
+### Two renderings: the facts, and the writer's rule
+
+The ledger has two audiences and they need different things.
+
+- `renderSceneLedger(fields)` — **state only.** Day, date, time, place, who is
+  here and roughly where. This is what `GET /api/scene-state` returns as
+  `rendered` and what the operator panel displays.
+- `scenePersistenceRule` — *"Everyone listed under Present is still here. Do not
+  write them out of the scene unless the story moves them."* An instruction to a
+  writer, exported separately.
+- `renderCurrentScene(fields)` — the facts **then** the rule. What
+  `buildWriterPrompt` sends, what the stored `token_count` measures, and what
+  the API returns as `writerBlock` for comparing a prompt against the state.
+
+The rule was previously inside the single rendering function, so the
+administrator diagnostic displayed an instruction to a model as though it were
+something the ledger believed. The fix is structural rather than a filter: the
+factual function cannot reach the rule, so the leak cannot return by somebody
+forgetting to strip a line.
 
 ### Storage
 
@@ -365,7 +428,7 @@ no back-fill, no data loss:
 
 | variable | effect |
 |---|---|
-| `BACKGROUND_ROUTE_VERIFIED_UPSTREAMS` | comma-separated upstream host slugs an operator has confirmed. Without it the two pinned 0731 candidates are listed and refused. |
+| `BACKGROUND_ROUTE_VERIFIED_UPSTREAMS` | comma-separated upstream routing tags, suffix included, that an operator has opted this deployment into. Without it the two pinned 0731 candidates are listed, explained and refused. Set to `open-inference/fp8,relace/fp4` to enable both. |
 | `MEMORY_CONSOLIDATION_MODEL_ROUTE` etc. | unchanged; now the fallback beneath the admin setting rather than the control. |
 
 Nothing is required to deploy. With no settings row, no override and no

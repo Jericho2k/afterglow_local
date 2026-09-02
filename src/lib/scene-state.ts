@@ -377,13 +377,24 @@ export function timeLabel(time: SceneTime) {
 }
 
 /**
- * The CURRENT SCENE block.
+ * THE FACTS, AND NOTHING THAT IS NOT A FACT.
  *
- * Written to be read as the present tense and nothing else: unknown fields are
- * stated as unknown rather than omitted, because "location: unknown" tells the
- * writer not to borrow one from a memory, while silence invites it to.
+ * The ledger has two audiences and they need different things, which is the
+ * distinction this function and the next one exist to hold.
+ *
+ * A HUMAN READING THE DIAGNOSTIC wants to know what the ledger currently
+ * believes: day, date, time, place, who is here and roughly where. That is
+ * state. An instruction about how to write is not state, and putting one in
+ * front of somebody inspecting stored data is at best noise and at worst
+ * misleading — it reads as though the ledger holds a rule, when the rule is
+ * something the prompt builder adds on the way out.
+ *
+ * Unknown fields are stated as unknown rather than omitted, in both renderings:
+ * "Location: unknown" tells a writer not to borrow one from a memory, and tells
+ * an operator that nothing has been established rather than that something was
+ * dropped.
  */
-export function renderCurrentScene(fields: SceneStateFields) {
+export function renderSceneLedger(fields: SceneStateFields) {
   if (sceneIsEmpty(fields)) return "";
   const present = fields.present.length
     ? fields.present.map((person) => (person.position ? `${person.name} (${person.position})` : person.name)).join(", ")
@@ -395,12 +406,36 @@ export function renderCurrentScene(fields: SceneStateFields) {
     `Time: ${timeLabel(fields.time) || "unknown"}`,
     `Location: ${locationLabel(fields.location) || "unknown"}`,
     `Present: ${present}`,
-    // Said explicitly, because the failure it prevents is a writer reasoning
-    // from a short recent window exactly as the extractor must not: everybody
-    // on this list is still in the scene, including the ones nobody has
-    // addressed for a while.
-    "Everyone listed under Present is still here. Do not write them out of the scene unless the story moves them.",
   ].join("\n");
+}
+
+/**
+ * The persistence rule, which belongs to the WRITER and not to the ledger.
+ *
+ * Said explicitly because the failure it prevents is a writer reasoning from a
+ * short recent window exactly as the extractor must not: everybody on the
+ * Present line is still in the scene, including the ones nobody has addressed
+ * for a while. Without it a model reads a roster it has not seen mentioned in
+ * twenty replies and quietly writes those characters out.
+ *
+ * It is a separate export rather than a string inside `renderCurrentScene`
+ * because that is what makes it impossible to leak into a diagnostic by
+ * accident: the UI renders `renderSceneLedger`, which cannot reach this, rather
+ * than remembering to strip a line.
+ */
+export const scenePersistenceRule =
+  "Everyone listed under Present is still here. Do not write them out of the scene unless the story moves them.";
+
+/**
+ * The CURRENT SCENE block as the WRITER receives it: the facts, then the rule.
+ *
+ * This is what `buildWriterPrompt` uses and what the ledger's stored token
+ * count is measured against, because the token count exists to say what the
+ * reply is paying for.
+ */
+export function renderCurrentScene(fields: SceneStateFields) {
+  const ledger = renderSceneLedger(fields);
+  return ledger ? `${ledger}\n${scenePersistenceRule}` : "";
 }
 
 /** A memory's historical tag: `[Day 4 · late evening · university courtyard]`. */

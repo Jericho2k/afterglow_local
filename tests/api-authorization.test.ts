@@ -332,6 +332,36 @@ describe("cross-account access", () => {
     expect((await sceneState.POST(post("http://test/api/scene-state",{conversationId:aliceConversation}))).status).toBe(409);
   });
 
+  it("hands the diagnostic the ledger's facts and keeps the writer's rule out of it", async () => {
+    /*
+     * The panel answers "what does the ledger currently believe". An
+     * instruction to a model is not something the ledger believes, and showing
+     * one as though it were stored state is the leak this asserts is closed.
+     *
+     * `writerBlock` keeps the original purpose of the field it replaced —
+     * exactly what the writer receives, so a prompt can be compared with the
+     * state rather than approximated from it.
+     */
+    account = { id: alice, email: null };
+    await query(
+      `INSERT INTO conversation_scene_states
+         (id,conversation_id,user_id,through_message_count,story_day,time_of_day,time_kind,time_text,
+          location_place,location_sub,location_confidence,present_characters,present_people)
+       VALUES ($1,$2,$3,1,5,'evening','period','evening','Alice''s flat','living room','stated',$4,$5::jsonb)`,
+      [crypto.randomUUID(), aliceConversation, alice, ["Alice", "Uki"],
+        JSON.stringify([{ name: "Alice", position: "on the sofa" }, { name: "Uki", position: "near the window" }])],
+    );
+    const body = await (await sceneState.GET(new Request(`http://test/api/scene-state?conversationId=${aliceConversation}`))).json();
+
+    expect(body.rendered).toContain("Location: Alice's flat — living room");
+    expect(body.rendered).toContain("Present: Alice (on the sofa), Uki (near the window)");
+    expect(body.rendered).not.toContain("still here");
+    expect(body.rendered).not.toContain("Do not write them out of the scene");
+
+    expect(body.writerBlock).toContain("Do not write them out of the scene");
+    expect(body.writerBlock.startsWith(body.rendered)).toBe(true);
+  });
+
   it("refuses to hang a memory off another account's conversation", async () => {
     account = { id: bob, email: null };
     const response = await memories.POST(post("http://test/api/memories", { characterId: alicePublic, conversationId: aliceConversation, content: "injected" }));

@@ -1523,7 +1523,16 @@ function AgeGate({ onAccept }: { onAccept: () => void }) {
   return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">18+</div><span className="eyebrow">Adults only</span><h1>Before you enter.</h1><p>This private instance can host mature fictional roleplay. You must be at least 18 and of legal age where you live.</p><button className="primary" onClick={onAccept}>I am an adult — continue</button><small>Afterglow prohibits sexual content involving minors, non-consensual exploitation, or real people.</small></div></main>;
 }
 
-type SceneStateDiagnostics = { enabled: boolean; current: SceneState | null; rendered: string; history: Array<{ state: SceneState; usable: boolean }> };
+/**
+ * `rendered` is the ledger's FACTS — day, date, time, place, who is here.
+ *
+ * `writerBlock` is the same thing plus the persistence rule the prompt builder
+ * appends, and is deliberately not displayed: the panel answers "what does the
+ * ledger currently believe", and an instruction to a model is not something the
+ * ledger believes. It is carried so that a diagnostic can compare the prompt
+ * with the state rather than approximating one from the other.
+ */
+type SceneStateDiagnostics = { enabled: boolean; current: SceneState | null; rendered: string; writerBlock: string; history: Array<{ state: SceneState; usable: boolean }> };
 
 /** Administrator-only. Scene State is internal metadata and never shipped to a reader. */
 function SceneStatePanel({ conversation }: { conversation: Conversation | null }) {
@@ -1549,7 +1558,7 @@ type BackgroundRoutingTask = {
   globalCandidateId: string | null;
   conversationCandidateId?: string | null;
   effective: { candidateId: string | null; source: string; providerId: string | null; modelId: string | null };
-  candidates: Array<{ id: string; label: string; description: string; selectable: boolean; reason: string; upstreamVerified: boolean }>;
+  candidates: Array<{ id: string; label: string; description: string; selectable: boolean; reason: string; upstreamProvider: string | null; requiresUpstreamOptIn: boolean }>;
 };
 
 const backgroundTaskLabel: Record<BackgroundRoutingTask["task"], string> = {

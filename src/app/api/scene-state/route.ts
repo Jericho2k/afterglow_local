@@ -3,7 +3,7 @@ import { asUser } from "@/lib/db";
 import { sceneStateEnabled } from "@/lib/memory-flags";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { currentSceneState, maybeUpdateSceneState, sceneStateHistory } from "@/lib/scene-state-store";
-import { renderCurrentScene, sceneFieldsOf } from "@/lib/scene-state";
+import { renderCurrentScene, renderSceneLedger, sceneFieldsOf } from "@/lib/scene-state";
 import { adminRequired, currentAccount, unauthorized } from "@/lib/session";
 
 /**
@@ -27,9 +27,22 @@ export async function GET(request: Request) {
     return {
       enabled: sceneStateEnabled(account.id),
       current,
-      // Exactly what the writer receives, so a diagnostic can be compared with
-      // the prompt rather than approximating it.
-      rendered: current ? renderCurrentScene(sceneFieldsOf(current)) : "",
+      /*
+       * TWO RENDERINGS, BECAUSE THEY ANSWER TWO QUESTIONS.
+       *
+       * `rendered` is the ledger's FACTS and is what the panel shows. It used
+       * to be the writer's block, which meant the diagnostic displayed
+       * "Everyone listed under Present is still here. Do not write them out of
+       * the scene…" as though the ledger held that — an instruction to a model
+       * presented to a human as stored state.
+       *
+       * `writerBlock` keeps the original purpose: exactly what the writer
+       * receives, so the prompt can be compared with the diagnostic rather than
+       * approximated from it. Nothing renders it by default; it is there for
+       * the question "is the prompt getting what I think it is".
+       */
+      rendered: current ? renderSceneLedger(sceneFieldsOf(current)) : "",
+      writerBlock: current ? renderCurrentScene(sceneFieldsOf(current)) : "",
       history: await sceneStateHistory(client, account.id, conversationId),
     };
   });
