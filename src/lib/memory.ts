@@ -568,6 +568,15 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
       task: "memory_consolidation", model: attemptedModel,
       candidateId: usedFallback ? "direct_deepseek" : route.candidateId,
       usedFallback,
+      /*
+       * What the control rescued, recorded even though this attempt succeeded.
+       *
+       * Otherwise a run of `deepseek_0731_relace` producing malformed JSON and
+       * being quietly saved reads, in the drawer, as a perfectly healthy job on
+       * DeepSeek — and the candidate under evaluation is never once named as
+       * the thing that keeps failing.
+       */
+      ...(usedFallback ? { rescuedFrom: { model: route.selection.modelId, candidateId: route.candidateId, reason: failureReason } } : {}),
     });
     const data = attempt.data;
     if (!data.summary) return false;

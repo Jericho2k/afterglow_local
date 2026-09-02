@@ -74,25 +74,55 @@ function healthFromRow(row: Record<string, unknown>): BackgroundJobHealth {
 export async function recordBackgroundSuccess(
   userId: string,
   conversationId: string,
-  input: { task: BackgroundTask; model: string; candidateId: string | null; usedFallback?: boolean },
+  input: {
+    task: BackgroundTask; model: string; candidateId: string | null; usedFallback?: boolean;
+    /**
+     * The attempt the control rescued, when it rescued one.
+     *
+     * Recorded ON THE SUCCESS, and this is the difference between a usable
+     * report and a useless one. "Memory is being written by DeepSeek (fallback)"
+     * says the job is alive; it does not say WHICH candidate keeps dying or of
+     * what — and that is the entire question an A/B period is asking. The
+     * production case was `deepseek_0731_relace` failing `malformed_output` and
+     * the control succeeding: without this, the drawer showed a healthy job on
+     * DeepSeek and nothing about Relace at all.
+     */
+    rescuedFrom?: { model: string; candidateId: string | null; reason: string };
+  },
 ) {
   await userQuery(
     userId,
     `INSERT INTO background_job_health
        (conversation_id,user_id,task,last_success_at,last_success_model,last_success_candidate,
-        last_success_used_fallback,consecutive_failures,updated_at)
-     VALUES ($1,$2,$3,now(),$4,$5,$6,0,now())
+        last_success_used_fallback,last_failure_at,last_failure_model,last_failure_candidate,
+        last_failure_reason,consecutive_failures,updated_at)
+     VALUES ($1,$2,$3,now(),$4,$5,$6,
+             CASE WHEN $7::text IS NULL THEN NULL ELSE now() END,
+             COALESCE($8::text,''),$9,COALESCE($7::text,''),0,now())
      ON CONFLICT (conversation_id,task) DO UPDATE SET
        last_success_at=now(),
        last_success_model=EXCLUDED.last_success_model,
        last_success_candidate=EXCLUDED.last_success_candidate,
        last_success_used_fallback=EXCLUDED.last_success_used_fallback,
-       -- A success is what makes a streak a streak. Everything about the last
-       -- failure is kept: an operator needs to see what has been going wrong
-       -- even on a job that recovered.
+       /*
+        * A rescued attempt overwrites the last failure; an unrescued success
+        * leaves whatever was there. Both are deliberate. An operator needs to
+        * see what has been going wrong even on a job that recovered, and the
+        * MOST RECENT thing that went wrong is the rescue that just happened.
+        */
+       last_failure_at=CASE WHEN EXCLUDED.last_failure_reason='' THEN background_job_health.last_failure_at ELSE now() END,
+       last_failure_model=CASE WHEN EXCLUDED.last_failure_reason='' THEN background_job_health.last_failure_model ELSE EXCLUDED.last_failure_model END,
+       last_failure_candidate=CASE WHEN EXCLUDED.last_failure_reason='' THEN background_job_health.last_failure_candidate ELSE EXCLUDED.last_failure_candidate END,
+       last_failure_reason=CASE WHEN EXCLUDED.last_failure_reason='' THEN background_job_health.last_failure_reason ELSE EXCLUDED.last_failure_reason END,
+       -- A success is what makes a streak a streak.
        consecutive_failures=0,
        updated_at=now()`,
-    [conversationId, userId, input.task, input.model, input.candidateId, input.usedFallback === true],
+    [
+      conversationId, userId, input.task, input.model, input.candidateId, input.usedFallback === true,
+      input.rescuedFrom ? input.rescuedFrom.reason.slice(0, 60) : null,
+      input.rescuedFrom?.model ?? null,
+      input.rescuedFrom?.candidateId ?? null,
+    ],
   ).catch((error) => console.error("[background-health] could not record a success", error));
 }
 

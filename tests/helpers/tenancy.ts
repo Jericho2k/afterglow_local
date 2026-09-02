@@ -62,6 +62,23 @@ export const migrationFiles = [
   "0029_story_distance_aging.sql",
   "0030_provenance_parent_ownership.sql",
   "0031_free_tier_and_curated_routes.sql",
+  /*
+   * ADDED AFTER A PRODUCTION FAILURE THAT THIS LIST'S ABSENCE ALLOWED.
+   *
+   * `background_job_health` (0033) shipped with row level security enabled and
+   * — on the databases that mattered — no policy, so every write to it was
+   * refused. The suite below could have caught it on the day it was written,
+   * and did not, for one reason: the migrations that created the table were
+   * never in this list, so no test ever applied them and no test ever asked
+   * whether an owner could write their own row.
+   *
+   * The list is named rather than globbed on purpose (see above), and this is
+   * the failure mode of that choice: a new file is invisible until somebody
+   * adds it. Adding one is now part of writing one.
+   */
+  "0032_background_routing_and_scene_ledger.sql",
+  "0033_background_job_health.sql",
+  "0034_background_job_health_policy_repair.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {

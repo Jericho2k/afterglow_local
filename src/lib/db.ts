@@ -598,6 +598,41 @@ async function schema() {
   } catch (error) {
     if(process.env.NODE_ENV!=="test")throw error;
   }
+  /*
+   * A USER-SCOPED TABLE THIS FUNCTION CREATES MUST NOT ARRIVE UNPROTECTED.
+   *
+   * `background_job_health` shipped and every write to it was refused in
+   * production with `new row violates row-level security policy`. The cause was
+   * not the policy — reproduced against a real PostgreSQL, the policy in
+   * migration 0033 works exactly as written. The cause was that the policy was
+   * NOT THERE.
+   *
+   * This function creates the table on every boot, because Afterglow has to be
+   * able to stand up a plain PostgreSQL. `supabase/migrations` is applied BY
+   * HAND. So a deploy makes the table first, and on a Supabase project — where a
+   * new public table inherits grants to `authenticated` and is protected as an
+   * exposed table — the result is a table that is guarded and has nothing that
+   * permits anybody: every write refused, the server's own included.
+   *
+   * So the protection is created WITH the table rather than waiting for an
+   * operator. `supabase/migrations/0034` is still the authority and still has to
+   * be applied; this closes the window between a deploy and that, and makes the
+   * dangerous half-state unreachable rather than merely documented.
+   *
+   * Guarded exactly like `afterglow_runtime_migrations` above: the in-memory
+   * database the tests run against implements neither roles nor policies, so it
+   * throws here and is allowed to.
+   */
+  try {
+    await pool().query("ALTER TABLE background_job_health ENABLE ROW LEVEL SECURITY");
+    await pool().query("ALTER TABLE background_job_health FORCE ROW LEVEL SECURITY");
+    await pool().query("DROP POLICY IF EXISTS background_job_health_all_own ON background_job_health");
+    await pool().query("CREATE POLICY background_job_health_all_own ON background_job_health FOR ALL TO authenticated USING (user_id=auth.uid()) WITH CHECK (user_id=auth.uid())");
+    await pool().query("GRANT SELECT,INSERT,UPDATE,DELETE ON background_job_health TO authenticated");
+    await pool().query("REVOKE ALL ON background_job_health FROM anon");
+  } catch (error) {
+    if(process.env.NODE_ENV!=="test")console.warn("[schema] background_job_health policy could not be asserted; apply supabase/migrations/0034",error instanceof Error?error.message:error);
+  }
   const canonicalBackfill=await pool().query("INSERT INTO afterglow_runtime_migrations(key) VALUES ('0008_canonical_generated_user_messages') ON CONFLICT DO NOTHING RETURNING key");
   if(canonicalBackfill.rowCount)await pool().query("UPDATE messages SET generation_started_at=created_at WHERE role='user' AND generation_started_at IS NULL");
   /*

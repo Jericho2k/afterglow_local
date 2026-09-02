@@ -8,8 +8,15 @@ that the conversation had **0 memories**. Background work is deliberately not
 coupled to the reply, so the chat request was correct and cheerful throughout.
 Every failure had been written to a console nobody was watching.
 
-That last sentence is the actual defect. The two request bugs below are
-ordinary; a product that cannot tell you its memory has stopped working is not.
+That last sentence is the actual defect. The request bugs below are ordinary —
+two wrong capability declarations and a missing parameter; a product that cannot
+tell you its memory has stopped working is not.
+
+**Second pass.** Ling kept failing after the first fix, and the diagnostics this
+document added said why: it is a reasoning model that was declared as not one.
+A second defect surfaced at the same time — every write to the new health table
+was refused by row level security, so the visibility built to answer all of this
+was itself invisible. Both are covered below (causes C and §4c).
 
 ---
 
@@ -30,10 +37,29 @@ Ledger extraction on Ling sent the parameter. The observed result was a run of
 ### B. `429 engine_overloaded` from DeepInfra — NOT A BUG
 
 One Ling failure was ordinary upstream capacity. Nothing to fix in the request.
-It is evidence for the *third* cause: a routine 429 on a background job was
-equally invisible.
+It is evidence for cause E: a routine 429 on a background job was equally
+invisible.
 
-### C. DeepSeek V4 Flash 0731 was never told not to reason — CONFIRMED AS A DEFECT, HYPOTHESISED AS THE CAUSE
+### C. Ling is a reasoning model, and the catalogue said it was not — CONFIRMED IN PRODUCTION
+
+The `response_format` fix in §A was correct and incomplete. Ling kept failing,
+and the diagnostics added in §4 said exactly why:
+
+```
+model inclusionai/ling-3.0-flash · upstream Novita · max_tokens 400
+finish_reason "length" · content null
+completion_tokens ~400 · reasoning_tokens ~400+
+hasReasoning true · hasReasoningDetails true · requestedReasoningOff FALSE
+```
+
+Ling 3.0 Flash is a **hybrid reasoning model with thinking enabled by default**.
+The catalogue declared `thinking: false`, which every caller read as *"this
+endpoint does not accept a `reasoning` parameter"* — so none was ever sent. And
+never sending one is not declining: it takes the endpoint's own default.
+
+`requestedReasoningOff: false` is the tell, and it is why that field exists.
+
+### D. DeepSeek V4 Flash 0731 was never told not to reason — CONFIRMED AS A DEFECT, HYPOTHESISED AS THE CAUSE
 
 Two things are certain from the code:
 
@@ -56,7 +82,7 @@ correct on its own terms regardless of which way that lands: a background
 extraction has no use for hidden thinking, and the two providers should not
 disagree about it.
 
-### D. The failures were invisible — CONFIRMED, AND THE REAL DEFECT
+### E. The failures were invisible — CONFIRMED, AND THE REAL DEFECT
 
 `usage_events` cannot answer "is memory being written". A row exists when a
 model ran and reported tokens; a run of empty responses, a run of 429s and a
@@ -79,9 +105,9 @@ of work is indistinguishable from absence of evidence.
   }
 ```
 
-No `reasoning` key before or after: Ling declares `thinking: false`, and sending
-a parameter an endpoint has never heard of is a 400 with a background job
-attached to it.
+That was the first pass, and it was not enough on its own: the same route kept
+failing for the *second* reason in cause C, and a `reasoning: { enabled: false }`
+now travels with it. **See §4b for the complete Ling request.**
 
 **What did not change:** the prompt still asks for JSON in words, the reply is
 still parsed and bounded by `normalizeSceneUpdate`, and the Scene Ledger's
@@ -171,6 +197,122 @@ used to pass the type check and fail at `JSON.parse` two layers away, reported
 as a different failure than the one that happened. Whitespace now counts as
 empty.
 
+## 4b — Ling: the wire request, before and after
+
+```diff
+  {
+    "model": "inclusionai/ling-3.0-flash",
+    "messages": [ …"Output JSON only"… ],
+    "max_tokens": 400,
++   "reasoning": { "enabled": false },
+    "usage": { "include": true },
+    "session_id": "…"
+  }
+```
+
+No `response_format` before or after — that half was already right.
+
+**The envelope is deliberately NOT raised.** A ledger update is a handful of
+JSON fields; paying hundreds of reasoning tokens to produce them is the cost
+this whole layer exists to avoid, and a bigger `max_tokens` would have bought
+the symptom's disappearance rather than the fix. Asserted:
+`expect(bodies[0].max_tokens).toBe(400)`.
+
+### The mechanism, and how to check it against a live host
+
+`reasoning: { enabled: false }` is OpenRouter's normalised form, already used
+everywhere else in this codebase, rather than any host's native spelling.
+
+*OpenRouter accepts the parameter* and *the upstream host obeys it* are
+different claims, and Ling is served by several hosts (Novita, DeepInfra). No
+credentials exist in this environment, so the second claim is **not verified
+here**. `scripts/reasoning-off-verify.mjs` settles it for about a hundredth of a
+cent:
+
+```
+OPENROUTER_API_KEY=… node scripts/reasoning-off-verify.mjs --providers novita,deepinfra
+```
+
+It sends one tiny fixed prompt per host twice — once with reasoning off, once
+with no key — and prints the token split. Zero reasoning tokens with content
+present means the host honours it. Reasoning tokens with the parameter accepted
+means the route is unsuitable for tiny structured jobs and should be said so
+rather than papered over. A 400 about reasoning means the endpoint mandates it
+and the model should declare `reasoningMandatory: true`. Nothing it prints can
+contain a prompt or a model's output.
+
+### Writer semantics
+
+Unchanged, and asserted. `defaultReasoningFor` reads `capabilities.
+reasoningDefault`, which Ling still does not declare, so a roleplay turn on Ling
+sends **no `reasoning` key** exactly as before.
+
+Two things the corrected capability does unlock for the writer, both strictly
+better and neither a change of default:
+
+- the "Complex & Strategic" engine, which asks for thinking, can now say so
+  instead of being silently dropped — and silence took the endpoint's default,
+  which was thinking anyway;
+- `canDeclineReasoning` becomes true, so the chat route's empty-reply retry can
+  ask for no reasoning rather than only enlarging the envelope. That is the
+  correct remedy for exactly the failure Ling produces.
+
+**Open, and deliberately not changed here:** if Ling reasons by default, RP
+turns on it are also spending part of their reply envelope on thinking. Setting
+`reasoningDefault: "off"` would stop that, and it is a writer-quality decision
+with its own evidence, not a hotfix.
+
+## 4c — `background_job_health` RLS: reproduced, then repaired
+
+```
+[background-health] could not record a success
+new row violates row-level security policy for table "background_job_health"
+code 42501
+```
+
+**Reproduced against a real PostgreSQL**, with the shipped migrations and the
+exact session `asUser()` opens — `BEGIN; SET LOCAL ROLE authenticated;
+set_config('request.jwt.claims', …)`. Three reachable schema states, three
+different answers:
+
+| state | result |
+|---|---|
+| A · table created, RLS off, no grant | `permission denied for table` |
+| B · table created, RLS **on**, granted, **no policy** | `new row violates row-level security policy` ← **production** |
+| C · migration 0033 applied in full | **INSERT OK** |
+
+So `auth.uid()` was never the problem — inside that transaction it evaluates to
+the account id correctly, and state C proves the 0033 policy works as written.
+Production was in **state B**.
+
+**How a database reaches state B.** `ensureSchema()` creates this table on every
+boot, because Afterglow must be able to stand up a plain PostgreSQL.
+`supabase/migrations` is applied **by hand** (see README). A deploy therefore
+creates the table before anybody runs 0033 — and on a Supabase project, where a
+new public table inherits grants to `authenticated` and is protected as an
+exposed table, that lands exactly on *guarded, granted, and no policy*: every
+write refused, the server's own included.
+
+**Why no test caught it.** pg-mem implements neither roles nor policies, so the
+suites covering this table's *behaviour* could not see its *access*. And the
+real-PostgreSQL suite never applied migrations 0032–0034, because
+`migrationFiles` is a named list and nobody added them. Both are fixed: the
+files are registered, and `tests/background-health-rls.test.ts` runs the
+production statements under the real policies.
+
+**The repair.** `0034_background_job_health_policy_repair.sql` — additive,
+idempotent, safe to apply twice, and it **adds a policy rather than removing a
+guard**. RLS stays enabled, FORCE stays on, no service-role bypass is
+introduced, and background code still uses user-scoped SQL. Applying it to a
+database that already has 0033 is a no-op re-assertion.
+
+**And the structural fix.** `ensureSchema()` now creates the protection *with*
+the table — RLS, FORCE, the policy, the grants, and a REVOKE from `anon` —
+guarded exactly like the `afterglow_runtime_migrations` block beside it, so the
+in-memory test database is allowed to refuse it. The migration remains the
+authority; this closes the window between a deploy and an operator, and makes
+the dangerous half-state unreachable rather than merely documented.
+
 ## 5 — Memory fallback policy
 
 **Long-term memory only, one attempt, and only for failures that are about a
@@ -220,6 +362,16 @@ switch to DeepSeek, and an A/B period would credit the control with the
 challenger's traffic — the one way to make the comparison say the opposite of
 what happened. Both attempts are billed when both produced tokens.
 
+**The health row names the rescued attempt too.** Production showed
+`deepseek_0731_relace` failing `malformed_output` and Direct DeepSeek succeeding
+— correct behaviour, and it read in the drawer as a perfectly healthy job on
+DeepSeek, with the candidate under evaluation never once named as the thing that
+keeps failing. A successful fallback now writes `last_failure_*` alongside
+`last_success_*` and keeps `consecutive_failures` at zero, so one row says both
+"memory is being written" and "by the control, because Relace keeps producing
+malformed JSON". No extra retries were added: it is still one attempt, then the
+control.
+
 ## 6 — Operator visibility
 
 New table `background_job_health`, per (conversation, task): last success
@@ -261,35 +413,52 @@ Asserted, not assumed:
 
 ## 8 — Tests
 
-`tests/background-request-shape.test.ts` (10) — mocks `fetch` and reads the body
+`tests/background-request-shape.test.ts` (13) — mocks `fetch` and reads the body
 actually sent: Ling never receives `response_format`; Ling's prompt-only JSON
-still parses; 0731 does receive it; 0731 sends `reasoning:{enabled:false}`;
-pinned routing/session/usage fields intact; a host refusing reasoning-disabled
-fails once rather than retrying without it; Direct DeepSeek still sends
-`thinking:{type:"disabled"}`; writer reasoning unchanged in all four states.
+still parses; **Ling is marked reasoning-capable and its Scene Ledger request
+sends `reasoning:{enabled:false}` while `max_tokens` stays 400**; 0731 receives
+`response_format` and `reasoning:{enabled:false}`; pinned routing/session/usage
+fields intact; a host refusing reasoning-disabled fails once rather than
+retrying without it; Direct DeepSeek still sends `thinking:{type:"disabled"}`;
+writer reasoning unchanged in all four states **and unchanged for Ling
+specifically**.
 
 `tests/empty-response-diagnostics.test.ts` (8) — host/finish/token capture; the
 `reasoning_budget_exhausted` split; four content states; zero choices;
 whitespace; and two tests that no reasoning text, content or prompt reaches the
 diagnostic or the log.
 
-`tests/memory-fallback.test.ts` (15) — rescue, provenance, both attempts billed,
+`tests/memory-fallback.test.ts` (17) — rescue, provenance, both attempts billed,
 no fallback on success, no control→control, one attempt not a cascade, window
 left unconsolidated when both fail, no fallback on
 auth/billing/bad_request/content_filtered, Scene Ledger never rescued, health
-recording, category-only storage, curation watched-not-rescued, and the three
-warning states.
+recording, category-only storage, curation watched-not-rescued, the three
+warning states, **the Relace `malformed_output` case naming the candidate it
+rescued**, and no invented rescue on an ordinary success.
 
-Plus the operator-visible payload in `tests/api-authorization.test.ts`.
+`tests/background-health-rls.test.ts` (10) — **real PostgreSQL**, real migration
+files, and the exact `asUser()` session. Owner can insert, update in place, and
+read back; another account can do none of those; FORCE stays on and exactly one
+policy exists; `anon` gets nothing. Then the half-created state: it **reproduces
+the production error verbatim**, shows 0034 repairing it without disabling
+anything, and shows 0034 being safe to apply twice.
 
-**1765 passed, 135 skipped** (was 1731). Lint clean, `tsc --noEmit` clean, build
-compiles.
+Plus the operator-visible payload in `tests/api-authorization.test.ts`, and
+migrations 0032–0034 registered in `migrationFiles` so the pre-existing tenancy
+suites apply them too.
+
+**1770 passed, 145 skipped offline** (was 1765); **98 passed** against real
+PostgreSQL. Lint clean, `tsc --noEmit` clean, build compiles.
 
 ## 9 — Deployment
 
 `supabase/migrations/0033_background_job_health.sql` — one new table, RLS
 enabled and forced, owner policy, `authenticated` grants. Additive; nothing
 back-filled; a story with no row simply shows no health line.
+
+`supabase/migrations/0034_background_job_health_policy_repair.sql` — **must be
+applied**, and is the whole of the RLS fix for a database already in state B.
+Additive, idempotent, safe to run twice.
 
 **No environment variable changes.** Nothing to set, nothing to unset.
 

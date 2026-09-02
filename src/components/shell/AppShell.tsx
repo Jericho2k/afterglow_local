@@ -1705,6 +1705,13 @@ function BackgroundHealthLine({ health }: { health: BackgroundJobHealth }) {
     {success
       ? `Last ran ${success} on ${health.lastSuccessModel}${health.lastSuccessUsedFallback ? " (fallback to the control)" : ""}.`
       : "Has never completed for this story."}
+    {/*
+      * The failure is named even when the fallback saved the job, and this is
+      * the line that was missing: a run of Relace producing malformed JSON and
+      * being quietly rescued read here as a perfectly healthy job on DeepSeek,
+      * with the candidate under evaluation never once named as the thing that
+      * keeps failing.
+      */}
     {failure && ` Last failed ${failure} on ${health.lastFailureModel}: ${health.lastFailureReason}.`}
     {health.consecutiveFailures > 0 && ` ${health.consecutiveFailures} failure${health.consecutiveFailures === 1 ? "" : "s"} in a row.`}
   </small>;

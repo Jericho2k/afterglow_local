@@ -292,6 +292,71 @@ describe("background job health", () => {
     expect(row?.lastFailureAt).not.toBeNull();
   });
 
+  it("names the candidate that failed even when the fallback saved the job", async () => {
+    /*
+     * THE PRODUCTION CASE THIS ANSWERS.
+     *
+     *   requested: deepseek_0731_relace
+     *   failure reason: malformed_output
+     *   Direct DeepSeek fallback then succeeded
+     *
+     * The fallback is correct and stays. What was missing is that the drawer
+     * read this as a perfectly healthy job on DeepSeek: the candidate under
+     * evaluation was never once named as the thing that keeps failing, which is
+     * the entire question an A/B period is asking.
+     */
+    await seedStory();
+    await selectExperimentalRoute("deepseek_0731_relace");
+    vi.stubEnv("BACKGROUND_ROUTE_VERIFIED_UPSTREAMS", "relace/fp4");
+    clearBackgroundRouteCache();
+
+    openrouterCompletion.mockResolvedValueOnce({ content: "Here is the summary you asked for!", usage: { prompt_tokens: 1800, completion_tokens: 30, cost: 0.0002 } });
+    deepseekCompletion.mockResolvedValueOnce(consolidationReply("CURRENT STATE: the jetty."));
+    expect(await maybeConsolidate(owner, conversationId, true)).toBe(true);
+
+    const row = (await health()).get("memory_consolidation");
+    // The job is alive, and by what.
+    expect(row).toMatchObject({
+      consecutiveFailures: 0,
+      lastSuccessModel: "deepseek-v4-flash",
+      lastSuccessCandidate: "direct_deepseek",
+      lastSuccessUsedFallback: true,
+    });
+    // And the attempt it rescued is on the same row, named and categorised.
+    expect(row).toMatchObject({
+      lastFailureModel: "deepseek-v4-flash-0731-relace",
+      lastFailureCandidate: "deepseek_0731_relace",
+      lastFailureReason: "malformed_output",
+    });
+    expect(row?.lastFailureAt).not.toBeNull();
+
+    // Both attempts are billed and both say which they were.
+    const rows = await usageRows();
+    expect(rows).toHaveLength(2);
+    expect(rows[0].model).toBe("deepseek-v4-flash-0731-relace");
+    expect(rows[0].routing).toMatchObject({ candidate: "deepseek_0731_relace" });
+    expect(rows[0].routing.fallback).toBeUndefined();
+    expect(rows[0].completionTokens).toBe(30);
+    expect(rows[1].model).toBe("deepseek-v4-flash");
+    expect(rows[1].routing).toMatchObject({
+      candidate: "direct_deepseek", fallback: true,
+      requestedCandidate: "deepseek_0731_relace", failureReason: "malformed_output",
+    });
+    expect(rows[1].completionTokens).toBe(400);
+  });
+
+  it("does not invent a rescue on an ordinary success", async () => {
+    // A success that needed no fallback leaves whatever failure history was
+    // already there, and adds none.
+    await seedStory();
+    await selectExperimentalRoute();
+    openrouterCompletion.mockResolvedValueOnce(consolidationReply("CURRENT STATE: the jetty."));
+    await maybeConsolidate(owner, conversationId, true);
+    const row = (await health()).get("memory_consolidation");
+    expect(row).toMatchObject({ lastSuccessUsedFallback: false, lastFailureReason: "" });
+    expect(row?.lastFailureAt).toBeNull();
+  });
+
   it("never stores anything but a category", async () => {
     // This column is rendered in a browser. The upstream body belongs in
     // `ProviderError.diagnostic` and in the server log alone.

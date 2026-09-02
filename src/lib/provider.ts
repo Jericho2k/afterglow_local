@@ -530,13 +530,42 @@ const knownModels: InternalModelDefinition[] = [
     providerModelId: "inclusionai/ling-3.0-flash",
     label: "Ling 3.0 Flash",
     description: "Very inexpensive writer with a large context window. Good for long, everyday stories.",
-    supportsThinking: false,
+    supportsThinking: true,
     category: "economy",
     free: false,
     capabilities: {
       contextTokens: 262_144,
       maxOutputTokens: 32_768,
-      thinking: false,
+      /*
+       * A HYBRID REASONING MODEL, AND THINKING IS ON BY DEFAULT.
+       *
+       * This said `false`, which was read by everything as "the endpoint does
+       * not take a `reasoning` parameter" — so Afterglow never sent one, and
+       * never sending one is not declining: it takes the endpoint's own
+       * default, which for Ling is to think.
+       *
+       * Production settled it. Every Scene Ledger extraction on this route came
+       * back:
+       *
+       *   upstream Novita · max_tokens 400 · finish_reason "length"
+       *   content null · completion_tokens ~400 · reasoning_tokens ~400+
+       *   hasReasoning true · requestedReasoningOff FALSE
+       *
+       * The model was spending the entire 400-token ledger envelope on hidden
+       * thinking and never reaching the JSON. InclusionAI documents Ling 3.0
+       * Flash as hybrid, thinking enabled by default, disableable per request.
+       *
+       * Declaring it true is what lets `backgroundReasoningFor` answer `"off"`
+       * and the adapter emit `reasoning: { enabled: false }`. It also lets the
+       * chat route's empty-reply retry ask for no reasoning rather than only
+       * raising the envelope — see `canDeclineReasoning`.
+       *
+       * THE ENVELOPE IS DELIBERATELY NOT RAISED. A ledger update is a handful
+       * of JSON fields; paying hundreds of reasoning tokens to produce them is
+       * the cost this whole layer exists to avoid, and a bigger budget would
+       * hide the failure by buying it.
+       */
+      thinking: true,
       /*
        * NO STRUCTURED OUTPUT. OpenRouter documents this model as not supporting
        * `response_format`, and this entry claimed otherwise.
@@ -872,18 +901,19 @@ const knownModels: InternalModelDefinition[] = [
     providerModelId: "inclusionai/ling-3.0-flash:free",
     label: "Ling 3.0 Flash (Free)",
     description: "A free writer with a large context window. Shared capacity, so it is not always available.",
-    supportsThinking: false,
+    supportsThinking: true,
     category: "free",
     free: true,
     notice: "Free shared capacity. Availability depends on the provider.",
     capabilities: {
       contextTokens: 262_144,
       maxOutputTokens: 32_768,
-      thinking: false,
-      // The same underlying model as the paid route above, so the same answer:
-      // no `response_format`. A capability is a property of the model, and
+      // The same underlying model as the paid route above, so the same answers:
+      // hybrid reasoning that has to be declined explicitly, and no
+      // `response_format`. A capability is a property of the model, and
       // splitting the two entries' answers would be a bug waiting for whichever
       // one got used for structured work first.
+      thinking: true,
       jsonMode: false,
       promptCaching: false,
       dataPolicy: { dataCollection: "deny" },

@@ -106,11 +106,90 @@ describe("Ling 3.0 Flash — structured output it does not implement", () => {
     expect(JSON.parse(result.content)).toMatchObject({ location: { place: "the flat" } });
   });
 
-  it("sends no reasoning key at all, because the endpoint does not take one", () => {
-    // Ling declares no reasoning support. Sending `reasoning: {enabled:false}`
-    // to an endpoint that has never heard of the parameter is a 400 with a
-    // background job attached to it, so silence is the correct answer.
-    expect(backgroundReasoningFor("ling-3.0-flash")).toBeUndefined();
+  it("is reasoning-capable, and the catalogue now says so", () => {
+    /*
+     * This declared `thinking: false`, which everything read as "the endpoint
+     * takes no `reasoning` parameter" — so none was ever sent, and never
+     * sending one is not declining: it takes the endpoint's own default, which
+     * for a hybrid model is to think.
+     */
+    expect(modelCapabilities("openrouter", "ling-3.0-flash").thinking).toBe(true);
+    expect(modelCapabilities("openrouter", "ling-3.0-flash-free").thinking).toBe(true);
+    expect(backgroundReasoningFor("ling-3.0-flash")).toBe("off");
+  });
+});
+
+/**
+ * THE PRODUCTION SHAPE THIS FIXES.
+ *
+ *   model inclusionai/ling-3.0-flash · upstream Novita · max_tokens 400
+ *   finish_reason "length" · content null
+ *   completion_tokens ~400 · reasoning_tokens ~400+
+ *   hasReasoning true · hasReasoningDetails true · requestedReasoningOff FALSE
+ *
+ * Every Scene Ledger extraction spent the whole envelope on hidden thinking and
+ * never reached the JSON. That last field is the tell: nothing had asked it not
+ * to.
+ */
+describe("the Scene Ledger request on Ling", () => {
+  /** Exactly the options `extractOnce` sends. See src/lib/scene-state-store.ts. */
+  function sceneLedgerOptions(modelId: string) {
+    return {
+      json: true, maxTokens: 400, temperature: 0.1,
+      modelId,
+      thinking: backgroundReasoningFor(modelId),
+      strictReasoning: true,
+      sessionId: "scene-session",
+    };
+  }
+
+  it("asks for no reasoning, sends no response_format, and keeps its 400-token envelope", async () => {
+    enableOpenRouter();
+    const bodies = captureBodies({
+      id: "gen-ling", model: "inclusionai/ling-3.0-flash", provider: "Novita",
+      choices: [{ finish_reason: "stop", message: { content: "{\"present\":[{\"name\":\"Maya\",\"position\":\"on the sofa\"}]}" } }],
+      usage: { prompt_tokens: 700, completion_tokens: 30 },
+    });
+    const result = await completionWithUsage(
+      { providerId: "openrouter", modelId: "ling-3.0-flash" },
+      [{ role: "system", content: "…ledger rules… Output JSON only." }, { role: "user", content: "…transcript…" }],
+      sceneLedgerOptions("ling-3.0-flash"),
+    );
+
+    // The fix: the normalised OpenRouter mechanism Afterglow already uses
+    // everywhere else, rather than a Ling-specific spelling.
+    expect(bodies[0].reasoning).toEqual({ enabled: false });
+    // Unchanged from the previous hotfix: Ling implements no `response_format`.
+    expect(bodies[0]).not.toHaveProperty("response_format");
+    /*
+     * AND THE ENVELOPE IS NOT RAISED. Buying a bigger budget would have made
+     * the symptom go away while the job still paid hundreds of reasoning tokens
+     * to emit a handful of JSON fields — which is the cost this entire layer
+     * exists to avoid.
+     */
+    expect(bodies[0].max_tokens).toBe(400);
+    expect(JSON.parse(result.content)).toMatchObject({ present: [{ name: "Maya" }] });
+  });
+
+  it("records requestedReasoningOff as true when it does fail", async () => {
+    // The field that made the diagnosis possible, now on the right side of it:
+    // a future empty Ling response says whether we had asked.
+    enableOpenRouter();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      id: "gen-ling-2", model: "inclusionai/ling-3.0-flash", provider: "Novita",
+      choices: [{ finish_reason: "length", message: { content: null, reasoning: "thinking…" } }],
+      usage: { prompt_tokens: 700, completion_tokens: 400, completion_tokens_details: { reasoning_tokens: 400 } },
+    })));
+    const error = await completionWithUsage(
+      { providerId: "openrouter", modelId: "ling-3.0-flash" },
+      [{ role: "user", content: "extract" }],
+      sceneLedgerOptions("ling-3.0-flash"),
+    ).catch((caught) => caught as ProviderError);
+
+    expect((error as ProviderError).diagnostic.emptyResponse).toMatchObject({
+      requestedReasoningOff: true, finishReason: "length", reasoningTokens: 400, hasReasoning: true,
+    });
+    expect((error as ProviderError).category).toBe("reasoning_budget_exhausted");
   });
 });
 
@@ -234,5 +313,41 @@ describe("the writer's reasoning is untouched", () => {
     // And "no opinion" still means no key, which is the writer's fourth state.
     await streamCompletion({ providerId: "openrouter", modelId: "mimo-v2.5" }, [{ role: "user", content: "Hi" }], { maxTokens: 1800 });
     expect(bodies[2]).not.toHaveProperty("reasoning");
+  });
+
+  it("does not change what a Ling roleplay turn sends", async () => {
+    /*
+     * Declaring Ling reasoning-capable is a statement about the ENDPOINT, and
+     * the writer's decision is made from a different input: `defaultReasoningFor`
+     * reads `capabilities.reasoningDefault`, which Ling still does not declare.
+     * So a roleplay turn on Ling sends exactly what it sent before — no
+     * `reasoning` key — and its wire shape is unchanged.
+     *
+     * Two things the capability DOES unlock for the writer, both strictly
+     * better and neither a change of default:
+     *
+     *   The "Complex & Strategic" engine, which asks for thinking, can now
+     *   actually say so instead of being silently dropped — and silence took
+     *   the endpoint's default, which on a hybrid model was thinking anyway.
+     *
+     *   `canDeclineReasoning` in the chat route becomes true, so the empty-reply
+     *   retry can ask for no reasoning rather than only enlarging the envelope.
+     *   That is the correct remedy for exactly the failure Ling produces.
+     */
+    enableOpenRouter();
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    }));
+    const { streamCompletion } = await import("@/lib/llm");
+    const { defaultReasoningFor } = await import("@/lib/provider");
+
+    expect(defaultReasoningFor("ling-3.0-flash")).toBeNull();
+    await streamCompletion({ providerId: "openrouter", modelId: "ling-3.0-flash" }, [{ role: "user", content: "Hi" }], { thinking: false, maxTokens: 1800 });
+    expect(bodies[0]).not.toHaveProperty("reasoning");
+    // A writer turn is not structured extraction and never asks for JSON.
+    expect(bodies[0]).not.toHaveProperty("response_format");
+    expect(bodies[0].max_tokens).toBe(1800);
   });
 });
