@@ -530,13 +530,22 @@ const knownModels: InternalModelDefinition[] = [
     providerModelId: "inclusionai/ling-3.0-flash",
     label: "Ling 3.0 Flash",
     description: "Very inexpensive writer with a large context window. Good for long, everyday stories.",
-    supportsThinking: false,
+    supportsThinking: true,
     category: "economy",
     free: false,
     capabilities: {
       contextTokens: 262_144,
       maxOutputTokens: 32_768,
-      thinking: false,
+      /*
+       * HYBRID REASONING. Production diagnostics proved this is not optional
+       * metadata: with the old `thinking:false` declaration the Scene Ledger
+       * sent no reasoning preference, Ling took its default thinking path,
+       * spent the full 400-token completion envelope on hidden reasoning and
+       * returned content:null at finish_reason=length. Background extraction
+       * needs the opposite wire shape — reasoning explicitly disabled — while
+       * writer requests remain free to choose their own reasoning policy.
+       */
+      thinking: true,
       /*
        * NO STRUCTURED OUTPUT. OpenRouter documents this model as not supporting
        * `response_format`, and this entry claimed otherwise.
@@ -872,14 +881,17 @@ const knownModels: InternalModelDefinition[] = [
     providerModelId: "inclusionai/ling-3.0-flash:free",
     label: "Ling 3.0 Flash (Free)",
     description: "A free writer with a large context window. Shared capacity, so it is not always available.",
-    supportsThinking: false,
+    supportsThinking: true,
     category: "free",
     free: true,
     notice: "Free shared capacity. Availability depends on the provider.",
     capabilities: {
       contextTokens: 262_144,
       maxOutputTokens: 32_768,
-      thinking: false,
+      // Same underlying model as the paid route: reasoning-capable, but without
+      // response_format support. Background work does not use the free route,
+      // while writer requests may still choose their own reasoning policy.
+      thinking: true,
       // The same underlying model as the paid route above, so the same answer:
       // no `response_format`. A capability is a property of the model, and
       // splitting the two entries' answers would be a bug waiting for whichever
