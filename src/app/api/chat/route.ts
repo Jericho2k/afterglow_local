@@ -1210,11 +1210,28 @@ export async function POST(request: Request) {
         );
         controller.close();
         void (async () => {
-          // Scene State first: consolidation stamps the memories it creates
-          // with whatever the scene ledger knows by then. A failure in either
-          // is logged and dropped — the reply has already been delivered.
-          await maybeUpdateSceneState(account.id,conversationId);
+          /*
+           * A REGENERATED DRAFT IS NOT A STORY POSITION, AND NOW NOTHING READS
+           * IT AS ONE.
+           *
+           * Consolidation already stopped here — a discarded alternative must
+           * not become a memory — and the Scene Ledger ran ABOVE this line,
+           * which meant every regeneration paid for an extraction out of a
+           * candidate reply the reader had not accepted. Worse than the money:
+           * pressing Regenerate four times had the ledger read four different
+           * futures in turn, each overwriting the last, and the one that stuck
+           * was whichever finished last rather than whichever the reader kept.
+           *
+           * The selected variant becomes canonical when the story proceeds from
+           * it, and the next accepted turn extracts through it. So the ledger
+           * moved below the guard and Continue stays above it: Continue extends
+           * the accepted reply and genuinely advances the story.
+           */
           if (regenerateTarget) return;
+          // The ledger first: consolidation stamps the memories it creates with
+          // whatever it knows by then. A failure in either is logged and
+          // dropped — the reply has already been delivered.
+          await maybeUpdateSceneState(account.id,conversationId);
           await maybeConsolidate(account.id,conversationId);
           await maybeCurateCanon(account.id,conversationId);
           await maybeBackfillMemoryEmbeddings(account.id,conversationId);

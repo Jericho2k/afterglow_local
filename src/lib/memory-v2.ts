@@ -4,7 +4,8 @@ import { asUser, coreCanonFromRow, memoryArcFromRow, memoryFromRow } from "./db"
 import { estimateTokens } from "./context";
 import { completionWithUsage, embeddingWithUsage, parseJson } from "./llm";
 import { acceptedMessageCount, rankArcs, rankMemories } from "./memory";
-import { providerModelId, taskModelSelection } from "./provider";
+import { providerModelId } from "./provider";
+import { backgroundRoute, routeProvenance } from "./background-routing";
 import { recordUsageEvent } from "./usage";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled, memorySemanticEnabled } from "./memory-flags";
@@ -502,12 +503,22 @@ export async function maybeCurateCanon(userId:string,conversationId:string,force
       return {conversation,messageCount,canon:canonResult.rows.map(coreCanonFromRow),memories:memoryResult.rows.map(memoryFromRow),arcs:arcResult.rows.map(memoryArcFromRow)};
     });
     if (!prepared) return false;
-    const selection=taskModelSelection("memory_curation"); const rpEngineId=String(prepared.conversation.rp_engine_id||"immersive");
+    /*
+     * Curation is routed separately from consolidation and shares its
+     * conversation override. They are the same decision from an operator's
+     * point of view — "which model does the memory work on this story" — and
+     * two overrides for one intention is two things to forget to set.
+     */
+    const route=await backgroundRoute("memory_curation",{overrideCandidateId:prepared.conversation.memory_model_override as string|null});
+    if (!route.selection) throw new Error("memory_curation resolved to no model");
+    const selection=route.selection; const rpEngineId=String(prepared.conversation.rp_engine_id||"immersive");
     const response=await completionWithUsage(selection,[
       {role:"system",content:"You are a conservative continuity canon curator. Return valid JSON only."},
       {role:"user",content:curationPrompt(prepared.canon,prepared.memories,prepared.arcs)},
-    ],{json:true,maxTokens:2600,temperature:.15});
-    if (response.usage) await recordUsageEvent({userId,conversationId,providerId:selection.providerId,model:selection.modelId,actualModel:providerModelId(selection.providerId,selection.modelId)??selection.modelId,rpEngineId,kind:"memory_curation",taskRoute:"memory_curation",usage:response.usage});
+      // The catalogue id, so the price ceiling and the privacy floor travel
+      // with a request that carries a whole conversation's canon.
+    ],{json:true,maxTokens:2600,temperature:.15,modelId:selection.modelId});
+    if (response.usage) await recordUsageEvent({userId,conversationId,providerId:selection.providerId,model:selection.modelId,actualModel:providerModelId(selection.providerId,selection.modelId)??selection.modelId,rpEngineId,kind:"memory_curation",taskRoute:"memory_curation",routing:routeProvenance(route),usage:response.usage});
     const data=parseJson<CanonCuration>(response.content);
     const canonIds=new Set(prepared.canon.map((entry)=>entry.id)); const memoryIds=new Set(prepared.memories.map((memory)=>memory.id)); const arcIds=new Set(prepared.arcs.map((arc)=>arc.id));
     const supersede=(data.supersedeIds??[]).filter((id)=>canonIds.has(id)); const demote=(data.demoteIds??[]).filter((id)=>canonIds.has(id)&&!supersede.includes(id));

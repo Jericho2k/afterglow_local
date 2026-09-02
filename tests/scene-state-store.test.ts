@@ -3,11 +3,18 @@ import { newDb } from "pg-mem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Scene State against a database.
+ * The Scene Ledger against a database.
  *
  * The extraction model is stubbed so the lineage rules — provisional replies,
  * regeneration, branching, edits and failure — are asserted exactly rather
  * than sampled. What the real model is asked for is covered by the pure suite.
+ *
+ * EVERY MESSAGE IN HERE CARRIES A CHANGE CUE. That is not incidental: the cheap
+ * pre-check now declines to call the extractor on a turn where nothing
+ * plausibly moved, so a lineage test written with quiet dialogue would be
+ * asserting the skip path while appearing to assert the extraction path. The
+ * skip is tested deliberately below, and everywhere else the transcript says
+ * something happened.
  */
 
 const completionWithUsage = vi.fn();
@@ -22,6 +29,7 @@ const { asUser, ensureSchema, memoryFromRow, query, setPoolForTesting } = await 
 const { invalidateDerivedContinuity, maybeConsolidate } = await import("@/lib/memory");
 const { copySceneStatesForBranch, currentSceneState, dropSceneStateForMessage, maybeUpdateSceneState, sceneSpanBetween, sceneStampAt } = await import("@/lib/scene-state-store");
 const { locationLabel } = await import("@/lib/scene-state");
+const { clearBackgroundRouteCache } = await import("@/lib/background-routing");
 
 const owner = "11111111-1111-4111-8111-111111111111";
 const other = "22222222-2222-4222-8222-222222222222";
@@ -64,6 +72,10 @@ beforeEach(async () => {
   setPoolForTesting(new adapter.Pool() as unknown as Pool);
   await ensureSchema();
   completionWithUsage.mockReset();
+  // The global routing setting is cached in-process for a few seconds, and each
+  // test here gets a fresh database. Without this, a setting written by one
+  // test outlives the database it was written to.
+  clearBackgroundRouteCache();
   clock = 0;
   vi.stubEnv("SCENE_STATE_ENABLED", "true");
   vi.stubEnv("SCENE_STATE_USER_IDS", owner);
@@ -80,15 +92,14 @@ describe("scene state persistence", () => {
     await addMessage(conversationId, "user", "I follow her in and drop onto the couch.");
     sceneReply({
       location: { place: "Maya's apartment", sub: "living room", confidence: "stated" },
-      time_of_day: "evening",
-      present: ["Maya", "You"],
-      active_situation: ["They have just arrived."],
+      time: { kind: "period", text: "evening" },
+      present: [{ name: "Maya", position: "in the doorway" }, { name: "You", position: "on the couch" }],
     });
     expect(await maybeUpdateSceneState(owner, conversationId)).toBe(true);
 
     const state = await currentScene(conversationId);
     expect(locationLabel(state!.location)).toBe("Maya's apartment — living room");
-    expect(state!.presentCharacters).toEqual(["Maya", "You"]);
+    expect(state!.present.map((person) => person.name)).toEqual(["Maya", "You"]);
     expect(state!.storyDay).toBe(1);
     expect(state!.dateKind).toBe("unknown");
     expect(state!.throughMessageCount).toBe(2);
@@ -125,22 +136,21 @@ describe("scene state persistence", () => {
 
     // Generation A: Sera leaves.
     const replyId = await addMessage(conversationId, "assistant", "*Sera picks up her coat and walks out.*");
-    sceneReply({ present: ["You"], active_situation: ["Sera has left."] });
+    sceneReply({ departed: ["Sera"] });
     await maybeUpdateSceneState(owner, conversationId);
-    expect((await currentScene(conversationId))!.presentCharacters).toEqual(["You"]);
+    expect((await currentScene(conversationId))!.present.map((person) => person.name)).toEqual(["You"]);
     expect((await currentScene(conversationId))!.provisional).toBe(true);
 
     // The user regenerates: the chat route drops the state read out of A, and
     // the replacement text is written over the same message row.
     await asUser(owner, (client) => dropSceneStateForMessage(client, conversationId, replyId, owner));
     await query("UPDATE messages SET content=$1 WHERE id=$2", ["*Sera stays where she is, watching you.*", replyId]);
-    expect((await currentScene(conversationId))!.presentCharacters).toEqual(["Sera", "You"]);
+    expect((await currentScene(conversationId))!.present.map((person) => person.name)).toEqual(["Sera", "You"]);
 
     sceneReply({ present: ["Sera", "You"] });
     await maybeUpdateSceneState(owner, conversationId);
     const settled = await currentScene(conversationId);
-    expect(settled!.presentCharacters).toEqual(["Sera", "You"]);
-    expect(settled!.activeSituation).not.toContain("Sera has left.");
+    expect(settled!.present.map((person) => person.name)).toEqual(["Sera", "You"]);
   });
 
   it("I — ignores a state whose reply was rewritten even if cleanup never ran", async () => {
@@ -160,7 +170,11 @@ describe("scene state persistence", () => {
   it("J — a branch never inherits a location from the future it abandoned", async () => {
     const { characterId, conversationId } = await seedChat();
     const branchPoint = await addMessage(conversationId, "user", "Let's stay in Paris for now.");
-    sceneReply({ location: { place: "Paris", sub: "the apartment", confidence: "stated" } });
+    sceneReply({
+      location: { place: "Paris", sub: "the apartment", confidence: "stated" },
+      time: { kind: "period", text: "afternoon" },
+      present: [{ name: "Maya", position: "by the window" }],
+    });
     await maybeUpdateSceneState(owner, conversationId);
     await addMessage(conversationId, "assistant", "*Weeks later, the train pulls into London.*");
     sceneReply({ location: { place: "London", sub: "", confidence: "stated" }, day_advance: 14, day_advance_evidence: "Weeks later" });
@@ -178,6 +192,10 @@ describe("scene state persistence", () => {
     const branched = await currentScene(branchId);
     expect(branched!.location.place).toBe("Paris");
     expect(branched!.storyDay).toBe(1);
+    // Who was in the room at the branch point, positions included, travels with
+    // the branch for the same reason the location does.
+    expect(branched!.present).toEqual([{ name: "Maya", position: "by the window" }]);
+    expect(branched!.time).toEqual({ kind: "period", text: "afternoon" });
     // The original timeline is untouched by the branch.
     expect((await currentScene(conversationId))!.location.place).toBe("London");
   });
@@ -209,21 +227,22 @@ describe("scene state persistence", () => {
     sceneReply({ location: { place: "the cabin", sub: "", confidence: "stated" }, present: ["Maya", "You"] });
     await maybeUpdateSceneState(owner, conversationId);
 
-    await addMessage(conversationId, "assistant", "*She lights the stove.*");
+    await addMessage(conversationId, "assistant", "*She crosses the room and lights the stove.*");
     completionWithUsage.mockRejectedValueOnce(new Error("provider unavailable"));
     expect(await maybeUpdateSceneState(owner, conversationId)).toBe(false);
 
     const state = await currentScene(conversationId);
     expect(state!.location.place).toBe("the cabin");
-    expect(state!.presentCharacters).toEqual(["Maya", "You"]);
+    expect(state!.present.map((person) => person.name)).toEqual(["Maya", "You"]);
     const failed = await query("SELECT * FROM conversation_scene_states WHERE conversation_id=$1 AND status='failed'", [conversationId]);
     expect(failed.rowCount).toBe(1);
     expect(String(failed.rows[0].failure_reason)).toContain("provider unavailable");
 
     // And the next turn simply catches up.
-    sceneReply({ active_situation: ["The stove is lit."] });
+    await addMessage(conversationId, "user", "I walk over to the window.");
+    sceneReply({ present: [{ name: "You", position: "at the window" }] });
     expect(await maybeUpdateSceneState(owner, conversationId)).toBe(true);
-    expect((await currentScene(conversationId))!.activeSituation).toEqual(["The stove is lit."]);
+    expect((await currentScene(conversationId))!.present.find((person) => person.name === "You")?.position).toBe("at the window");
   });
 
   it("N — unparseable model output is a failure, not a corrupted scene", async () => {
@@ -231,9 +250,13 @@ describe("scene state persistence", () => {
     await addMessage(conversationId, "user", "We are at the harbour.");
     sceneReply({ location: { place: "the harbour", sub: "", confidence: "stated" } });
     await maybeUpdateSceneState(owner, conversationId);
-    await addMessage(conversationId, "assistant", "*Gulls scatter.*");
+    await addMessage(conversationId, "assistant", "*Gulls scatter as she walks out onto the pier.*");
+    // Twice: a malformed reply earns exactly one cheap retry, and a second
+    // failure leaves the ledger where it was rather than guessing.
     completionWithUsage.mockResolvedValueOnce({ content: "I'm afraid I can't do that.", usage: null });
+    completionWithUsage.mockResolvedValueOnce({ content: "Still not JSON.", usage: null });
     expect(await maybeUpdateSceneState(owner, conversationId)).toBe(false);
+    expect(completionWithUsage).toHaveBeenCalledTimes(3);
     expect((await currentScene(conversationId))!.location.place).toBe("the harbour");
   });
 });
@@ -242,14 +265,17 @@ describe("historical grounding on the archive", () => {
   it("stamps new memories and arcs with the scene they happened in", async () => {
     const { conversationId } = await seedChat();
     await addMessage(conversationId, "user", "We are in the university courtyard.");
-    sceneReply({ location: { place: "university courtyard", sub: "", confidence: "stated" }, time_of_day: "afternoon", present: ["Maya", "You"] });
+    sceneReply({ location: { place: "university courtyard", sub: "", confidence: "stated" }, time: { kind: "period", text: "afternoon" }, present: ["Maya", "You"] });
     await maybeUpdateSceneState(owner, conversationId);
-    await addMessage(conversationId, "assistant", "*Maya admits she hid the letter.*");
-    sceneReply({ active_situation: ["The letter is still unexplained."] });
+    await addMessage(conversationId, "assistant", "*Maya sits down on the low wall and admits she hid the letter.*");
+    sceneReply({ present: [{ name: "Maya", position: "on the low wall" }] });
     await maybeUpdateSceneState(owner, conversationId);
+    // A turn where nobody moves and nothing else changes: the ledger is carried
+    // forward at the new position without an extraction, which is what the
+    // stamp below then reads.
     await addMessage(conversationId, "user", "Why would you hide it from me?");
-    sceneReply({});
     await maybeUpdateSceneState(owner, conversationId);
+    expect(completionWithUsage).toHaveBeenCalledTimes(2);
 
     completionWithUsage.mockResolvedValueOnce({
       content: JSON.stringify({
@@ -277,7 +303,7 @@ describe("historical grounding on the archive", () => {
   it("reads back the scene as it stood at a past position", async () => {
     const { conversationId } = await seedChat();
     await addMessage(conversationId, "user", "We are at the station.");
-    sceneReply({ location: { place: "the station", sub: "", confidence: "stated" }, time_of_day: "evening" });
+    sceneReply({ location: { place: "the station", sub: "", confidence: "stated" }, time: { kind: "period", text: "evening" } });
     await maybeUpdateSceneState(owner, conversationId);
     await addMessage(conversationId, "user", "We drive out to the coast.");
     sceneReply({ location: { place: "the coast road", sub: "", confidence: "stated" }, day_advance: 1, day_advance_evidence: "The next morning" });
@@ -310,109 +336,92 @@ describe("historical grounding on the archive", () => {
  * edit invalidates everything derived after it. Getting that wrong is how a
  * character ends up standing in one timeline and lying down in the other.
  */
-describe("physical state follows the story's lineage", () => {
-  it("survives a quiet turn and updates on a real change", async () => {
+
+/**
+ * The two ways the ledger now avoids paying for an extraction.
+ *
+ * Both end in the same place — the previous ledger, carried forward — and that
+ * is the point: a skipped turn, a disabled extractor and a failed one are one
+ * behaviour with three causes, which is what makes the feature safe to make
+ * cheap.
+ */
+describe("not paying for an extraction", () => {
+  it("carries the ledger forward through a static turn without calling the model", async () => {
     const { conversationId } = await seedChat();
-    await addMessage(conversationId, "assistant", "Maya sits on the couch, a glass in her right hand.");
+    await addMessage(conversationId, "user", "We walk into the kitchen.");
     sceneReply({
-      location: { place: "Maya's apartment", sub: "living room", confidence: "stated" },
-      present: ["Maya", "You"],
-      physical: [{ name: "Maya", posture: "seated", support: "the couch", right_hand: "holding a glass", left_hand: "on the cushion" }],
+      location: { place: "the flat", sub: "kitchen", confidence: "stated" },
+      present: [{ name: "Maya", position: "at the counter" }, { name: "You", position: "by the door" }],
     });
     await maybeUpdateSceneState(owner, conversationId);
+    expect(completionWithUsage).toHaveBeenCalledTimes(1);
 
-    let state = await currentScene(conversationId);
-    expect(state!.physical.actors[0].rightHand).toBe("holding a glass");
+    // Three exchanges in which nobody moves and no time passes.
+    for (const line of ["Do you mean that?", "\"I do.\"", "Hm."]) {
+      await addMessage(conversationId, "user", line);
+      expect(await maybeUpdateSceneState(owner, conversationId)).toBe(true);
+    }
+    expect(completionWithUsage).toHaveBeenCalledTimes(1);
 
-    // A turn that says nothing about her hands keeps both where they were.
-    await addMessage(conversationId, "user", "I ask her how the week went.");
-    sceneReply({ active_situation: ["He has asked about her week."] });
-    await maybeUpdateSceneState(owner, conversationId);
-    state = await currentScene(conversationId);
-    expect(state!.physical.actors[0].leftHand).toBe("on the cushion");
-
-    // Standing up drops the placements that posture cannot hold.
-    await addMessage(conversationId, "assistant", "She stands.");
-    sceneReply({ physical: [{ name: "Maya", posture: "standing" }] });
-    await maybeUpdateSceneState(owner, conversationId);
-    state = await currentScene(conversationId);
-    expect(state!.physical.actors[0].posture).toBe("standing");
-    expect(state!.physical.actors[0].support).toBe("");
-    expect(state!.physical.actors[0].leftHand).toBe("");
-  });
-
-  it("branches with the arrangement as it stood at the branch point", async () => {
-    const { characterId, conversationId } = await seedChat();
-    await addMessage(conversationId, "assistant", "Maya kneels by the fire.");
-    sceneReply({
-      location: { place: "the cabin", sub: "", confidence: "stated" },
-      physical: [{ name: "Maya", posture: "kneeling", support: "the hearth rug", right_hand: "on the poker" }],
-      contacts: [],
-    });
-    await maybeUpdateSceneState(owner, conversationId);
-    const branchPoint = Number((await query("SELECT COUNT(*)::int count FROM messages WHERE conversation_id=$1", [conversationId])).rows[0].count);
-
-    // The story then moves on, and the arrangement moves with it.
-    await addMessage(conversationId, "assistant", "She stands and crosses to the window.");
-    sceneReply({ physical: [{ name: "Maya", posture: "standing", relative_to: "at the window" }] });
-    await maybeUpdateSceneState(owner, conversationId);
-    expect((await currentScene(conversationId))!.physical.actors[0].posture).toBe("standing");
-
-    const branchId = crypto.randomUUID();
-    await query("INSERT INTO conversations (id,user_id,character_id,title) VALUES ($1,$2,$3,'Branch')", [branchId, owner, characterId]);
-    await asUser(owner, (client) => copySceneStatesForBranch(client, {
-      userId: owner, sourceConversationId: conversationId, conversationId: branchId,
-      position: branchPoint, messageMap: new Map(),
-    }));
-
-    // The branch is still kneeling: the standing up happened in a future it
-    // never took.
-    const branched = await currentScene(branchId);
-    expect(branched!.physical.actors[0].posture).toBe("kneeling");
-    expect(branched!.physical.actors[0].rightHand).toBe("on the poker");
-  });
-
-  it("does not let a discarded generation leave its arrangement behind", async () => {
-    const { conversationId } = await seedChat();
-    await addMessage(conversationId, "user", "I pull her closer.");
-    sceneReply({ physical: [{ name: "Maya", posture: "standing", relative_to: "in front of him" }] });
-    await maybeUpdateSceneState(owner, conversationId);
-
-    const replyId = await addMessage(conversationId, "assistant", "She lets herself be pulled down onto his lap.");
-    sceneReply({
-      physical: [{ name: "Maya", posture: "straddling", support: "his lap", left_arm: "around his neck" }],
-      contacts: ["Maya on the user's lap"],
-    });
-    await maybeUpdateSceneState(owner, conversationId);
-    expect((await currentScene(conversationId))!.physical.actors[0].posture).toBe("straddling");
-
-    // Regenerate: the reply is replaced, so the geometry read out of it goes
-    // with it rather than describing a scene nobody has read.
-    await asUser(owner, (client) => dropSceneStateForMessage(client, conversationId, replyId, owner));
-    await query("UPDATE messages SET content=$2 WHERE id=$1", [replyId, "She steps back instead, out of reach."]);
-    const after = await currentScene(conversationId);
-    expect(after!.physical.actors[0].posture).toBe("standing");
-    expect(after!.physical.contacts).toEqual([]);
-  });
-
-  it("stores nothing physical for a scene that never described a body", async () => {
-    const { conversationId } = await seedChat();
-    await addMessage(conversationId, "user", "We walk down to the harbour.");
-    sceneReply({ location: { place: "the harbour road", sub: "", confidence: "stated" }, present: ["Maya", "You"] });
-    await maybeUpdateSceneState(owner, conversationId);
-
+    // The ledger still describes the kitchen, and has advanced its position so
+    // the next turn does not re-examine the same window forever.
     const state = await currentScene(conversationId);
-    expect(state!.physical).toEqual({ actors: [], contacts: [], constraints: [] });
-    // And a row from before this column existed reads exactly the same way.
-    await query("UPDATE conversation_scene_states SET physical_actors='[]'::jsonb WHERE conversation_id=$1", [conversationId]);
-    expect((await currentScene(conversationId))!.physical.actors).toEqual([]);
+    expect(state!.location.sub).toBe("kitchen");
+    expect(state!.present.map((person) => person.name)).toEqual(["Maya", "You"]);
+    expect(state!.throughMessageCount).toBe(4);
+    expect(state!.extractionModel).toBe("skipped");
+    expect(state!.changedFields).toEqual([]);
+
+    // And a skipped turn costs nothing, which is the whole point.
+    const usage = await query("SELECT COUNT(*)::int count FROM usage_events WHERE user_id=$1 AND usage_type='scene_state'", [owner]);
+    expect(Number(usage.rows[0].count)).toBe(1);
   });
 
-  it("records the change in the diagnostics field list", async () => {
+  it("runs again the moment the story moves", async () => {
     const { conversationId } = await seedChat();
-    await addMessage(conversationId, "assistant", "Maya lies back across the bed.");
-    sceneReply({ physical: [{ name: "Maya", posture: "lying", support: "the bed" }] });
+    await addMessage(conversationId, "user", "We walk into the kitchen.");
+    sceneReply({ location: { place: "the flat", sub: "kitchen", confidence: "stated" }, present: ["Maya", "You"] });
     await maybeUpdateSceneState(owner, conversationId);
-    expect((await currentScene(conversationId))!.changedFields).toContain("physical");
+    await addMessage(conversationId, "user", "Sure.");
+    await maybeUpdateSceneState(owner, conversationId);
+    expect(completionWithUsage).toHaveBeenCalledTimes(1);
+
+    await addMessage(conversationId, "assistant", "*She takes his hand and leads him upstairs.*");
+    sceneReply({ location: { place: "the flat", sub: "bedroom", confidence: "stated" } });
+    expect(await maybeUpdateSceneState(owner, conversationId)).toBe(true);
+    expect(completionWithUsage).toHaveBeenCalledTimes(2);
+    expect((await currentScene(conversationId))!.location.sub).toBe("bedroom");
+  });
+
+  it("stops updating entirely when an administrator disables the extractor", async () => {
+    const { conversationId } = await seedChat();
+    await addMessage(conversationId, "user", "We walk into the kitchen.");
+    sceneReply({ location: { place: "the flat", sub: "kitchen", confidence: "stated" }, present: ["Maya", "You"] });
+    await maybeUpdateSceneState(owner, conversationId);
+
+    await query("INSERT INTO background_model_routes (task,candidate_id) VALUES ('scene_state','off')");
+    clearBackgroundRouteCache();
+    await addMessage(conversationId, "assistant", "*She leads him out to the car.*");
+    expect(await maybeUpdateSceneState(owner, conversationId)).toBe(false);
+    expect(completionWithUsage).toHaveBeenCalledTimes(1);
+    // The ledger keeps what it last held rather than going blank.
+    expect((await currentScene(conversationId))!.location.sub).toBe("kitchen");
+  });
+
+  it("records which model ran and who chose it", async () => {
+    const { conversationId } = await seedChat();
+    await addMessage(conversationId, "user", "We walk into the kitchen.");
+    sceneReply({ location: { place: "the flat", sub: "kitchen", confidence: "stated" } });
+    await maybeUpdateSceneState(owner, conversationId);
+    const usage = await query("SELECT * FROM usage_events WHERE user_id=$1 AND usage_type='scene_state'", [owner]);
+    const metadata = typeof usage.rows[0].provider_metadata === "string"
+      ? JSON.parse(String(usage.rows[0].provider_metadata))
+      : usage.rows[0].provider_metadata as Record<string, unknown>;
+    expect((metadata as { routing?: { task?: string; source?: string } }).routing?.task).toBe("scene_state");
+    // OpenRouter is not enabled in this suite, so Ling is unselectable and the
+    // route falls through to the DeepSeek default — which is exactly the
+    // behaviour a deployment without an OpenRouter key should get.
+    expect((metadata as { routing?: { candidate?: string } }).routing?.candidate).toBe("direct_deepseek");
+    expect(usage.rows[0].provider_id).toBe("deepseek");
   });
 });

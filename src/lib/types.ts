@@ -468,56 +468,50 @@ export type SceneLocation = {
 };
 
 /**
- * Where one character's body actually is.
+ * HOW PRECISELY THE STORY HAS FIXED THE TIME.
  *
- * Every field may be empty, and empty means UNKNOWN rather than "not
- * touching" or "at rest". That distinction is the whole design: models twist
- * characters into impossible configurations during intimacy, fights,
- * grappling, dancing, carrying and bed scenes, and the fix for that is to
- * carry forward what the story has ESTABLISHED — never to invent a plausible
- * value for a limb nobody has mentioned. A scene that never said where Maya's
- * left hand was must not acquire an answer here.
+ * One field was never enough and the two it replaced were the wrong two. The
+ * ledger used to hold a broad `time_of_day` and an optional exact `time_text`,
+ * which can say "evening" and "21:37" and nothing in between — so "around nine"
+ * became either a period that lost the hour or a clock reading the story never
+ * gave, and "a few minutes later" had nowhere to live at all.
  *
- * Left and right are separate fields for the same reason: "her hand" is what a
- * model writes when it has lost track, and a ledger that also says "her hand"
- * cannot correct it.
+ * So precision is DECLARED, and the rule that follows from declaring it is the
+ * one that matters: a value is never promoted to a precision the fiction did
+ * not establish. "Late evening" stays a period forever unless somebody looks at
+ * a clock.
+ *
+ *   exact         The fiction stated a clock time: "21:37".
+ *   approximate   The fiction placed it near one: "around 9 PM", "just gone six".
+ *   period        A named stretch of the day: "late evening", "mid-afternoon".
+ *   relative      Measured from the last beat: "a few minutes later".
+ *   unknown       Nobody has said, which is a correct and common answer.
  */
-export type PhysicalActor = {
-  /** Who this describes. Matched case-insensitively against the scene's cast. */
-  name: string;
-  /** seated, standing, lying, kneeling, straddling, carried, pinned… */
-  posture: string;
-  /** What they are turned toward: "the user", "the window", "away". */
-  facing: string;
-  /** Where they are in relation to somebody else: "directly in front of Maya". */
-  relativeTo: string;
-  /** What is bearing their weight: "the couch", "the floor", "Maya's arms". */
-  support: string;
-  leftArm: string;
-  rightArm: string;
-  leftHand: string;
-  rightHand: string;
-  leftLeg: string;
-  rightLeg: string;
-  leftFoot: string;
-  rightFoot: string;
-  /** Objects in hand. Empty means nothing established, not empty hands. */
-  held: string[];
+export type SceneTimeKind = "exact" | "approximate" | "period" | "relative" | "unknown";
+
+export type SceneTime = {
+  kind: SceneTimeKind;
+  /** As the story phrased it. Empty exactly when `kind` is "unknown". */
+  text: string;
 };
 
 /**
- * The physical geometry of the current moment.
+ * Somebody in the scene, and roughly where.
  *
- * Deliberately not prose. A paragraph describing the arrangement is what the
- * rolling summary already is, and it is precisely what a writer skims; a short
- * list of established facts is what it reads.
+ * "Roughly" is the entire specification. This replaced a twelve-field body
+ * model — postures, both arms, both hands, both legs, both feet, what bears the
+ * weight, a contact graph and a constraint list — that cost a large extraction
+ * on every turn to keep a simulation whose detail the writer did not use and
+ * whose errors it inherited. What a reply actually needs from the ledger is that
+ * Anna is still by the window while the user talks to Maya.
+ *
+ * `position` is one short phrase — "on the sofa", "beside User", "near the
+ * window" — and empty means nobody has said, which is a correct answer and the
+ * common one.
  */
-export type ScenePhysical = {
-  actors: PhysicalActor[];
-  /** Points of contact: "Maya's hand on the user's chest". Empty = unknown. */
-  contacts: string[];
-  /** What the space imposes: "coffee table between them", "she is pinned". */
-  constraints: string[];
+export type ScenePresence = {
+  name: string;
+  position: string;
 };
 
 export type SceneState = {
@@ -540,23 +534,19 @@ export type SceneState = {
   dateKind: SceneDateKind;
   /** "2026-10-17" for exact, "the day after the festival" for relative. */
   dateText: string;
-  /** A broad period: morning, afternoon, late evening. Empty means unknown. */
-  timeOfDay: string;
-  /** An exact in-story time only when the fiction stated one. */
-  timeText: string;
+  /** When it is, at whatever precision the story actually established. */
+  time: SceneTime;
   location: SceneLocation;
-  presentCharacters: string[];
-  /** A few immediate unresolved beats. Never a second rolling summary. */
-  activeSituation: string[];
   /**
-   * Body positions, contact and environmental constraints.
+   * Who is in the scene, and roughly where.
    *
-   * Absent on every row written before this existed, which reads as "nothing
-   * established" and is exactly right: an old scene genuinely never recorded
-   * where anybody's hands were, and inventing an arrangement for it would be
-   * the failure this field exists to prevent.
+   * The list is maintained by ARRIVAL AND DEPARTURE rather than by restatement,
+   * which is the property the whole ledger exists for: three people who walked
+   * into the room are still in it thirty messages later while the user talks to
+   * one of them, because nothing said any of them left. An extractor that
+   * simply did not mention somebody has said nothing about them.
    */
-  physical: ScenePhysical;
+  present: ScenePresence[];
   /** Which fields the last update actually changed. Diagnostics only. */
   changedFields: string[];
   extractionModel: string;
@@ -572,6 +562,11 @@ export type SceneState = {
 /** The compact grounding a memory or arc keeps about when/where it happened. */
 export type SceneStamp = {
   storyDay: number | null;
+  /**
+   * The time as the ledger held it, at whatever precision that was: "late
+   * evening", "around 9 PM", "21:37". The column name predates the precision
+   * model and is kept because it is written into every stored memory.
+   */
   timeOfDay: string;
   location: string;
   present: string[];
@@ -635,6 +630,18 @@ export type ModelDefinition = {
   availability?: "available" | "busy" | "unavailable";
   /** The route works but streams slowly enough to be worth choosing last. */
   deprioritized?: boolean;
+  /**
+   * A route that exists for background inference and is never offered as a
+   * writer.
+   *
+   * The memory A/B needs one model to appear several times — once per upstream
+   * host under evaluation — because a host is what the comparison is about. A
+   * reader choosing who writes their story is being asked a different question,
+   * and three rows with the same name under it is not an answer to it. So these
+   * resolve normally everywhere routing happens and are filtered out of the
+   * picker's catalogue.
+   */
+  backgroundOnly?: boolean;
 };
 
 export type RoleplayEngineDefinition = {

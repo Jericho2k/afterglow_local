@@ -1,5 +1,5 @@
 import { query } from "./db";
-import { availableModels, isFreeModel } from "./provider";
+import { isFreeModel, pickerModels } from "./provider";
 import { routeHealth, type RouteHealth, type RouteHealthState } from "./route-health";
 import { availableCatalog } from "./provider";
 import type { ModelCategory, ModelDefinition } from "./types";
@@ -123,7 +123,7 @@ function applyHealth(entry: CatalogEntry, health: RouteHealth | undefined, confi
  * all.
  */
 export async function curatedModels(): Promise<CatalogEntry[]> {
-  const models = availableModels();
+  const models = pickerModels();
   const [config, health] = await Promise.all([
     curatedRouteConfig(),
     routeHealth(models.filter((model) => isFreeModel(model.id)).map((model) => model.id)),

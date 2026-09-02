@@ -104,16 +104,47 @@ describe("scene state in the reply pipeline", () => {
     expect(prompt).toContain("CURRENT SCENE — THIS IS NOW");
     expect(prompt).toContain("Location: Uki's apartment — couch");
     expect(prompt).toContain("Story day: 12");
-    expect(prompt).toContain("The film has not been started.");
     expect(prompt).toContain("[Day 11 · afternoon · Uki's mother's house — couch]");
     expect(prompt).toContain("PAST EVENTS");
+  });
+
+  /*
+   * The row above is deliberately shaped the way rows were before the Scene
+   * Ledger: a broad `time_of_day`, names in `present_characters`, no
+   * `present_people` and no `time_kind`. Every deployment's table is full of
+   * them, so reading one correctly is not an edge case — it is the common case
+   * for the first weeks after this ships.
+   */
+  it("reads a ledger row written before positions and time precision existed", async () => {
+    expect((await reply()).status).toBe(200);
+    const prompt = systemPrompt();
+    // A stored broad period is read back as a period, never promoted to a
+    // clock time it never had.
+    expect(prompt).toContain("Time: late evening");
+    // Names with no stored position render as names, not as blank parentheses.
+    expect(prompt).toContain("Present: Uki, You");
+    expect(prompt).not.toContain("Uki ()");
+  });
+
+  it("carries no trace of the physical simulation, even from a row that holds one", async () => {
+    await query(
+      `UPDATE conversation_scene_states SET physical_actors=$2::jsonb, physical_contacts=$3, active_situation=$4
+       WHERE conversation_id=$1`,
+      [conversationId, JSON.stringify([{ name: "Uki", posture: "seated", leftHand: "on the cushion" }]),
+        ["Uki's hand on your chest"], ["The film has not been started."]],
+    );
+    expect((await reply()).status).toBe(200);
+    const prompt = systemPrompt();
+    for (const gone of ["Physical arrangement", "on the cushion", "Uki's hand on your chest", "The film has not been started.", "Active situation"]) {
+      expect(prompt, `${gone} must no longer reach the writer`).not.toContain(gone);
+    }
   });
 
   it("never leaks scene metadata into the visible reply", async () => {
     const { streamed } = await reply();
     // Every event the reader's client receives, not merely the visible text.
     expect(streamed).toContain("*She looks up.*");
-    for (const field of ["CURRENT SCENE", "Story day", "story_day", "active_situation", "Uki's apartment", "Present:"]) {
+    for (const field of ["CURRENT SCENE", "Story day", "story_day", "Uki's apartment", "Present:"]) {
       expect(streamed, `${field} must never reach the reader`).not.toContain(field);
     }
   });

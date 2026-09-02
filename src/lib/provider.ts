@@ -728,6 +728,81 @@ const knownModels: InternalModelDefinition[] = [
     },
   },
   /*
+   * THE SAME 0731 REVISION, PINNED TO ONE UPSTREAM HOST EACH.
+   *
+   * `deepseek-v4-flash-0731` above names a slug and lets OpenRouter choose
+   * among the ~thirty hosts serving it. That is the right shape for a route
+   * nobody is comparing, and the wrong shape for an A/B: two consolidation
+   * runs on "the same model" that landed on different hosts differ in
+   * quantisation, sampler, truncation behaviour and cache economics, and the
+   * report cannot tell you which of those produced the difference it measured.
+   *
+   * So a host under evaluation gets its own catalogue id. `dedicatedProvider`
+   * carries it — `provider.only` with fallbacks off, exactly as GLM 5.3 Flash
+   * is served — and because the id is distinct, every usage row, every cost
+   * figure and every quality note separates by host without anybody having to
+   * join on `upstream_provider` afterwards.
+   *
+   * THE SLUGS BELOW ARE NOT VERIFIED FROM THIS ENVIRONMENT. OpenRouter's
+   * endpoint list for a model is only readable with a key, and this deployment
+   * has none at build time; "openinference" and "relace" are the obvious
+   * lowercase forms of the two host names the brief asked for and an obvious
+   * form is a guess. A wrong host slug plus `provider.only` is not a degraded
+   * route, it is a background task that fails every time it runs.
+   *
+   * That is why neither is selectable on the strength of being catalogued.
+   * `src/lib/background-routing.ts` keeps both behind an explicit operator
+   * confirmation — `BACKGROUND_ROUTE_VERIFIED_UPSTREAMS` — and
+   * `scripts/background-route-verify.mjs` prints the live host list a deployment
+   * with a key can confirm them against.
+   *
+   * `backgroundOnly` keeps them out of the writer picker. They are one model
+   * appearing three times, which is a meaningful distinction for a memory A/B
+   * and pure noise for somebody choosing who writes their story.
+   */
+  {
+    id: "deepseek-v4-flash-0731-openinference",
+    providerId: "openrouter",
+    providerModelId: "deepseek/deepseek-v4-flash-0731",
+    label: "DeepSeek V4 Flash 0731 — OpenInference",
+    description: "The 0731 revision served only by OpenInference. Background memory evaluation route.",
+    supportsThinking: true,
+    category: "experimental",
+    free: false,
+    backgroundOnly: true,
+    capabilities: {
+      contextTokens: 1_310_720,
+      maxOutputTokens: 393_216,
+      thinking: true,
+      jsonMode: true,
+      promptCaching: true,
+      dedicatedProvider: "openinference",
+      costCeiling: { promptUsdPerMillion: 0.10, completionUsdPerMillion: 0.40 },
+      dataPolicy: { dataCollection: "deny" },
+    },
+  },
+  {
+    id: "deepseek-v4-flash-0731-relace",
+    providerId: "openrouter",
+    providerModelId: "deepseek/deepseek-v4-flash-0731",
+    label: "DeepSeek V4 Flash 0731 — Relace",
+    description: "The 0731 revision served only by Relace. Background memory evaluation route.",
+    supportsThinking: true,
+    category: "experimental",
+    free: false,
+    backgroundOnly: true,
+    capabilities: {
+      contextTokens: 1_310_720,
+      maxOutputTokens: 393_216,
+      thinking: true,
+      jsonMode: true,
+      promptCaching: true,
+      dedicatedProvider: "relace",
+      costCeiling: { promptUsdPerMillion: 0.10, completionUsdPerMillion: 0.40 },
+      dataPolicy: { dataCollection: "deny" },
+    },
+  },
+  /*
    * THE CURATED FREE ROUTES.
    *
    * They are ordinary catalogue entries because everything else about them —
@@ -833,7 +908,20 @@ function publicModel(model: InternalModelDefinition): ModelDefinition {
     category:model.category,
     free:model.free,
     ...(model.notice ? { notice: model.notice } : {}),
+    ...(model.backgroundOnly ? { backgroundOnly: true } : {}),
   };
+}
+
+/**
+ * The catalogue a reader is offered, which is not the catalogue that resolves.
+ *
+ * A background-only route stays fully resolvable — `resolveModel`,
+ * `providerModelId`, `modelCapabilities` and the routing policy all have to work
+ * for it or the memory job it serves cannot run — and is simply not shown to
+ * somebody choosing a writer.
+ */
+export function pickerModels(): ModelDefinition[] {
+  return availableModels().filter((model) => !model.backgroundOnly);
 }
 
 /** Every catalogue entry, including ones this deployment has not enabled. */
@@ -878,7 +966,7 @@ export function availableModels(): ModelDefinition[] {
 }
 
 export function availableCatalog(): ModelCatalog {
-  const models = availableModels();
+  const models = pickerModels();
   return {
     providers: providers.filter((provider) => models.some((model) => model.providerId === provider.id)),
     models,

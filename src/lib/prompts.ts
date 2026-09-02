@@ -486,13 +486,37 @@ Rules:
 - Avoid duplicates, generic observations, prose-style flourishes, and temporary small talk.`;
 }
 
+/**
+ * The varying half, ordered by HOW FAST EACH BLOCK VARIES.
+ *
+ * Slowest first, and that ordering is the only thing about this function that
+ * is not obvious. A provider bills for the prefix that changed, so the question
+ * is not "which block is most important" but "which block is most likely to be
+ * byte-identical to last time".
+ *
+ *   COMMITMENTS change slowly. A story acquires a promise or closes one every
+ *   few consolidations; in between, this block is identical — same rows, same
+ *   ids, same total order (see `commitmentResolutionCandidates`, which sorts
+ *   pinned, then oldest, then by id precisely so that it is total).
+ *
+ *   THE ROLLING SUMMARY changes on EVERY call. It is the output of the previous
+ *   consolidation, so it is guaranteed different, and anything placed behind it
+ *   can never be cached.
+ *
+ *   THE TRANSCRIPT is new by definition.
+ *
+ * The summary used to come first, which put a guaranteed-different block in
+ * front of a usually-identical one and threw away whatever the commitments
+ * could have contributed to the reusable prefix. Nothing about what is asked
+ * for changed; only the order of two blocks the model reads in full either way.
+ */
 export function consolidationInput(summary: string, messages: Message[], ownerName = process.env.OWNER_NAME || "User", activeCommitments: Memory[] = []) {
   const transcript = messages.map((m) => `${m.role === "user" ? ownerName : "Character"}: ${m.content}`).join("\n\n");
-  return `Existing summary:
-${summary || "None"}
-
-Active protected commitments (refer to these only by the exact supplied ID):
+  return `Active protected commitments (refer to these only by the exact supplied ID):
 ${activeCommitments.length ? activeCommitments.map((memory) => `- ${memory.id} [${memory.kind}] ${memory.content}`).join("\n") : "- None"}
+
+Existing summary:
+${summary || "None"}
 
 New transcript:
 ${transcript}`;

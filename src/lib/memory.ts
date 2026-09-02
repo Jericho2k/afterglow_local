@@ -6,7 +6,9 @@ import type { Memory, MemoryArc, Message } from "./types";
 import { memoryArcFromRow, memoryFromRow, messageFromRow } from "./db";
 import { recordUsageEvent } from "./usage";
 import { estimateTokens } from "./context";
-import { providerModelId, taskModelSelection } from "./provider";
+import { providerModelId } from "./provider";
+import { backgroundRoute, routeProvenance } from "./background-routing";
+import { inferenceSessionId } from "./inference-session";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled } from "./memory-flags";
 import { isStaleCommitment, protectedTierBudget, protectedTierLimit, recencyScore, storyPositionFrom, type StoryPosition } from "./memory-scoring";
@@ -356,7 +358,20 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
     const previousCount = Number(conversation.last_consolidated_count || 0);
     if (batch.chunk) console.info("[memory] reading one oversized message in chunks", JSON.stringify({ conversationId, ...batch.chunk }));
 
-    const { providerId,modelId } = taskModelSelection("memory_consolidation");
+    /*
+     * Which model extracts this window, and who decided.
+     *
+     * The conversation's own override is read from the row the transaction
+     * above already had open; it is null for every conversation nobody is
+     * running an experiment on, which is all of them. See
+     * src/lib/background-routing.ts for the four layers underneath it.
+     */
+    const route = await backgroundRoute("memory_consolidation", { overrideCandidateId: conversation.memory_model_override as string | null });
+    // Consolidation has no "disabled" candidate — a story that stops extracting
+    // memories stops having a past — so a null selection here would be a bug in
+    // the candidate table rather than a configuration. Refuse loudly.
+    if (!route.selection) throw new Error("memory_consolidation resolved to no model");
+    const { providerId,modelId } = route.selection;
     const rpEngineId = String(conversation.rp_engine_id || settings.roleplayPreset);
     /*
      * Stable prefix first, changing material second.
@@ -368,8 +383,23 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
     const response = await completionWithUsage({ providerId, modelId }, [
       { role: "system", content: `You are a precise continuity editor and episodic-memory curator. Output JSON only.\n\n${consolidationInstructions()}` },
       { role: "user", content: consolidationInput(String(conversation.summary), messages, settings.ownerName, activeCommitments) },
-    ], { json: true, maxTokens: 3600, temperature: 0.2 });
-    if (response.usage) await recordUsageEvent({ userId, conversationId, providerId, model: modelId, actualModel: providerModelId(providerId,modelId) ?? modelId, rpEngineId, kind: "memory_consolidation", taskRoute: "memory_consolidation", usage: response.usage });
+    ], {
+      json: true, maxTokens: 3600, temperature: 0.2,
+      /*
+       * `modelId` is the CATALOGUE id, and passing it is what applies this
+       * model's routing policy — the price ceiling, the privacy floor, and the
+       * dedicated-host pin the evaluation routes depend on. Background calls
+       * previously omitted it, so every one of them reached OpenRouter with no
+       * provider block at all: no `max_price`, and — the part that matters
+       * more — no `data_collection: deny` on a request carrying a reader's
+       * transcript.
+       */
+      modelId,
+      // One stable session per conversation, in the consolidation namespace and
+      // no other. See src/lib/inference-session.ts.
+      sessionId: inferenceSessionId("memory_consolidation", conversationId),
+    });
+    if (response.usage) await recordUsageEvent({ userId, conversationId, providerId, model: modelId, actualModel: providerModelId(providerId,modelId) ?? modelId, rpEngineId, kind: "memory_consolidation", taskRoute: "memory_consolidation", routing: routeProvenance(route), usage: response.usage });
     const data = parseJson<Consolidation>(response.content);
     if (!data.summary) return false;
 
