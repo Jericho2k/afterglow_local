@@ -1,6 +1,6 @@
 import type { LLMMessage, LLMUsage, ProviderAuthentication, ProviderCompletionOptions } from "./llm";
-import { adaptableRejection, ProviderError, classifyProviderFailure, providerSpecificRejection, redactProviderSecrets } from "./provider-errors";
-import { providerPolicyFor } from "./provider";
+import { adaptableRejection, ProviderError, classifyProviderFailure, providerSpecificRejection, redactProviderSecrets, type EmptyResponseDiagnostic } from "./provider-errors";
+import { providerPolicyFor, supportsStructuredOutput } from "./provider";
 import { isReasoningEffort } from "./reasoning";
 
 const baseUrl = () => (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
@@ -239,6 +239,27 @@ async function request(body: Record<string,unknown>, options: ProviderCompletion
      * is a failover and is handled below.
      */
     const adaptation = adaptableRejection(response.status, detail, "reasoning" in negotiated);
+    /*
+     * A CALLER MAY REFUSE THE NEGOTIATION, AND A BACKGROUND EXTRACTION DOES.
+     *
+     * Dropping `reasoning` hands the endpoint's own default back — more
+     * thinking, not less — inside a completion envelope sized for JSON and
+     * nothing else. That is the failure the parameter was sent to prevent, so
+     * for these callers the refusal is a fact about the route rather than an
+     * obstacle: it is surfaced, with the endpoint's own words, and the route is
+     * treated as incompatible with the job.
+     */
+    if (adaptation === "drop_reasoning" && options.strictReasoning) {
+      console.warn("[provider] endpoint refuses reasoning-disabled; route is incompatible with background extraction", redactProviderSecrets(JSON.stringify({
+        provider: "openrouter", model: diagnosticModel, status: response.status,
+        attempt: attempt + 1, upstreamProvider: upstreamProvider ?? null, detail: detail.slice(0, 240),
+      })));
+      throw new ProviderError("bad_request", {
+        provider: "openrouter", model: diagnosticModel, status: response.status,
+        upstreamProvider, attempt: attempt + 1, latencyMs: Date.now() - startedAt,
+        detail: `endpoint refuses reasoning-disabled and this job will not run with endpoint-default reasoning: ${detail}`,
+      });
+    }
     if (adaptation === "drop_reasoning" && attempt < attemptDelays.length - 1) {
       negotiated = Object.fromEntries(Object.entries(negotiated).filter(([key]) => key !== "reasoning"));
       adaptations.push(adaptation);
@@ -331,19 +352,98 @@ function commonFields(options: ProviderCompletionOptions) {
   };
 }
 
+/**
+ * WHAT CAME BACK, WHEN WHAT CAME BACK WAS NOTHING.
+ *
+ * Reads only shapes, counts and flags — never a character of content or of
+ * reasoning. See `EmptyResponseDiagnostic` for why that constraint is the
+ * design rather than a courtesy.
+ */
+function emptyResponseDiagnostic(
+  data: Record<string, unknown>,
+  content: unknown,
+  requestedReasoningOff: boolean,
+): EmptyResponseDiagnostic {
+  const choices = Array.isArray(data.choices) ? data.choices as Array<Record<string, unknown>> : [];
+  const choice = (choices[0] ?? {}) as Record<string, unknown>;
+  const message = (choice.message ?? {}) as Record<string, unknown>;
+  const usage = (data.usage ?? {}) as Record<string, unknown>;
+  const completionDetails = (usage.completion_tokens_details ?? {}) as Record<string, unknown>;
+  const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+  return {
+    contentState: content === null ? "null"
+      : content === undefined ? "missing"
+        : typeof content === "string" ? "empty_string" : "non_string",
+    finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : undefined,
+    nativeFinishReason: typeof choice.native_finish_reason === "string" ? choice.native_finish_reason : undefined,
+    completionTokens: number(usage.completion_tokens),
+    promptTokens: number(usage.prompt_tokens),
+    reasoningTokens: number(completionDetails.reasoning_tokens),
+    // Presence only. The text of a model's thinking is exactly what must never
+    // reach a log, and a boolean answers the diagnostic question completely.
+    hasReasoning: typeof message.reasoning === "string" && message.reasoning.length > 0,
+    hasReasoningDetails: Array.isArray(message.reasoning_details) && message.reasoning_details.length > 0,
+    requestedReasoningOff,
+    choices: choices.length,
+  };
+}
+
 export async function completionWithUsage(messages: LLMMessage[], model: string, options: ProviderCompletionOptions = {}) {
+  /*
+   * `response_format` IS NOW A CAPABILITY QUESTION, NOT A FLAG.
+   *
+   * It used to be emitted on `json: true` for every model. That is fine right
+   * up until a model that does not implement it is asked to — Ling 3.0 Flash,
+   * which OpenRouter documents as not supporting it, and which answered a run
+   * of Scene Ledger extractions with nothing at all.
+   *
+   * The catalogue id is already threaded through every background call for the
+   * routing policy, so the answer is available here for free. A model with no
+   * catalogue entry still gets the parameter, which is byte-for-byte the
+   * behaviour before this line existed.
+   *
+   * WHAT DOES NOT CHANGE IS THE PROMPT. A model that cannot be told to emit
+   * JSON by a parameter is still ASKED for JSON in words — the instruction
+   * block says "Output JSON only" either way — and its reply is parsed, bounded
+   * and retried on exactly the same path.
+   */
+  const structured = Boolean(options.json) && supportsStructuredOutput("openrouter", options.modelId);
   const { response, startedAt } = await request({
     model,
     messages,
     max_tokens: options.maxTokens ?? 1000,
     temperature: options.temperature ?? 0.85,
-    ...(options.json ? { response_format: { type: "json_object" } } : {}),
+    ...(structured ? { response_format: { type: "json_object" } } : {}),
     ...commonFields(options),
   },options,model);
   const data = await response.json() as Record<string,unknown> & { choices?: Array<{ message?: { content?: unknown } }> };
   const content = data.choices?.[0]?.message?.content;
-  if (typeof content !== "string") {
-    throw new ProviderError("empty_response", { provider: "openrouter", model, requestId: typeof data.id === "string" ? data.id : undefined });
+  if (typeof content !== "string" || !content.trim()) {
+    const evidence = emptyResponseDiagnostic(data, content, options.thinking === "off");
+    /*
+     * TWO FAILURES WEARING ONE NAME.
+     *
+     * `empty_response` means the host produced nothing. An envelope spent
+     * entirely on hidden thinking is a different event with a different remedy,
+     * it already has its own category, and telling them apart is the whole
+     * reason the evidence above is collected: `finish_reason: "length"` with
+     * reasoning tokens spent and no visible text is not a silent host, it is a
+     * budget that could not hold the thinking AND the answer.
+     *
+     * Retrying the first is sane. Retrying the second unchanged reproduces it
+     * exactly and bills for the reasoning again.
+     */
+    const exhausted = evidence.finishReason === "length"
+      && ((evidence.reasoningTokens ?? 0) > 0 || evidence.hasReasoning || evidence.hasReasoningDetails);
+    throw new ProviderError(exhausted ? "reasoning_budget_exhausted" : "empty_response", {
+      provider: "openrouter",
+      model,
+      requestId: typeof data.id === "string" ? data.id : undefined,
+      actualModel: typeof data.model === "string" ? data.model : undefined,
+      upstreamProvider: typeof data.provider === "string" ? data.provider : undefined,
+      latencyMs: Math.max(0, Date.now() - startedAt),
+      emptyResponse: evidence,
+    });
   }
   return { content, usage: enrichedUsage(data,startedAt) };
 }

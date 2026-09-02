@@ -273,7 +273,25 @@ export function isTimeOfDayPriced(model: string) {
  * override was left on one story. An A/B period is defined by the decision, so
  * the decision is what the ledger has to carry.
  */
-export type RouteProvenance = { task: string; candidate: string | null; source: string };
+export type RouteProvenance = {
+  task: string;
+  candidate: string | null;
+  source: string;
+  /**
+   * True when this attempt is the trusted control answering for a route that
+   * failed.
+   *
+   * Without it a fallback is indistinguishable from a deliberate switch to
+   * DeepSeek, and an A/B period would silently credit the control with the
+   * challenger's traffic — which is the one way to make the comparison say the
+   * opposite of what happened.
+   */
+  fallback?: true;
+  /** The candidate that was asked for first, on a fallback attempt. */
+  requestedCandidate?: string | null;
+  /** Why the requested candidate did not answer. A category, never a body. */
+  failureReason?: string;
+};
 
 export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; providerId?: string; model: string; actualModel?: string; rpEngineId?: string; responseLength?: ResponseLength; fundingSource?: FundingSource; kind: UsageKind; taskRoute?: string; routing?: RouteProvenance; usage: LLMUsage }) {
   const usage = normalizedUsage(input.usage);

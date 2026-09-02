@@ -1,9 +1,10 @@
 import { ownedConversation } from "@/lib/access";
-import { asUser } from "@/lib/db";
+import { asUser, getUserSettings } from "@/lib/db";
 import {
   availabilityForTask, backgroundCandidate, backgroundRoute, backgroundRouteConfig, backgroundTasks,
   candidateAvailability, clearBackgroundRoute, isBackgroundTask, setBackgroundRoute, type BackgroundTask,
 } from "@/lib/background-routing";
+import { backgroundJobHealth, memoryWarning } from "@/lib/background-health";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { adminRequired, currentAccount, unauthorized } from "@/lib/session";
 
@@ -68,6 +69,29 @@ export async function GET(request: Request) {
     : undefined;
   if (conversationId && !overrides) return Response.json({ error: "Conversation not found" }, { status: 404 });
 
+  /*
+   * HEALTH TRAVELS WITH THE SELECTOR, BECAUSE THEY ARE THE SAME QUESTION.
+   *
+   * "Which model is doing the memory work" and "is it actually working" get
+   * asked in one breath, and separating them into two panels is how somebody
+   * switches to a cheaper route and never learns it has been failing since.
+   */
+  const health = conversationId ? await backgroundJobHealth(account.id, conversationId) : new Map();
+  const progress = conversationId
+    ? await asUser(account.id, async (client) => {
+      const row = (await client.query(
+        "SELECT message_count,last_consolidated_count FROM conversations WHERE id=$1 AND user_id=$2",
+        [conversationId, account.id],
+      )).rows[0];
+      const settings = await getUserSettings(client, account.id);
+      return {
+        messageCount: Number(row?.message_count || 0),
+        consolidatedCount: Number(row?.last_consolidated_count || 0),
+        consolidationInterval: settings.consolidationInterval,
+      };
+    })
+    : null;
+
   const stored = await backgroundRouteConfig();
   const tasks = [];
   for (const task of backgroundTasks) {
@@ -86,6 +110,11 @@ export async function GET(request: Request) {
         providerId: effective.selection?.providerId ?? null,
         modelId: effective.selection?.modelId ?? null,
       },
+      /**
+       * When it last worked, when it last did not, and how many times in a row.
+       * A category, never a body: this is rendered in a browser.
+       */
+      health: conversationId ? health.get(task) ?? null : undefined,
       candidates: availabilityForTask(task).map((entry) => ({
         id: entry.candidate.id,
         label: entry.candidate.label,
@@ -101,7 +130,18 @@ export async function GET(request: Request) {
       })),
     });
   }
-  return Response.json({ tasks });
+  /*
+   * One sentence, or none.
+   *
+   * Consolidation is the one whose failure is permanent — the window it failed
+   * on becomes consolidated-past once the story moves on — so it is the one
+   * with a warning. A panel that always shows a warning is a panel nobody
+   * reads. See `memoryWarning`.
+   */
+  const warning = progress
+    ? memoryWarning({ health: health.get("memory_consolidation"), ...progress })
+    : null;
+  return Response.json({ tasks, ...(conversationId ? { warning, progress } : {}) });
 }
 
 export async function PUT(request: Request) {

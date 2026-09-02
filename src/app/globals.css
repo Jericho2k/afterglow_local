@@ -149,6 +149,26 @@ html,body{max-width:100%;overflow-x:hidden}.memory-drawer{min-width:0;max-width:
 .error-text { color: var(--rose2); font-size: 0.68rem; }
 
 /*
+ * The one line an operator has to see.
+ *
+ * Loud on purpose and rare on purpose: it appears when memory extraction has
+ * failed repeatedly or has stopped advancing while the story keeps growing —
+ * the state in which a reader chats normally and quietly ends up with no
+ * memories at all. A warning that is always on screen is a warning nobody
+ * reads, so `memoryWarning` returns null for every healthy story.
+ */
+.background-warning {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rose2);
+  border-radius: 8px;
+  background: rgba(232, 121, 169, 0.08);
+  color: var(--rose2);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+/*
  * The chat header's menu control.
  *
  * The header is the one surface still built from this stylesheet, so the

@@ -435,6 +435,35 @@ describe("cross-account access", () => {
     expect(reset.tasks.find((task: { task: string }) => task.task === "scene_state").globalCandidateId).toBeNull();
   });
 
+  it("shows an operator whether the background work is actually happening", async () => {
+    /*
+     * The failure this answers: background work is deliberately not coupled to
+     * the reply, so a reader chats normally while every consolidation fails,
+     * and nothing in the product says so. `usage_events` cannot answer it
+     * either — a failed job leaves no row, so absence of work is
+     * indistinguishable from absence of evidence.
+     */
+    account = { id: alice, email: null };
+    await query(
+      `INSERT INTO background_job_health
+         (conversation_id,user_id,task,last_failure_at,last_failure_model,last_failure_candidate,last_failure_reason,consecutive_failures)
+       VALUES ($1,$2,'memory_consolidation',now(),'ling-3.0-flash','ling_3_flash','empty_response',4)`,
+      [aliceConversation, alice],
+    );
+    const body = await (await backgroundRouting.GET(new Request(`http://test/api/admin/background-routing?conversationId=${aliceConversation}`))).json();
+
+    const consolidation = body.tasks.find((task: { task: string }) => task.task === "memory_consolidation");
+    expect(consolidation.health).toMatchObject({
+      consecutiveFailures: 4, lastFailureReason: "empty_response", lastFailureModel: "ling-3.0-flash",
+    });
+    expect(body.warning).toContain("failed 4 times in a row");
+
+    // A category, never a body: this is rendered in a browser.
+    expect(JSON.stringify(body)).not.toContain("Alice private");
+    // And a job that has never run reports nothing rather than an empty form.
+    expect(body.tasks.find((task: { task: string }) => task.task === "scene_state").health).toBeNull();
+  });
+
   it("keeps the background cost report admin-only and free of story content", async () => {
     account = { id: bob, email: null };
     expect((await usageBackground.GET(new Request("http://test/api/usage/background"))).status).toBe(403);
