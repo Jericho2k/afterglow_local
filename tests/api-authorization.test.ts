@@ -42,6 +42,8 @@ const sceneState = await import("@/app/api/scene-state/route");
 const backup = await import("@/app/api/backup/route");
 const usage = await import("@/app/api/usage/route");
 const usageRouting = await import("@/app/api/usage/routing/route");
+const usageBackground = await import("@/app/api/usage/background/route");
+const backgroundRouting = await import("@/app/api/admin/background-routing/route");
 const memoryFeedback = await import("@/app/api/memory-feedback/route");
 const conversationWorlds = await import("@/app/api/conversations/[id]/worlds/route");
 const follows = await import("@/app/api/follows/route");
@@ -103,6 +105,9 @@ describe("unauthenticated access", () => {
       backup.GET(),
       usage.GET(new Request("http://test/api/usage")),
       usageRouting.GET(new Request("http://test/api/usage/routing")),
+      usageBackground.GET(new Request("http://test/api/usage/background")),
+      backgroundRouting.GET(new Request("http://test/api/admin/background-routing")),
+      backgroundRouting.PUT(post("http://test/api/admin/background-routing", { task: "scene_state", candidateId: "off" })),
       chat.POST(post("http://test/api/chat", { conversationId: aliceConversation, content: "hi", action: "send" })),
       conversationWorlds.GET(new Request("http://test/api/conversations/x/worlds"), { params: Promise.resolve({ id: aliceConversation }) }),
       conversationWorlds.POST(post("http://test/api/conversations/x/worlds", { worldId: aliceWorld }), { params: Promise.resolve({ id: aliceConversation }) }),
@@ -352,6 +357,63 @@ describe("cross-account access", () => {
     // holds no transcript, and this asserts the report keeps it that way.
     expect(report).toHaveProperty("drift");
     expect(report).toHaveProperty("byProvider");
+    expect(JSON.stringify(report)).not.toContain("Alice private");
+  });
+
+  it("keeps the background model selector admin-only, and refuses an unverified host", async () => {
+    account = { id: bob, email: null };
+    expect((await backgroundRouting.GET(new Request("http://test/api/admin/background-routing"))).status).toBe(403);
+    expect((await backgroundRouting.PUT(post("http://test/api/admin/background-routing", { task: "memory_consolidation", candidateId: "ling_3_flash" }))).status).toBe(403);
+
+    account = { id: alice, email: null };
+    const listing = await (await backgroundRouting.GET(new Request("http://test/api/admin/background-routing"))).json();
+    expect(listing.tasks.map((task: { task: string }) => task.task)).toEqual(["memory_consolidation", "memory_curation", "scene_state"]);
+
+    // Without OpenRouter funded at all, every OpenRouter candidate is refused
+    // for the more fundamental reason, which is the right order to check them
+    // in: a host slug is irrelevant on a deployment that cannot reach the
+    // provider.
+    const unfunded = await backgroundRouting.PUT(post("http://test/api/admin/background-routing", { task: "memory_consolidation", candidateId: "ling_3_flash" }));
+    expect(unfunded.status).toBe(409);
+    expect((await unfunded.json()).error).toContain("provider is not enabled");
+
+    // With it funded, a pinned host nobody has confirmed is still refused —
+    // and the refusal names the script that would confirm it rather than being
+    // a bare rejection.
+    vi.stubEnv("ENABLE_OPENROUTER", "true");
+    vi.stubEnv("OPENROUTER_API_KEY", "or-test-secret");
+    const unverified = await backgroundRouting.PUT(post("http://test/api/admin/background-routing", { task: "memory_consolidation", candidateId: "deepseek_0731_relace" }));
+    expect(unverified.status).toBe(409);
+    expect((await unverified.json()).error).toContain("background-route-verify");
+    vi.unstubAllEnvs();
+
+    // A nonsense candidate is a 409 as well, and changes nothing.
+    expect((await backgroundRouting.PUT(post("http://test/api/admin/background-routing", { task: "memory_consolidation", candidateId: "not-a-model" }))).status).toBe(409);
+
+    // The one that is always available: turning the Scene Ledger off.
+    const off = await backgroundRouting.PUT(post("http://test/api/admin/background-routing", { task: "scene_state", candidateId: "off" }));
+    expect(off.status).toBe(200);
+    const after = await (await backgroundRouting.GET(new Request("http://test/api/admin/background-routing"))).json();
+    const scene = after.tasks.find((task: { task: string }) => task.task === "scene_state");
+    expect(scene.globalCandidateId).toBe("off");
+    expect(scene.effective.source).toBe("admin_global");
+    expect(scene.effective.modelId).toBeNull();
+
+    // And resetting hands the job back to the layer beneath.
+    expect((await backgroundRouting.PUT(post("http://test/api/admin/background-routing", { task: "scene_state", reset: true }))).status).toBe(200);
+    const reset = await (await backgroundRouting.GET(new Request("http://test/api/admin/background-routing"))).json();
+    expect(reset.tasks.find((task: { task: string }) => task.task === "scene_state").globalCandidateId).toBeNull();
+  });
+
+  it("keeps the background cost report admin-only and free of story content", async () => {
+    account = { id: bob, email: null };
+    expect((await usageBackground.GET(new Request("http://test/api/usage/background"))).status).toBe(403);
+
+    account = { id: alice, email: null };
+    const report = await (await usageBackground.GET(new Request("http://test/api/usage/background"))).json();
+    expect(report).toHaveProperty("groups");
+    expect(report).toHaveProperty("sceneLedger");
+    expect(report).toHaveProperty("effectiveRoutes");
     expect(JSON.stringify(report)).not.toContain("Alice private");
   });
 

@@ -74,12 +74,10 @@ export function canonOf(id: string, content: string, category: MemoryKind = "ide
 
 export function sceneOf(fields: Partial<SceneStateFields>): SceneStateFields {
   return {
-    storyDay: null, dateKind: "unknown", dateText: "", timeOfDay: "", timeText: "",
+    storyDay: null, dateKind: "unknown", dateText: "",
+    time: { kind: "unknown", text: "" },
     location: { place: "", sub: "", confidence: "unknown" },
-    presentCharacters: [], activeSituation: [],
-    // Physical geometry defaults to nothing established, which is what every
-    // scene written before it existed genuinely holds.
-    physical: { actors: [], contacts: [], constraints: [] }, ...fields,
+    present: [], ...fields,
   };
 }
 
@@ -201,9 +199,9 @@ export const continuityCases: ContinuityCase[] = [
       }),
     ],
     scene: sceneOf({
-      storyDay: 12, timeOfDay: "late evening",
+      storyDay: 12, time: { kind: "period", text: "late evening" },
       location: { place: "Maya's apartment", sub: "kitchen", confidence: "stated" },
-      presentCharacters: ["Maya", "You"], activeSituation: ["The kettle has just boiled."],
+      present: [{ name: "Maya", position: "at the counter" }, { name: "You", position: "" }],
     }),
     query: "Do you still think about the inheritance?",
     semantic: { past: 0.88 },

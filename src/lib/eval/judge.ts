@@ -96,6 +96,13 @@ Use "categories" only when verdict is "error". Choose the ones that genuinely ap
 /**
  * Runs the judge on its own task route, so a roleplay writer is never
  * accidentally the thing grading its own output.
+ *
+ * DELIBERATELY `taskModelSelection` RATHER THAN THE ADMIN ROUTE. An
+ * administrator switching the memory model must not silently switch the model
+ * that grades memory quality: a judge that moves with the thing it is judging
+ * cannot produce a comparison. This reads the environment route and the code
+ * default only, and is unaffected by anything in
+ * src/lib/background-routing.ts.
  */
 export async function judgeTurn(input: JudgeInput): Promise<JudgeResult> {
   const selection = taskModelSelection("memory_curation");

@@ -1544,6 +1544,115 @@ function SceneStatePanel({ conversation }: { conversation: Conversation | null }
   </section>;
 }
 
+type BackgroundRoutingTask = {
+  task: "memory_consolidation" | "memory_curation" | "scene_state";
+  globalCandidateId: string | null;
+  conversationCandidateId?: string | null;
+  effective: { candidateId: string | null; source: string; providerId: string | null; modelId: string | null };
+  candidates: Array<{ id: string; label: string; description: string; selectable: boolean; reason: string; upstreamVerified: boolean }>;
+};
+
+const backgroundTaskLabel: Record<BackgroundRoutingTask["task"], string> = {
+  memory_consolidation: "Memory extraction",
+  memory_curation: "Canon curation",
+  scene_state: "Scene Ledger",
+};
+
+/** Where the model that is actually running came from, in a reader's words. */
+const routeSourceLabel: Record<string, string> = {
+  conversation_override: "this story's override",
+  admin_global: "the global setting",
+  environment: "an environment route",
+  default: "the shipped default",
+};
+
+/**
+ * THE BACKGROUND MODEL SELECTOR.
+ *
+ * Administrator-only, and deliberately placed beside the memory library rather
+ * than in Settings: the question it answers is "what is this story's continuity
+ * being maintained by, and what happens if I change it", which is a question
+ * somebody asks while looking at the memories.
+ *
+ * Two scopes on one panel, because the comparison it exists to support needs
+ * both: the global setting is the A/B lever, and the per-story override is how
+ * you run a controlled side-by-side without disturbing anybody else's stories.
+ * The line under each job says which layer actually decided, because a setting
+ * that is silently losing to an environment variable is the failure this whole
+ * feature exists to prevent.
+ *
+ * NOTHING HERE REWRITES ANYTHING. Changing a route changes which model does the
+ * next piece of background work; the memories, summaries and arcs already
+ * stored are untouched, and the copy says so.
+ */
+function BackgroundModelPanel({ conversation }: { conversation: Conversation | null }) {
+  const [tasks, setTasks] = useState<BackgroundRoutingTask[] | null>(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    if (!conversation) return;
+    try { setTasks((await api<{ tasks: BackgroundRoutingTask[] }>(`/api/admin/background-routing?conversationId=${conversation.id}`)).tasks); }
+    catch { setTasks(null); }
+  }, [conversation]);
+  useEffect(() => { void load(); }, [load]);
+  if (!conversation || !tasks) return null;
+
+  const change = async (task: BackgroundRoutingTask["task"], scope: "global" | "conversation", value: string) => {
+    setBusy(`${task}:${scope}`); setError("");
+    try {
+      await api("/api/admin/background-routing", {
+        method: "PUT",
+        body: JSON.stringify({
+          task,
+          ...(scope === "conversation" ? { conversationId: conversation.id } : {}),
+          ...(value === "__inherit" ? { reset: true } : { candidateId: value }),
+        }),
+      });
+      await load();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "That model could not be selected");
+    } finally { setBusy(""); }
+  };
+
+  return <section className="summary-card">
+    <span className="eyebrow">Background models · operator</span>
+    {tasks.map((entry) => <div key={entry.task} className="background-route">
+      <strong>{backgroundTaskLabel[entry.task]}</strong>
+      <SelectField
+        row
+        label="Everywhere"
+        value={entry.globalCandidateId ?? "__inherit"}
+        onChange={(value) => void change(entry.task, "global", value)}
+        options={[
+          { value: "__inherit", label: "Use the shipped default" },
+          ...entry.candidates.map((candidate) => ({
+            value: candidate.id,
+            label: candidate.selectable ? candidate.label : `${candidate.label} — unavailable`,
+            description: candidate.selectable ? candidate.description : candidate.reason,
+          })),
+        ]}
+      />
+      <SelectField
+        row
+        label="This story only"
+        value={entry.conversationCandidateId ?? "__inherit"}
+        onChange={(value) => void change(entry.task, "conversation", value)}
+        options={[
+          { value: "__inherit", label: "Use global" },
+          ...entry.candidates.filter((candidate) => candidate.selectable).map((candidate) => ({ value: candidate.id, label: candidate.label })),
+        ]}
+      />
+      <small>
+        {busy.startsWith(entry.task) ? "Saving…" : entry.effective.modelId
+          ? `Running ${entry.effective.providerId}/${entry.effective.modelId}, from ${routeSourceLabel[entry.effective.source] ?? entry.effective.source}.`
+          : `Not running at all, from ${routeSourceLabel[entry.effective.source] ?? entry.effective.source}.`}
+      </small>
+    </div>)}
+    {error && <small className="error-text">{error}</small>}
+    <p className="setting-note">Applies to the NEXT piece of background work. Memories, summaries and arcs already stored are never regenerated when this changes.</p>
+  </section>;
+}
+
 /**
  * The operator's half of the memory library.
  *
@@ -1556,6 +1665,7 @@ function AdminMemoryTools({ conversation, onRefreshed }: { conversation: Convers
   if (!conversation) return null;
   return <>
     <SceneStatePanel conversation={conversation} />
+    <BackgroundModelPanel conversation={conversation} />
     <section className="summary-card">
       <span className="eyebrow">Operator</span>
       <button disabled={busy || conversation.messageCount < 2} onClick={async () => {

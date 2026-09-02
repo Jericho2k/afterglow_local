@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { maxLoreBlockText, normalizeBlocks } from "./rich-content";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type ScenePhysical, type SceneStamp, type SceneState, type World, type WorldSummary } from "./types";
+import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type ScenePresence, type SceneStamp, type SceneState, type SceneTime, type SceneTimeKind, type World, type WorldSummary } from "./types";
 
 const globalForDb = globalThis as unknown as { afterglowPool?: Pool; afterglowSchemaPromise?: Promise<void> };
 
@@ -226,6 +226,8 @@ async function schema() {
       location_sub text NOT NULL DEFAULT '',
       location_confidence text NOT NULL DEFAULT 'unknown',
       present_characters text[] NOT NULL DEFAULT ARRAY[]::text[],
+      present_people jsonb NOT NULL DEFAULT '[]'::jsonb,
+      time_kind text NOT NULL DEFAULT '',
       active_situation text[] NOT NULL DEFAULT ARRAY[]::text[],
       physical_actors jsonb NOT NULL DEFAULT '[]'::jsonb,
       physical_contacts text[] NOT NULL DEFAULT ARRAY[]::text[],
@@ -429,6 +431,12 @@ async function schema() {
       created_at timestamptz NOT NULL DEFAULT now(),
       settled_at timestamptz
     );
+    CREATE TABLE IF NOT EXISTS background_model_routes (
+      task text PRIMARY KEY,
+      candidate_id text NOT NULL,
+      updated_by uuid,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS curated_model_routes (
       model_id text PRIMARY KEY,
       enabled boolean NOT NULL DEFAULT true,
@@ -492,6 +500,17 @@ async function schema() {
   // Where inside an oversized message the next consolidation pass resumes; see
   // migration 0027 and `planConsolidationBatch`.
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_consolidated_offset integer NOT NULL DEFAULT 0");
+  /*
+   * The admin-only per-conversation background model overrides.
+   *
+   * Nullable and null by default, which is the whole design: an unset column
+   * means "use whatever the global setting says", so the overwhelming majority
+   * of conversations carry no opinion and follow the deployment. They exist for
+   * a controlled side-by-side inside one story, and a reader never sets them.
+   * See src/lib/background-routing.ts.
+   */
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS memory_model_override text");
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS scene_model_override text");
   // The counter that says which archived version a recorded provenance entry
   // refers to; see migration 0028 and src/lib/provenance.ts.
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_version integer NOT NULL DEFAULT 1");
@@ -713,6 +732,21 @@ async function schema() {
   await pool().query("CREATE INDEX IF NOT EXISTS usage_events_user_idx ON usage_events (user_id, created_at DESC)");
   await pool().query("CREATE INDEX IF NOT EXISTS core_canon_user_idx ON core_canon_entries (user_id, conversation_id, status)");
   await pool().query("CREATE INDEX IF NOT EXISTS memory_retrieval_runs_user_idx ON memory_retrieval_runs (user_id, conversation_id, created_at DESC)");
+  /*
+   * Scene Ledger Lite.
+   *
+   * `present_people` carries a position beside each name; `time_kind` says how
+   * precise the stored time is. Both are additive and both default to a shape
+   * that reads correctly for every row written before them — see
+   * `presenceFromRow` and `sceneTimeFromRow`.
+   *
+   * The physical-simulation columns are deliberately NOT dropped. They stop
+   * being written and stop being read, which is the whole of the behaviour
+   * change; dropping them would make a rollback lossy for no operational gain,
+   * and they cost nothing sitting empty.
+   */
+  await pool().query("ALTER TABLE conversation_scene_states ADD COLUMN IF NOT EXISTS present_people jsonb NOT NULL DEFAULT '[]'::jsonb");
+  await pool().query("ALTER TABLE conversation_scene_states ADD COLUMN IF NOT EXISTS time_kind text NOT NULL DEFAULT ''");
   await pool().query("CREATE INDEX IF NOT EXISTS conversation_scene_states_current_idx ON conversation_scene_states (user_id, conversation_id, through_message_count DESC)");
   // Physical continuity. Additive, empty by default, and empty means unknown;
   // the constraints and the reasoning live in 0020_scene_physical_state.sql.
@@ -1286,37 +1320,51 @@ export function memoryArcFromRow(row: Record<string, unknown>): MemoryArc {
 }
 
 /**
- * The physical arrangement stored on a scene row.
+ * Who is in the scene, read out of a row that may predate positions.
  *
- * Written defensively because it is the one part of a scene that arrives as
- * free-form JSON. A row from before 0020 has no column at all, a row written by
- * a future version may have fields this one has never heard of, and neither may
- * produce anything other than a well-formed arrangement here — a broken shape
- * must read as "nothing established", which is the safe answer and also the
- * true one.
+ * Written defensively because it is the one part of a ledger that arrives as
+ * free-form JSON. Three vintages have to read correctly here: a row from before
+ * the Scene Ledger carried positions (names in `present_characters`, no
+ * `present_people` at all), a current row (both, the jsonb authoritative), and a
+ * row written by a future version with fields this one has never heard of. A
+ * broken shape must read as the names alone rather than as nobody — losing a
+ * position is a cosmetic loss, losing a person is the failure the ledger exists
+ * to prevent.
  */
-function physicalFromRow(row: Record<string, unknown>): ScenePhysical {
-  const raw = row.physical_actors;
-  const parsed = typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : raw;
-  const actors = Array.isArray(parsed) ? parsed : [];
-  const text = (value: unknown) => (typeof value === "string" ? value : "");
-  return {
-    actors: actors
-      .filter((actor): actor is Record<string, unknown> => Boolean(actor) && typeof actor === "object")
-      .map((actor) => ({
-        name: text(actor.name),
-        posture: text(actor.posture), facing: text(actor.facing),
-        relativeTo: text(actor.relativeTo), support: text(actor.support),
-        leftArm: text(actor.leftArm), rightArm: text(actor.rightArm),
-        leftHand: text(actor.leftHand), rightHand: text(actor.rightHand),
-        leftLeg: text(actor.leftLeg), rightLeg: text(actor.rightLeg),
-        leftFoot: text(actor.leftFoot), rightFoot: text(actor.rightFoot),
-        held: Array.isArray(actor.held) ? actor.held.filter((item): item is string => typeof item === "string") : [],
-      }))
-      .filter((actor) => actor.name),
-    contacts: textArrayFromRow(row.physical_contacts),
-    constraints: textArrayFromRow(row.physical_constraints),
-  };
+function presenceFromRow(row: Record<string, unknown>): ScenePresence[] {
+  const names = textArrayFromRow(row.present_characters);
+  const raw = row.present_people;
+  const parsed = typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+  if (!Array.isArray(parsed)) return names.map((name) => ({ name, position: "" }));
+  const people = parsed
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    .map((entry) => ({
+      name: typeof entry.name === "string" ? entry.name : "",
+      position: typeof entry.position === "string" ? entry.position : "",
+    }))
+    .filter((person) => person.name);
+  return people.length ? people : names.map((name) => ({ name, position: "" }));
+}
+
+/**
+ * The time, read out of a row that may predate the precision model.
+ *
+ * Legacy rows carry a broad `time_of_day` and an optional exact `time_text`,
+ * and the two together are exactly the information the old ledger had. A row
+ * with an exact reading is read as exact; one with only a period is read as a
+ * period; one with neither is unknown. Nothing is promoted: a legacy period
+ * does not become a clock time here any more than it would anywhere else.
+ */
+function sceneTimeFromRow(row: Record<string, unknown>): SceneTime {
+  const kinds: SceneTimeKind[] = ["exact", "approximate", "period", "relative", "unknown"];
+  const stored = String(row.time_kind || "");
+  const text = String(row.time_text || "");
+  if (kinds.includes(stored as SceneTimeKind) && stored !== "unknown" && text) {
+    return { kind: stored as SceneTimeKind, text };
+  }
+  if (text) return { kind: "exact", text };
+  const period = String(row.time_of_day || "");
+  return period ? { kind: "period", text: period } : { kind: "unknown", text: "" };
 }
 
 /** A persisted Scene State row. Unknown stays unknown: no field is defaulted. */
@@ -1334,14 +1382,12 @@ export function sceneStateFromRow(row: Record<string, unknown>): SceneState {
     storyDay: row.story_day == null ? null : Number(row.story_day),
     dateKind: (["exact","relative","unknown"].includes(dateKind) ? dateKind : "unknown") as SceneState["dateKind"],
     dateText: String(row.date_text || ""),
-    timeOfDay: String(row.time_of_day || ""), timeText: String(row.time_text || ""),
+    time: sceneTimeFromRow(row),
     location: {
       place: String(row.location_place || ""), sub: String(row.location_sub || ""),
       confidence: (["stated","inferred","unknown"].includes(confidence) ? confidence : "unknown") as SceneState["location"]["confidence"],
     },
-    presentCharacters: textArrayFromRow(row.present_characters),
-    activeSituation: textArrayFromRow(row.active_situation),
-    physical: physicalFromRow(row),
+    present: presenceFromRow(row),
     changedFields: textArrayFromRow(row.changed_fields),
     extractionModel: String(row.extraction_model || ""), extractionProvider: String(row.extraction_provider || ""),
     extractionLatencyMs: Number(row.extraction_latency_ms || 0), failureReason: String(row.failure_reason || ""),

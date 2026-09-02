@@ -129,6 +129,26 @@ html,body{max-width:100%;overflow-x:hidden}.memory-drawer{min-width:0;max-width:
 }
 
 /*
+ * Administrator-only background model selector.
+ *
+ * One block per background job, each with its two scopes and a line saying
+ * which layer actually decided. Never rendered for a reader: which model
+ * maintains continuity is an operator's question, and the panel that answers it
+ * sits behind the same boundary as the Scene Ledger diagnostics above.
+ */
+.background-route {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+}
+.background-route:first-of-type { border-top: 0; }
+.background-route strong { font-size: 0.72rem; letter-spacing: 0.02em; }
+.background-route small { color: var(--faint); font-size: 0.66rem; line-height: 1.5; }
+.error-text { color: var(--rose2); font-size: 0.68rem; }
+
+/*
  * The chat header's menu control.
  *
  * The header is the one surface still built from this stylesheet, so the

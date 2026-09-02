@@ -239,7 +239,20 @@ export function isTimeOfDayPriced(model: string) {
  * caused it. Every paid call routes through here, so per-account cost, token
  * and volume reporting is a single grouped query away.
  */
-export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; providerId?: string; model: string; actualModel?: string; rpEngineId?: string; responseLength?: ResponseLength; fundingSource?: FundingSource; kind: UsageKind; taskRoute?: string; usage: LLMUsage }) {
+/**
+ * Why this particular model ran this particular background job.
+ *
+ * The columns beside it already say WHAT ran — logical model, actual provider
+ * model, upstream host, tokens, cached tokens, cost. This says WHO DECIDED, and
+ * without it an A/B is unreadable: two weeks of consolidations on a cheaper
+ * route look identical whether an administrator chose it deliberately, an
+ * environment variable was still set from an incident, or a per-conversation
+ * override was left on one story. An A/B period is defined by the decision, so
+ * the decision is what the ledger has to carry.
+ */
+export type RouteProvenance = { task: string; candidate: string | null; source: string };
+
+export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; providerId?: string; model: string; actualModel?: string; rpEngineId?: string; responseLength?: ResponseLength; fundingSource?: FundingSource; kind: UsageKind; taskRoute?: string; routing?: RouteProvenance; usage: LLMUsage }) {
   const usage = normalizedUsage(input.usage);
   /*
    * PROVIDER-REPORTED COST WINS, ALWAYS.
@@ -273,6 +286,7 @@ export async function recordUsageEvent(input: { userId: string; conversationId?:
     ...(input.usage.completion_tokens_details ? { completionTokensDetails: input.usage.completion_tokens_details } : {}),
     ...(input.usage.cost_details ? { costDetails: input.usage.cost_details } : {}),
     ...(input.usage.upstream_provider ? { upstreamProvider:input.usage.upstream_provider } : {}),
+    ...(input.routing ? { routing: input.routing } : {}),
   };
   await userQuery(
     input.userId,

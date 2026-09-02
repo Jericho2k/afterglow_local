@@ -36,9 +36,37 @@ const stickyTasks: Record<InferenceTask, boolean> = {
   // Also conversation-shaped: the extraction prompt is stable and the
   // transcript it reads grows at the end.
   scene_state: true,
-  // Maintenance runs on a schedule against a rewritten window; the prefix is
-  // different every time, so stickiness would pin a host for no benefit.
-  memory_consolidation: false,
+  /*
+   * CONSOLIDATION IS STICKY TOO, AND THE OLD REASONING WAS ABOUT THE OLD PROMPT.
+   *
+   * "The prefix is different every time" was true when the extraction rules and
+   * the JSON schema sat at the END of a single user message, behind the
+   * transcript: every call diverged on its first line and there was nothing for
+   * a host to hold. That prompt no longer exists. The rules and the schema are
+   * a system message that is byte-identical on every consolidation this
+   * deployment ever makes, and the varying material — summary, commitments,
+   * transcript — follows it.
+   *
+   * Roughly a thousand tokens of stable prefix per call is worth keeping warm
+   * on one host, and DeepSeek prices a cached input token at about a fiftieth
+   * of a fresh one. Without a session id, stickiness only begins after a cache
+   * hit has been observed, and consolidations for one story are minutes apart —
+   * which is exactly the interval over which a host is most likely to be
+   * reassigned.
+   */
+  memory_consolidation: true,
+  /*
+   * Curation stays unsticky, and the reason is its CADENCE rather than its
+   * prompt.
+   *
+   * Its instruction block is stable and does sit at the head of what it sends,
+   * so a cache could hold it in principle. But canon is curated once every 75 to
+   * 150 messages — hours or days apart in a real story — and no provider holds a
+   * prompt cache over that interval. A session id would ask a host to be sticky
+   * across a gap in which the cache has certainly expired, which buys nothing
+   * and gives up the freedom to route each run to whatever is healthy. If the
+   * curation interval ever drops to minutes this line should be revisited.
+   */
   memory_curation: false,
   // A one-shot task with no follow-up turn to be sticky with.
   character_import: false,

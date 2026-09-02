@@ -123,15 +123,25 @@ describe("session identity", () => {
     const conversation = "cccccccc-0000-4000-8000-000000000001";
     const rp = inferenceSessionId("rp_generation", conversation);
     const scene = inferenceSessionId("scene_state", conversation);
+    const memory = inferenceSessionId("memory_consolidation", conversation);
 
     expect(rp).toBe(inferenceSessionId("rp_generation", conversation));
-    // Two tasks over the same conversation share no prompt prefix, so pooling
-    // them under one identifier would ask for a cache that can never hit.
-    expect(scene).not.toBe(rp);
+    expect(memory).toBe(inferenceSessionId("memory_consolidation", conversation));
+    /*
+     * Three tasks over one conversation, three namespaces.
+     *
+     * They share no prompt prefix — a roleplay turn, a scene extraction and a
+     * memory consolidation have completely different system messages — so
+     * pooling them under one identifier would ask a provider to hold a cache
+     * that can never hit.
+     */
+    expect(new Set([rp, scene, memory]).size).toBe(3);
     expect(inferenceSessionId("rp_generation", "cccccccc-0000-4000-8000-000000000002")).not.toBe(rp);
-    // One-shot and batch work gets no session at all rather than a random one.
+    // One-shot work gets no session at all rather than a random one, and nor
+    // does curation: it runs 75-150 messages apart, which is far longer than
+    // any provider holds a prompt cache.
     expect(inferenceSessionId("character_import", conversation)).toBeUndefined();
-    expect(inferenceSessionId("memory_consolidation", conversation)).toBeUndefined();
+    expect(inferenceSessionId("memory_curation", conversation)).toBeUndefined();
     expect(inferenceSessionId("rp_generation", null)).toBeUndefined();
   });
 
