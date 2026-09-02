@@ -1553,11 +1553,18 @@ function SceneStatePanel({ conversation }: { conversation: Conversation | null }
   </section>;
 }
 
+type BackgroundJobHealth = {
+  lastSuccessAt: string | null; lastSuccessModel: string; lastSuccessCandidate: string | null;
+  lastFailureAt: string | null; lastFailureModel: string; lastFailureCandidate: string | null;
+  lastFailureReason: string; consecutiveFailures: number; lastSuccessUsedFallback: boolean;
+};
+
 type BackgroundRoutingTask = {
   task: "memory_consolidation" | "memory_curation" | "scene_state";
   globalCandidateId: string | null;
   conversationCandidateId?: string | null;
   effective: { candidateId: string | null; source: string; providerId: string | null; modelId: string | null };
+  health?: BackgroundJobHealth | null;
   candidates: Array<{ id: string; label: string; description: string; selectable: boolean; reason: string; upstreamProvider: string | null; requiresUpstreamOptIn: boolean }>;
 };
 
@@ -1596,12 +1603,16 @@ const routeSourceLabel: Record<string, string> = {
  */
 function BackgroundModelPanel({ conversation }: { conversation: Conversation | null }) {
   const [tasks, setTasks] = useState<BackgroundRoutingTask[] | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     if (!conversation) return;
-    try { setTasks((await api<{ tasks: BackgroundRoutingTask[] }>(`/api/admin/background-routing?conversationId=${conversation.id}`)).tasks); }
-    catch { setTasks(null); }
+    try {
+      const data = await api<{ tasks: BackgroundRoutingTask[]; warning?: string | null }>(`/api/admin/background-routing?conversationId=${conversation.id}`);
+      setTasks(data.tasks);
+      setWarning(data.warning ?? null);
+    } catch { setTasks(null); setWarning(null); }
   }, [conversation]);
   useEffect(() => { void load(); }, [load]);
   if (!conversation || !tasks) return null;
@@ -1625,6 +1636,14 @@ function BackgroundModelPanel({ conversation }: { conversation: Conversation | n
 
   return <section className="summary-card">
     <span className="eyebrow">Background models · operator</span>
+    {/*
+      * THE LINE THAT WOULD HAVE SAVED A WEEK OF LOST MEMORIES.
+      *
+      * Background work is deliberately not coupled to the reply, so a reader
+      * chats normally while every consolidation fails. Nothing in the product
+      * said so until somebody opened the memory drawer and found it empty.
+      */}
+    {warning && <p className="background-warning" role="status">{warning}</p>}
     {tasks.map((entry) => <div key={entry.task} className="background-route">
       <strong>{backgroundTaskLabel[entry.task]}</strong>
       <SelectField
@@ -1656,10 +1675,39 @@ function BackgroundModelPanel({ conversation }: { conversation: Conversation | n
           ? `Running ${entry.effective.providerId}/${entry.effective.modelId}, from ${routeSourceLabel[entry.effective.source] ?? entry.effective.source}.`
           : `Not running at all, from ${routeSourceLabel[entry.effective.source] ?? entry.effective.source}.`}
       </small>
+      {entry.health && <BackgroundHealthLine health={entry.health} />}
     </div>)}
     {error && <small className="error-text">{error}</small>}
     <p className="setting-note">Applies to the NEXT piece of background work. Memories, summaries and arcs already stored are never regenerated when this changes.</p>
   </section>;
+}
+
+/**
+ * WHAT THIS JOB HAS ACTUALLY BEEN DOING.
+ *
+ * Four facts and no prose: when it last worked, when it last did not and with
+ * what category of failure, how many failures in a row, and whether the
+ * successes are the control rescuing a route somebody selected. A failure
+ * REASON is a category — `empty_response`, `rate_limited` — because that is
+ * what decides what an operator does next, and because this renders in a
+ * browser and must never carry a prompt or a model's output.
+ *
+ * A job that has never run shows nothing rather than an empty form: a
+ * conversation younger than the consolidation interval is not a problem and
+ * should not look like one.
+ */
+function BackgroundHealthLine({ health }: { health: BackgroundJobHealth }) {
+  const when = (value: string | null) => (value ? new Date(value).toLocaleString() : null);
+  const success = when(health.lastSuccessAt);
+  const failure = when(health.lastFailureAt);
+  if (!success && !failure) return null;
+  return <small className={health.consecutiveFailures > 0 ? "error-text" : undefined}>
+    {success
+      ? `Last ran ${success} on ${health.lastSuccessModel}${health.lastSuccessUsedFallback ? " (fallback to the control)" : ""}.`
+      : "Has never completed for this story."}
+    {failure && ` Last failed ${failure} on ${health.lastFailureModel}: ${health.lastFailureReason}.`}
+    {health.consecutiveFailures > 0 && ` ${health.consecutiveFailures} failure${health.consecutiveFailures === 1 ? "" : "s"} in a row.`}
+  </small>;
 }
 
 /**

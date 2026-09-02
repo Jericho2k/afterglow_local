@@ -1,7 +1,7 @@
 import type { ModelCatalog, ModelCategory, ModelDefinition, ProviderDefinition, RoleplayEngineDefinition, RoleplayEngineId } from "./types";
 import { engineDefinitions } from "./engines";
 import type { ModelVerbosity } from "./response-length";
-import type { ReasoningBudget, ReasoningDirective } from "./reasoning";
+import { isReasoningEffort, type ReasoningBudget, type ReasoningDirective, type ReasoningEffort } from "./reasoning";
 
 export type InferenceTask = "rp_generation" | "memory_consolidation" | "memory_curation" | "scene_state" | "character_import";
 export type InferenceSelection = { providerId: string; modelId: string };
@@ -537,7 +537,23 @@ const knownModels: InternalModelDefinition[] = [
       contextTokens: 262_144,
       maxOutputTokens: 32_768,
       thinking: false,
-      jsonMode: true,
+      /*
+       * NO STRUCTURED OUTPUT. OpenRouter documents this model as not supporting
+       * `response_format`, and this entry claimed otherwise.
+       *
+       * The consequence was not a 400 anybody could read. `jsonMode: true` made
+       * every Scene Ledger extraction send `response_format: {type:"json_object"}`
+       * to an endpoint that does not implement it, and the observed result in
+       * production was a run of `empty_response` failures — a background job
+       * that never reaches a reader, so nobody saw it until a conversation
+       * turned out to have no memories.
+       *
+       * `jsonMode` is now load-bearing rather than decorative: the adapter reads
+       * it before emitting the parameter. Declaring it wrongly in either
+       * direction has a cost, so it belongs to whatever the provider documents
+       * and not to an assumption that a modern model must support it.
+       */
+      jsonMode: false,
       promptCaching: true,
       costCeiling: { promptUsdPerMillion: 0.10, completionUsdPerMillion: 0.30 },
       dataPolicy: { dataCollection: "deny" },
@@ -864,7 +880,11 @@ const knownModels: InternalModelDefinition[] = [
       contextTokens: 262_144,
       maxOutputTokens: 32_768,
       thinking: false,
-      jsonMode: true,
+      // The same underlying model as the paid route above, so the same answer:
+      // no `response_format`. A capability is a property of the model, and
+      // splitting the two entries' answers would be a bug waiting for whichever
+      // one got used for structured work first.
+      jsonMode: false,
       promptCaching: false,
       dataPolicy: { dataCollection: "deny" },
     },
@@ -1363,6 +1383,72 @@ export function defaultReasoningFor(modelId: string): ReasoningDirective | null 
  */
 export function reasoningIsMandatoryFor(modelId: string) {
   return knownModels.find((model) => model.id === modelId)?.capabilities.reasoningMandatory === true;
+}
+
+/**
+ * WHAT A BACKGROUND EXTRACTION ASKS FOR WHEN IT ASKS ABOUT THINKING.
+ *
+ * The answer is "none", and the reason is not economy — it is that hidden
+ * reasoning tokens come out of the SAME completion envelope as the JSON, and a
+ * background extraction's envelope is deliberately tiny. A consolidation is
+ * given 3,600 tokens and a Scene Ledger 400; a model that reasons before it
+ * answers can spend all of either and return `content: null`, which is exactly
+ * the production failure this exists to stop.
+ *
+ * IT ALSO MAKES THE TWO PROVIDERS AGREE. `src/lib/deepseek.ts` has always sent
+ * `thinking: { type: "disabled" }` on its non-streaming path, so Direct DeepSeek
+ * never had this problem. The OpenRouter path sent no `reasoning` key at all,
+ * which is not "off" — it is declining to have an opinion, and the endpoint's
+ * own default on a reasoning-capable model is to reason. Two background routes
+ * to the same job behaving oppositely is not a routing policy, it is an
+ * oversight.
+ *
+ * Three answers, and the middle one is why this is a function rather than a
+ * constant:
+ *
+ *   `undefined`  The endpoint does not accept the `reasoning` parameter at all
+ *                (`capabilities.thinking === false`). Sending an unknown
+ *                parameter is a 400 with a background job attached to it, so
+ *                silence is correct — and such a model has no hidden reasoning
+ *                to disable in the first place.
+ *   `"off"`      Reasoning is supported and optional. Decline it explicitly.
+ *   an effort    Reasoning is MANDATORY on this endpoint. `{ enabled: false }`
+ *                would be refused, so the least it will agree to is the nearest
+ *                expressible version of the intention. A model that declares
+ *                mandatory reasoning without declaring a floor gets the
+ *                endpoint default and a note in the report rather than a
+ *                request that is known to fail.
+ *
+ * DELIBERATELY NOT `defaultReasoningFor`. That function serves the RP writer and
+ * is steered by `RP_REASONING`, which is an operator's opinion about roleplay.
+ * Background extraction is not roleplay and must not move when that switch
+ * does.
+ */
+export function backgroundReasoningFor(modelId: string): "off" | ReasoningEffort | undefined {
+  const capabilities = knownModels.find((model) => model.id === modelId)?.capabilities;
+  if (!capabilities?.thinking) return undefined;
+  if (capabilities.reasoningMandatory) {
+    return isReasoningEffort(capabilities.reasoningDefault) ? capabilities.reasoningDefault : undefined;
+  }
+  return "off";
+}
+
+/**
+ * Whether this model's endpoint will honour `response_format`.
+ *
+ * Read by the OpenRouter adapter before it emits the parameter. It used to emit
+ * it unconditionally on `json: true`, which is fine until a model that does not
+ * implement it is asked to — see the Ling entry above for what that looked like
+ * in production.
+ *
+ * An UNKNOWN model answers true, which is exactly the behaviour every caller
+ * had before this existed: a deployment-configured model this file has never
+ * seen keeps getting the parameter, and only a model whose catalogue entry
+ * says otherwise loses it.
+ */
+export function supportsStructuredOutput(providerId: string, modelId: string | undefined) {
+  if (!modelId) return true;
+  return modelCapabilities(providerId, modelId).jsonMode;
 }
 
 /**

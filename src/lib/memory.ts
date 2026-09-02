@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { completionWithUsage, parseJson } from "./llm";
+import { completionWithUsage, parseJson, type LLMMessage } from "./llm";
 import { asUser, getUserSettings } from "./db";
 import { consolidationInput, consolidationInstructions } from "./prompts";
 import type { Memory, MemoryArc, Message } from "./types";
 import { memoryArcFromRow, memoryFromRow, messageFromRow } from "./db";
-import { recordUsageEvent } from "./usage";
+import { recordUsageEvent, type RouteProvenance } from "./usage";
 import { estimateTokens } from "./context";
-import { providerModelId } from "./provider";
-import { backgroundRoute, routeProvenance } from "./background-routing";
+import { backgroundReasoningFor, providerModelId } from "./provider";
+import { backgroundCandidate, backgroundRoute, routeProvenance } from "./background-routing";
+import { recordBackgroundFailure, recordBackgroundSuccess } from "./background-health";
+import { ProviderError, logProviderDiagnostic, type ProviderErrorCategory } from "./provider-errors";
 import { inferenceSessionId } from "./inference-session";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled } from "./memory-flags";
@@ -20,6 +22,45 @@ const stopWords = new Set(["the", "and", "that", "this", "with", "from", "have",
 const essentialKinds = new Set<Memory["kind"]>(["relationship", "promise", "boundary", "open_loop"]);
 const protectedKinds = new Set<Memory["kind"]>(["promise", "boundary", "open_loop"]);
 const activeConsolidations = new Set<string>();
+
+/**
+ * WHICH FAILURES THE CONTROL IS ALLOWED TO ANSWER FOR.
+ *
+ * The line is drawn between "this route could not do the work" and "this
+ * deployment is misconfigured", and it is drawn deliberately in favour of
+ * letting a misconfiguration be seen.
+ *
+ * RECOVERED. A host that was busy, unreachable, silent, or that spent the
+ * envelope on hidden thinking; and a reply that was paid for and was not the
+ * contract. Every one of those is a fact about one route on one afternoon, and
+ * a memory window is lost permanently if nobody else answers.
+ *
+ * NOT RECOVERED, and each for its own reason:
+ *
+ *   `auth` / `billing`  A wrong key or an empty account. Quietly routing around
+ *                       it means the operator discovers it at the worst
+ *                       possible moment instead of the first one.
+ *   `bad_request`       Afterglow sent something the endpoint rejected — a
+ *                       catalogue entry that is wrong, or a pinned host that
+ *                       refuses to run this job at all. Falling back would hide
+ *                       exactly the signal that says which.
+ *   `content_filtered`  A refusal is a decision. Sending the same transcript to
+ *                       a different model to get a different answer is routing
+ *                       around a safety layer, which is not a thing this
+ *                       codebase does by accident.
+ *   `timeout`           The caller hung up or the deadline passed. A second
+ *                       full consolidation on top of one that already ran long
+ *                       is spend with nobody waiting for it; the window keeps
+ *                       and the next job reads it.
+ */
+export function recoverableForFallback(category: ProviderErrorCategory | "malformed_output" | "no_summary" | "unknown") {
+  return category === "empty_response"
+    || category === "reasoning_budget_exhausted"
+    || category === "rate_limited"
+    || category === "upstream_unavailable"
+    || category === "malformed_output"
+    || category === "no_summary";
+}
 
 /**
  * The newest assistant reply remains provisional while the user can regenerate
@@ -371,36 +412,164 @@ export async function maybeConsolidate(userId: string, conversationId: string, f
     // memories stops having a past — so a null selection here would be a bug in
     // the candidate table rather than a configuration. Refuse loudly.
     if (!route.selection) throw new Error("memory_consolidation resolved to no model");
-    const { providerId,modelId } = route.selection;
     const rpEngineId = String(conversation.rp_engine_id || settings.roleplayPreset);
-    /*
-     * Stable prefix first, changing material second.
-     *
-     * The system message is byte-identical on every consolidation call this
-     * deployment ever makes, so it is the part a provider prompt cache can
-     * actually reuse. See `consolidationInstructions`.
-     */
-    const response = await completionWithUsage({ providerId, modelId }, [
+    const request: LLMMessage[] = [
+      /*
+       * Stable prefix first, changing material second.
+       *
+       * The system message is byte-identical on every consolidation call this
+       * deployment ever makes, so it is the part a provider prompt cache can
+       * actually reuse. See `consolidationInstructions`. It also asks for JSON
+       * IN WORDS, which is what makes the request survive a model whose
+       * endpoint does not implement `response_format`.
+       */
       { role: "system", content: `You are a precise continuity editor and episodic-memory curator. Output JSON only.\n\n${consolidationInstructions()}` },
       { role: "user", content: consolidationInput(String(conversation.summary), messages, settings.ownerName, activeCommitments) },
-    ], {
-      json: true, maxTokens: 3600, temperature: 0.2,
+    ];
+
+    /** One route's attempt at this window, with its cost recorded either way. */
+    const attemptConsolidation = async (
+      selection: { providerId: string; modelId: string },
+      provenance: RouteProvenance,
+    ): Promise<{ ok: true; data: Consolidation } | { ok: false; reason: string; recoverable: boolean }> => {
+      const { providerId, modelId } = selection;
+      const record = (usage: NonNullable<Awaited<ReturnType<typeof completionWithUsage>>["usage"]>) => recordUsageEvent({
+        userId, conversationId, providerId, model: modelId,
+        actualModel: providerModelId(providerId, modelId) ?? modelId,
+        rpEngineId, kind: "memory_consolidation", taskRoute: "memory_consolidation",
+        routing: provenance, usage,
+      }).catch((error) => console.error("Memory usage accounting failed", error));
+      try {
+        const response = await completionWithUsage({ providerId, modelId }, request, {
+          json: true, maxTokens: 3600, temperature: 0.2,
+          /*
+           * `modelId` is the CATALOGUE id, and passing it is what applies this
+           * model's routing policy — the price ceiling, the privacy floor, the
+           * dedicated-host pin the evaluation routes depend on, and now whether
+           * the endpoint is sent `response_format` at all.
+           */
+          modelId,
+          /*
+           * NO HIDDEN THINKING IN A 3,600-TOKEN ENVELOPE.
+           *
+           * Reasoning tokens are billed and counted as completion tokens, so a
+           * reasoning-capable model given no instruction can spend the whole
+           * envelope thinking and return `content: null` — which is what
+           * DeepSeek V4 Flash 0731 did in production. Direct DeepSeek's own
+           * adapter has always disabled thinking on this path; this is the
+           * OpenRouter path agreeing with it. See `backgroundReasoningFor`.
+           */
+          thinking: backgroundReasoningFor(modelId),
+          /*
+           * And if an endpoint refuses to be told that, it is incompatible with
+           * this job rather than something to negotiate around: dropping the
+           * parameter hands back the endpoint's own default, which is MORE
+           * thinking inside the same small envelope.
+           */
+          strictReasoning: true,
+          // One stable session per conversation, in the consolidation namespace
+          // and no other. See src/lib/inference-session.ts.
+          sessionId: inferenceSessionId("memory_consolidation", conversationId),
+        });
+        if (response.usage) await record(response.usage);
+        try {
+          const data = parseJson<Consolidation>(response.content);
+          if (!data.summary) return { ok: false, reason: "no_summary", recoverable: true };
+          return { ok: true, data };
+        } catch {
+          /*
+           * The model answered, was paid for, and produced something that is not
+           * the contract. Recoverable — and deliberately WITHOUT a same-model
+           * retry first.
+           *
+           * A consolidation is the most expensive background call there is, and
+           * a model that has just produced malformed JSON is the least likely
+           * thing to produce valid JSON on an identical second ask. One extra
+           * attempt is the budget; spending it on the control is strictly
+           * better than spending it on the model that failed. (The Scene Ledger
+           * retries in place because its call costs a fraction of a cent and
+           * its model is chosen for being cheap rather than for being reliable.)
+           */
+          return { ok: false, reason: "malformed_output", recoverable: true };
+        }
+      } catch (error) {
+        const category = error instanceof ProviderError ? error.category : "unknown";
+        logProviderDiagnostic("memory consolidation failed", error instanceof ProviderError
+          ? error.withDiagnostic({ conversationId, model: modelId, provider: providerId })
+          : error);
+        return { ok: false, reason: category, recoverable: recoverableForFallback(category) };
+      }
+    };
+
+    let attempt = await attemptConsolidation(route.selection, routeProvenance(route));
+    let usedFallback = false;
+    let attemptedModel = route.selection.modelId;
+    const failureReason = attempt.ok ? "" : attempt.reason;
+
+    /*
+     * THE ONE FALLBACK, AND WHY LONG-TERM MEMORY GETS ONE AT ALL.
+     *
+     * A reader chatted normally for a week and discovered later that the
+     * conversation had no memories: every consolidation on an experimental
+     * route had failed, invisibly, because background work is deliberately not
+     * coupled to the reply. An experiment that can be wrong about cost is fine.
+     * An experiment that quietly turns memory OFF is not, because the loss is
+     * permanent — the window it failed on is consolidated-past once the story
+     * moves on, and no later job goes back for it.
+     *
+     * So exactly one retry, on the trusted control, and only when all three
+     * hold:
+     *
+     *   THE ROUTE WAS NOT ALREADY THE CONTROL. Falling DeepSeek back to
+     *   DeepSeek is a second identical failure and a second bill.
+     *   THE FAILURE IS RECOVERABLE. See `recoverableForFallback`: a busy host
+     *   or a garbled reply, never a credential or a request we got wrong.
+     *   IT IS ONE ATTEMPT. Not a loop and not a cascade through the candidate
+     *   list, which would turn one bad afternoon into unbounded spend at the
+     *   hour nobody is watching.
+     *
+     * The Scene Ledger deliberately has NO equivalent: its previous state
+     * simply stands, which is a correct answer, and paying a dearer model to
+     * re-derive "where are we" is not worth it.
+     */
+    const controlSelection = backgroundCandidate("direct_deepseek")!.selection!;
+    const isControl = route.selection.providerId === controlSelection.providerId && route.selection.modelId === controlSelection.modelId;
+    if (!attempt.ok && attempt.recoverable && !isControl) {
+      console.warn("[memory] falling back to the control after a failed consolidation", JSON.stringify({
+        conversationId, requested: route.candidateId, reason: attempt.reason,
+      }));
+      usedFallback = true;
+      attemptedModel = controlSelection.modelId;
+      attempt = await attemptConsolidation(controlSelection, {
+        task: "memory_consolidation",
+        candidate: "direct_deepseek",
+        source: route.source,
+        fallback: true,
+        requestedCandidate: route.candidateId,
+        failureReason,
+      });
+    }
+
+    if (!attempt.ok) {
       /*
-       * `modelId` is the CATALOGUE id, and passing it is what applies this
-       * model's routing policy — the price ceiling, the privacy floor, and the
-       * dedicated-host pin the evaluation routes depend on. Background calls
-       * previously omitted it, so every one of them reached OpenRouter with no
-       * provider block at all: no `max_price`, and — the part that matters
-       * more — no `data_collection: deny` on a request carrying a reader's
-       * transcript.
+       * Both routes are spent. The window stays unconsolidated — the position
+       * pointer is only advanced by a successful pass — so a later job can
+       * still read it, and the operator is told rather than left to find out
+       * from a story with no memories in it.
        */
-      modelId,
-      // One stable session per conversation, in the consolidation namespace and
-      // no other. See src/lib/inference-session.ts.
-      sessionId: inferenceSessionId("memory_consolidation", conversationId),
+      await recordBackgroundFailure(userId, conversationId, {
+        task: "memory_consolidation", model: attemptedModel,
+        candidateId: usedFallback ? "direct_deepseek" : route.candidateId,
+        reason: usedFallback ? `${failureReason} → ${attempt.reason}` : attempt.reason,
+      });
+      return false;
+    }
+    await recordBackgroundSuccess(userId, conversationId, {
+      task: "memory_consolidation", model: attemptedModel,
+      candidateId: usedFallback ? "direct_deepseek" : route.candidateId,
+      usedFallback,
     });
-    if (response.usage) await recordUsageEvent({ userId, conversationId, providerId, model: modelId, actualModel: providerModelId(providerId,modelId) ?? modelId, rpEngineId, kind: "memory_consolidation", taskRoute: "memory_consolidation", routing: routeProvenance(route), usage: response.usage });
-    const data = parseJson<Consolidation>(response.content);
+    const data = attempt.data;
     if (!data.summary) return false;
 
     const createdRecords = await asUser(userId, async (client) => {

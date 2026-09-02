@@ -4,7 +4,7 @@ import { asUser, castMembersFromRow, getUserSettings, messageFromRow, sceneState
 import { completionWithUsage, parseJson } from "./llm";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { sceneStateEnabled } from "./memory-flags";
-import { providerModelId } from "./provider";
+import { backgroundReasoningFor, providerModelId } from "./provider";
 import { backgroundRoute, routeProvenance } from "./background-routing";
 import { inferenceSessionId } from "./inference-session";
 import {
@@ -300,9 +300,25 @@ async function extractOnce(
 ): Promise<ExtractionAttempt> {
   const response = await completionWithUsage(selection, messages, {
     json: true, maxTokens: 400, temperature: 0.1,
-    // The catalogue id, so the price ceiling and — on a request carrying a
-    // reader's transcript — the privacy floor actually travel with it.
+    /*
+     * The catalogue id, so the price ceiling and — on a request carrying a
+     * reader's transcript — the privacy floor actually travel with it, and so
+     * the adapter knows whether this endpoint implements `response_format`.
+     *
+     * The default extractor is Ling 3.0 Flash, which does NOT: it is asked for
+     * JSON in words and its reply is parsed, bounded and retried on exactly the
+     * path below. Sending the parameter to it anyway is what produced the run of
+     * empty Scene Ledger extractions in production.
+     */
     modelId: selection.modelId,
+    /*
+     * A 400-token envelope has no room for hidden thinking, and does not want
+     * any: the whole reply is a handful of JSON fields. Ling declares no
+     * reasoning support so this sends nothing at all for it; a DeepSeek or MiMo
+     * ledger declines it explicitly. See `backgroundReasoningFor`.
+     */
+    thinking: backgroundReasoningFor(selection.modelId),
+    strictReasoning: true,
     /*
      * Extraction is conversation-shaped: a stable instruction prefix over a
      * window that moves. Deliberately not the roleplay namespace — the two

@@ -6,6 +6,15 @@ still unproven. Written for whoever has to change it at three in the morning.
 The RP writer architecture is untouched. Everything here is work that happens
 after a reply has already been delivered.
 
+> **Corrected in production.** Two of the routes described here failed with
+> `empty_response` once real traffic reached them — Ling was sent a
+> `response_format` it does not implement, and DeepSeek 0731 was never told not
+> to reason inside a 3,600-token envelope — and the failures were invisible
+> because nothing recorded whether background work was happening at all. See
+> **`background-empty-response-2026-09.md`** for the causes, the wire shapes
+> before and after, the bounded memory fallback and the operator visibility that
+> answers it.
+
 ---
 
 ## 1 — Memory model routing: before
@@ -75,7 +84,7 @@ indistinguishable from two weeks of a stale environment variable.
 | `deepseek_0731_openinference` | `openrouter:deepseek-v4-flash-0731-openinference` (`provider.only: open-inference/fp8`) | **gated — needs operator opt-in** |
 | `deepseek_0731_relace` | `openrouter:deepseek-v4-flash-0731-relace` (`provider.only: relace/fp4`) | **gated — needs operator opt-in** |
 | `mimo_v25` | `openrouter:mimo-v2.5` | yes |
-| `ling_3_flash` | `openrouter:ling-3.0-flash` | yes |
+| `ling_3_flash` | `openrouter:ling-3.0-flash` | yes — **no `response_format`**; asked for JSON in words |
 | `off` | — | Scene Ledger only |
 
 ### The verified tags, and why the guesses were wrong

@@ -431,6 +431,22 @@ async function schema() {
       created_at timestamptz NOT NULL DEFAULT now(),
       settled_at timestamptz
     );
+    CREATE TABLE IF NOT EXISTS background_job_health (
+      conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL,
+      task text NOT NULL,
+      last_success_at timestamptz,
+      last_success_model text NOT NULL DEFAULT '',
+      last_success_candidate text,
+      last_success_used_fallback boolean NOT NULL DEFAULT false,
+      last_failure_at timestamptz,
+      last_failure_model text NOT NULL DEFAULT '',
+      last_failure_candidate text,
+      last_failure_reason text NOT NULL DEFAULT '',
+      consecutive_failures integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (conversation_id, task)
+    );
     CREATE TABLE IF NOT EXISTS background_model_routes (
       task text PRIMARY KEY,
       candidate_id text NOT NULL,

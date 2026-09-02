@@ -83,6 +83,41 @@ const retryable: Record<ProviderErrorCategory, boolean> = {
   unknown: false,
 };
 
+/**
+ * WHY A GENERATION CAME BACK WITH NOTHING IN IT.
+ *
+ * Every field here is a NUMBER, A BOOLEAN OR AN ENUM. Not one of them can carry
+ * prose, and that is the point rather than an accident of what happened to be
+ * useful: the answer to "why was this empty" lives in a model's reasoning text,
+ * which is the last thing that may be written to a log. So the log records that
+ * reasoning was PRESENT and how many tokens it cost, and never a word of it.
+ *
+ * It exists because the adapter used to throw `empty_response` carrying only a
+ * request id, discarding the entire response body — so a run of background
+ * failures in production said nothing at all about which host served them,
+ * whether the model stopped early, or whether the completion envelope had gone
+ * on hidden thinking. That is a diagnosis that cannot be made from the logs,
+ * which means it cannot be made.
+ */
+export type EmptyResponseDiagnostic = {
+  /** How `message.content` was empty — the four cases are different bugs. */
+  contentState: "null" | "missing" | "empty_string" | "non_string";
+  finishReason?: string;
+  /** The upstream's own word for it, which OpenRouter passes through. */
+  nativeFinishReason?: string;
+  completionTokens?: number;
+  promptTokens?: number;
+  reasoningTokens?: number;
+  /** Whether `message.reasoning` was present. NEVER its content. */
+  hasReasoning: boolean;
+  /** Whether `message.reasoning_details` was present. NEVER its content. */
+  hasReasoningDetails: boolean;
+  /** Whether the request asked the endpoint to decline reasoning. */
+  requestedReasoningOff: boolean;
+  /** How many choices came back. Zero is a different failure from an empty one. */
+  choices: number;
+};
+
 export type ProviderDiagnostic = {
   provider?: string;
   model?: string;
@@ -95,6 +130,8 @@ export type ProviderDiagnostic = {
   latencyMs?: number;
   /** A trimmed upstream body. Internal only, and never returned to a client. */
   detail?: string;
+  /** Structured, content-free evidence for an empty or exhausted generation. */
+  emptyResponse?: EmptyResponseDiagnostic;
 };
 
 /** Defensive log redaction for provider bodies and accidentally stringified headers. */

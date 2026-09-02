@@ -4,8 +4,10 @@ import { asUser, coreCanonFromRow, memoryArcFromRow, memoryFromRow } from "./db"
 import { estimateTokens } from "./context";
 import { completionWithUsage, embeddingWithUsage, parseJson } from "./llm";
 import { acceptedMessageCount, rankArcs, rankMemories } from "./memory";
-import { providerModelId } from "./provider";
+import { backgroundReasoningFor, providerModelId } from "./provider";
 import { backgroundRoute, routeProvenance } from "./background-routing";
+import { recordBackgroundFailure, recordBackgroundSuccess } from "./background-health";
+import { ProviderError, logProviderDiagnostic } from "./provider-errors";
 import { recordUsageEvent } from "./usage";
 import { acquireMemoryJobLease, releaseMemoryJobLease } from "./memory-jobs";
 import { memoryRetrievalV2Enabled, memorySemanticEnabled } from "./memory-flags";
@@ -512,14 +514,52 @@ export async function maybeCurateCanon(userId:string,conversationId:string,force
     const route=await backgroundRoute("memory_curation",{overrideCandidateId:prepared.conversation.memory_model_override as string|null});
     if (!route.selection) throw new Error("memory_curation resolved to no model");
     const selection=route.selection; const rpEngineId=String(prepared.conversation.rp_engine_id||"immersive");
-    const response=await completionWithUsage(selection,[
+    /*
+     * CURATION IS WATCHED BUT NOT RESCUED.
+     *
+     * Its health is recorded for the same reason consolidation's is: a run of
+     * failures here is invisible to a reader and to a chat request, and the
+     * only way anybody found out last time was a story with nothing in it.
+     *
+     * It gets no fallback, and the difference from consolidation is what is
+     * LOST. A failed consolidation loses that window permanently — the story
+     * moves on and no later job goes back for it. A failed curation loses
+     * nothing: the memories and arcs it reads are all still there, the canon it
+     * would have rewritten is still the canon, and the next interval tries
+     * again. Paying the control to re-run it is spending money to be slightly
+     * more up to date.
+     */
+    let response: Awaited<ReturnType<typeof completionWithUsage>>;
+    try {
+      response=await completionWithUsage(selection,[
       {role:"system",content:"You are a conservative continuity canon curator. Return valid JSON only."},
       {role:"user",content:curationPrompt(prepared.canon,prepared.memories,prepared.arcs)},
       // The catalogue id, so the price ceiling and the privacy floor travel
-      // with a request that carries a whole conversation's canon.
-    ],{json:true,maxTokens:2600,temperature:.15,modelId:selection.modelId});
+      // with a request that carries a whole conversation's canon — and so the
+      // adapter knows whether this endpoint implements `response_format`.
+    ],{
+      json:true,maxTokens:2600,temperature:.15,modelId:selection.modelId,
+      // Structured extraction has no use for hidden reasoning, and hidden
+      // reasoning is spent from this same 2,600-token envelope. See
+      // `backgroundReasoningFor`.
+      thinking:backgroundReasoningFor(selection.modelId),
+      strictReasoning:true,
+    });
+    } catch (error) {
+      const category=error instanceof ProviderError?error.category:"unknown";
+      logProviderDiagnostic("canon curation failed",error instanceof ProviderError?error.withDiagnostic({conversationId,model:selection.modelId,provider:selection.providerId}):error);
+      await recordBackgroundFailure(userId,conversationId,{task:"memory_curation",model:selection.modelId,candidateId:route.candidateId,reason:category});
+      return false;
+    }
     if (response.usage) await recordUsageEvent({userId,conversationId,providerId:selection.providerId,model:selection.modelId,actualModel:providerModelId(selection.providerId,selection.modelId)??selection.modelId,rpEngineId,kind:"memory_curation",taskRoute:"memory_curation",routing:routeProvenance(route),usage:response.usage});
-    const data=parseJson<CanonCuration>(response.content);
+    let data:CanonCuration;
+    try {
+      data=parseJson<CanonCuration>(response.content);
+    } catch {
+      await recordBackgroundFailure(userId,conversationId,{task:"memory_curation",model:selection.modelId,candidateId:route.candidateId,reason:"malformed_output"});
+      return false;
+    }
+    await recordBackgroundSuccess(userId,conversationId,{task:"memory_curation",model:selection.modelId,candidateId:route.candidateId});
     const canonIds=new Set(prepared.canon.map((entry)=>entry.id)); const memoryIds=new Set(prepared.memories.map((memory)=>memory.id)); const arcIds=new Set(prepared.arcs.map((arc)=>arc.id));
     const supersede=(data.supersedeIds??[]).filter((id)=>canonIds.has(id)); const demote=(data.demoteIds??[]).filter((id)=>canonIds.has(id)&&!supersede.includes(id));
     const categories:MemoryKind[]=["identity","relationship","event","promise","preference","boundary","open_loop"];

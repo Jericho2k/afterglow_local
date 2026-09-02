@@ -69,6 +69,26 @@ export type CompletionOptions = {
    */
   modelId?: string;
   /**
+   * WHETHER DROPPING `reasoning` IS AN ACCEPTABLE RECOVERY.
+   *
+   * The adapter negotiates one parameter: told that reasoning cannot be
+   * disabled, it drops the key and retries, which takes the endpoint's own
+   * default. For a roleplay turn that is right — the reply still arrives, a
+   * little later and with more thinking than anybody wanted.
+   *
+   * For a BACKGROUND STRUCTURED EXTRACTION it is precisely wrong. The envelope
+   * is 400 to 3,600 tokens and the whole point of declining reasoning is that
+   * hidden tokens are spent from it; silently re-enabling reasoning inside that
+   * envelope reproduces the empty-content failure the request was shaped to
+   * avoid, at the same cost, one attempt later.
+   *
+   * So a caller may say the refusal is a FACT ABOUT THE ROUTE rather than
+   * something to work around. The request fails with the endpoint's own words
+   * in the diagnostic, the operator learns the pinned host is incompatible with
+   * the job, and the memory fallback answers with a route that works.
+   */
+  strictReasoning?: boolean;
+  /**
    * Upstream endpoints already known to have failed this request.
    *
    * Same model, different host. Nothing in an adapter may ever use this to
