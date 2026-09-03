@@ -724,6 +724,37 @@ export type UsageBreakdown = UsageSummary & { key: string };
 
 export type UsageRangeSummary = { id: string; label: string; from: string | null; to: string | null };
 
+export type WriterCacheProbeSample = {
+  createdAt: string;
+  action: string;
+  model: string;
+  upstreamProvider: string | null;
+  upstreamOverride: string | null;
+  promptTokens: number;
+  cachedTokens: number;
+  actualRatio: number | null;
+  structuralPrefixTokens: number;
+  structuralRatio: number | null;
+  gapTokens: number;
+  anchorMoved: boolean | null;
+  sharedMessages: number;
+  totalMessages: number;
+  placement: string | null;
+};
+
+export type WriterCacheProbeResponse = {
+  samples: WriterCacheProbeSample[];
+  summary: {
+    samples: number;
+    promptTokens: number;
+    cachedTokens: number;
+    structuralPrefixTokens: number;
+    actualRatio: number | null;
+    structuralRatio: number | null;
+    gapTokens: number;
+  };
+};
+
 export type UsageResponse = {
   /** The window every figure below describes. */
   range?: UsageRangeSummary;
