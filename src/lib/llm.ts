@@ -97,6 +97,14 @@ export type CompletionOptions = {
    * change a reader's chosen writer without anybody saying so.
    */
   excludeProviders?: string[];
+  /**
+   * Admin-only hard pin for writer-provider/cache experiments.
+   *
+   * This is intentionally request-scoped rather than an environment setting:
+   * the authenticated chat route supplies it only for an Afterglow admin.
+   * OpenRouter still applies the model's normal price/privacy guards.
+   */
+  upstreamProviderOverride?: string;
 };
 
 /** Adapter-only authentication. Generic/background completion APIs omit it. */
