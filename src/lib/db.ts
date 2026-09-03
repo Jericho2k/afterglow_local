@@ -527,6 +527,8 @@ async function schema() {
    */
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS memory_model_override text");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS scene_model_override text");
+  // Admin-only cache diagnostics. Hashes/token counts only; never prompt text.
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS writer_cache_probe_state jsonb NOT NULL DEFAULT '{}'::jsonb");
   // The counter that says which archived version a recorded provenance entry
   // refers to; see migration 0028 and src/lib/provenance.ts.
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_version integer NOT NULL DEFAULT 1");
