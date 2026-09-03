@@ -724,6 +724,27 @@ export type UsageBreakdown = UsageSummary & { key: string };
 
 export type UsageRangeSummary = { id: string; label: string; from: string | null; to: string | null };
 
+export type AdminWriterRoutingEndpoint = {
+  tag: string;
+  name: string;
+  providerName: string;
+  promptUsdPerMillion: number | null;
+  cachedUsdPerMillion: number | null;
+  outputUsdPerMillion: number | null;
+  quantization: string | null;
+  status: string | null;
+  cacheCapable: boolean;
+  withinCostGuard: boolean;
+};
+
+export type AdminWriterRoutingResponse = {
+  modelId: string;
+  selected: string | null;
+  shippedDefault: string;
+  endpoints: AdminWriterRoutingEndpoint[];
+  note: string;
+};
+
 export type WriterCacheProbeSample = {
   createdAt: string;
   action: string;
