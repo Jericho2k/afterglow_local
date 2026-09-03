@@ -83,9 +83,12 @@ export function providerHeadersTimeoutMs() {
 export const maxAttempts = attemptDelays.length;
 
 /** The `provider` block for one attempt, or undefined for OpenRouter's default. */
-function providerBlock(modelId: string | undefined, attempt: number, failed: string[]) {
+function providerBlock(modelId: string | undefined, attempt: number, failed: string[], upstreamProviderOverride?: string) {
   const policy = modelId
-    ? providerPolicyFor(modelId, attempt, failed, { finalAttempt: attempt >= attemptDelays.length - 1 })
+    ? providerPolicyFor(modelId, attempt, failed, {
+        finalAttempt: attempt >= attemptDelays.length - 1,
+        upstreamProviderOverride,
+      })
     : null;
   if (policy) {
     return {
@@ -159,7 +162,7 @@ async function request(body: Record<string,unknown>, options: ProviderCompletion
   for (let attempt = 0; attempt < attemptDelays.length; attempt += 1) {
     if (attemptDelays[attempt]) await wait(attemptDelays[attempt], signal);
     const startedAt = Date.now();
-    const provider = providerBlock(options.modelId, attempt, failed);
+    const provider = providerBlock(options.modelId, attempt, failed, options.upstreamProviderOverride);
     const payload = provider ? { ...negotiated, provider } : negotiated;
 
     /*

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Database, Download, Gauge, KeyRound, ShieldCheck, Sparkles, Upload } from "lucide-react";
-import type { AppSettings, ModelCatalog, RoutingDiagnosticResponse, UsageResponse } from "@/lib/types";
+import type { AdminWriterRoutingResponse, AppSettings, ModelCatalog, RoutingDiagnosticResponse, UsageResponse, WriterCacheProbeResponse } from "@/lib/types";
 import type { ByokMetadata, WriterFundingPreference } from "@/lib/byok";
 import type { UsageRangeId } from "@/lib/usage-range";
 import { api } from "@/lib/api-client";
@@ -69,6 +69,9 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
   const [form, setForm] = useState(settings);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [routing, setRouting] = useState<RoutingDiagnosticResponse | null>(null);
+  const [writerRouting, setWriterRouting] = useState<AdminWriterRoutingResponse | null>(null);
+  const [writerRoutingBusy, setWriterRoutingBusy] = useState(false);
+  const [cacheProbe, setCacheProbe] = useState<WriterCacheProbeResponse | null>(null);
   const [usageRange, setUsageRange] = useState<UsageRangeId>("30d");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -92,6 +95,15 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
       .catch(() => undefined);
     return () => { live = false; };
   }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let live = true;
+    api<AdminWriterRoutingResponse>("/api/admin/writer-routing?model=glm-5.3-flash")
+      .then((data) => { if (live) setWriterRouting(data); })
+      .catch(() => { if (live) setWriterRouting(null); });
+    return () => { live = false; };
+  }, [isAdmin]);
 
   /*
    * The ledger for one window.
@@ -127,6 +139,9 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
     api<RoutingDiagnosticResponse>(`/api/usage/routing?${query}`)
       .then((data) => { if (live) setRouting(data); })
       .catch(() => { if (live) setRouting(null); });
+    api<WriterCacheProbeResponse>(`/api/usage/cache-probe?${query}`)
+      .then((data) => { if (live) setCacheProbe(data); })
+      .catch(() => { if (live) setCacheProbe(null); });
     return () => { live = false; };
   }, [isAdmin, usageRange, customFrom, customTo]);
 
@@ -161,6 +176,26 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
     } catch (reason) {
       setByokError(reason instanceof Error ? reason.message : "Could not change writer funding");
     } finally { setByokBusy(false); }
+  }
+
+  async function chooseWriterUpstream(value: string) {
+    if (!writerRouting) return;
+    setWriterRoutingBusy(true); setError("");
+    try {
+      const result = await api<{ modelId: string; selected: string | null }>("/api/admin/writer-routing", {
+        method: "PATCH",
+        body: JSON.stringify({
+          modelId: writerRouting.modelId,
+          upstreamProvider: value === "__default__" ? null : value,
+        }),
+      });
+      setWriterRouting({ ...writerRouting, selected: result.selected });
+      setNotice(result.selected
+        ? `GLM 5.3 Flash is pinned to ${result.selected} for this admin account only.`
+        : "GLM 5.3 Flash returned to its shipped provider route for this admin account.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not change the writer provider");
+    } finally { setWriterRoutingBusy(false); }
   }
 
   async function removeKey() {
@@ -488,6 +523,68 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
       <p className={styles.fieldHint}>
         Cached input is charged at a fraction of fresh input, so a high cache hit rate on a long conversation is where the saving is.
       </p>
+
+      {writerRouting && <div style={{ marginTop: 18 }}>
+        <span className={styles.fieldLabel}>Writer provider lab · admin only</span>
+        <p className={styles.fieldHint} style={{ marginTop: 4 }}>
+          Pins <b>GLM 5.3 Flash</b> to one OpenRouter upstream for this account only. Everyone else keeps the shipped route.
+          The same price ceiling and no-training guard remain in force, and fallbacks are off so the comparison stays clean.
+        </p>
+        <SelectField
+          label="GLM 5.3 Flash upstream"
+          value={writerRouting.selected || "__default__"}
+          disabled={writerRoutingBusy}
+          onChange={(value) => void chooseWriterUpstream(value)}
+          options={[
+            {
+              value: "__default__",
+              label: "Shipped default · Z.AI",
+              description: "Use Afterglow's normal dedicated GLM 5.3 Flash route.",
+            },
+            ...writerRouting.endpoints
+              .filter((endpoint) => endpoint.tag !== writerRouting.shippedDefault && endpoint.cacheCapable && endpoint.withinCostGuard)
+              .sort((a, b) => (a.promptUsdPerMillion ?? Infinity) - (b.promptUsdPerMillion ?? Infinity))
+              .map((endpoint) => ({
+                value: endpoint.tag,
+                label: endpoint.providerName || endpoint.tag,
+                description: [
+                  endpoint.quantization,
+                  endpoint.promptUsdPerMillion != null ? `${endpoint.promptUsdPerMillion.toFixed(3)}/M fresh` : null,
+                  endpoint.cachedUsdPerMillion != null ? `${endpoint.cachedUsdPerMillion.toFixed(3)}/M cached` : null,
+                  endpoint.outputUsdPerMillion != null ? `${endpoint.outputUsdPerMillion.toFixed(3)}/M out` : null,
+                  endpoint.status,
+                ].filter(Boolean).join(" · "),
+              })),
+          ]}
+        />
+        <p className={styles.fieldHint} style={{ marginTop: 6 }}>
+          Changing provider makes the next request cold on purpose. Give each host several normal turns before judging its cache rate.
+        </p>
+
+        {cacheProbe && cacheProbe.summary.samples > 0 && <div style={{ marginTop: 12 }}>
+          <span className={styles.fieldLabel}>Expected vs actual cache</span>
+          <p className={styles.fieldHint} style={{ marginTop: 4 }}>
+            Across {cacheProbe.summary.samples} instrumented writer calls:
+            {" "}<b>{percent(cacheProbe.summary.structuralRatio)}</b> of input was structurally reusable from the previous request,
+            while the provider reported <b>{percent(cacheProbe.summary.actualRatio)}</b> cached.
+            {cacheProbe.summary.gapTokens > 0 ? ` ${number(cacheProbe.summary.gapTokens)} structurally reusable tokens were not reported as cached.` : ""}
+          </p>
+          <div className={styles.stack} style={{ marginTop: 8 }}>
+            {cacheProbe.samples.slice(0, 12).map((sample) => <div key={`${sample.createdAt}-${sample.action}-${sample.upstreamProvider}`} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                <strong style={{ fontSize: 12 }}>{sample.upstreamProvider || sample.upstreamOverride || "unknown upstream"}</strong>
+                <br />
+                <small className={styles.fieldHint}>
+                  {sample.action} · possible {percent(sample.structuralRatio)} · actual {percent(sample.actualRatio)}
+                  {sample.anchorMoved === true ? " · anchor moved" : sample.anchorMoved === false ? " · anchor held" : ""}
+                  {sample.upstreamOverride ? " · pinned" : ""}
+                </small>
+              </span>
+              <small className={styles.fieldHint}>{number(sample.promptTokens)} in</small>
+            </div>)}
+          </div>
+        </div>}
+      </div>}
 
       {/*
         * ROUTING & CACHE AFFINITY.

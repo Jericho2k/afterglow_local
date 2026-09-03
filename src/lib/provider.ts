@@ -1307,15 +1307,20 @@ export function emergencyExpensiveFallbackEnabled() {
 }
 
 /** The cost policy in force for one model, or null when there is none. */
+/** The catalogue's absolute price ceiling, independent of routing mode. */
+export function costCeilingFor(modelId: string) {
+  const ceiling = knownModels.find((model) => model.id === modelId)?.capabilities.costCeiling;
+  return ceiling ? { prompt: ceiling.promptUsdPerMillion, completion: ceiling.completionUsdPerMillion } : null;
+}
+
 export function costPolicyFor(modelId: string) {
   const mode = routingMode();
   if (mode === "auto") return null;
-  const capabilities = knownModels.find((model) => model.id === modelId)?.capabilities;
-  const ceiling = capabilities?.costCeiling;
-  if (!ceiling) return null;
+  const maxPrice = costCeilingFor(modelId);
+  if (!maxPrice) return null;
   const pool = poolEnforced() ? approvedProviderPool(modelId) : [];
   return {
-    maxPrice: { prompt: ceiling.promptUsdPerMillion, completion: ceiling.completionUsdPerMillion },
+    maxPrice,
     ...(pool.length ? { only: pool } : {}),
     sortByPrice: mode === "cost_optimized",
   };
@@ -1490,8 +1495,36 @@ export function providerPolicyFor(
   modelId: string,
   attempt: number,
   failedProviders: string[] = [],
-  options: { finalAttempt?: boolean } = {},
+  options: { finalAttempt?: boolean; upstreamProviderOverride?: string | null } = {},
 ): ProviderRoutingPolicy | null {
+  /*
+   * ADMIN WRITER-PROVIDER LAB.
+   *
+   * This override is supplied only by the authenticated chat route after it
+   * has established that the caller is an Afterglow admin. It deliberately
+   * outranks the catalogue's dedicatedProvider so the owner can compare the
+   * SAME model on another OpenRouter host without changing what ordinary
+   * readers use.
+   *
+   * It remains a hard pin: one host, fallbacks off, same privacy and price
+   * floors. If the chosen host no longer satisfies either guard, OpenRouter
+   * refuses the request instead of silently routing to a different endpoint
+   * and contaminating the experiment.
+   */
+  const override = options.upstreamProviderOverride?.trim();
+  if (override && safeProviderTag(override)) {
+    const maxPrice = costCeilingFor(modelId);
+    const privacy = dataPolicyFor(modelId);
+    return {
+      only: [override],
+      allowFallbacks: false,
+      // The lab never inherits routingMode=auto. Provider experiments are not
+      // permission to make the bill unbounded.
+      ...(maxPrice ? { maxPrice } : {}),
+      ...(privacy ? { dataCollection: privacy.dataCollection, ...(privacy.zdr ? { zdr: true } : {}) } : {}),
+    };
+  }
+
   const pinned = pinnedProviderFor(modelId);
   if (pinned) return { only: [pinned], allowFallbacks: false };
   /*

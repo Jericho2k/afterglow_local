@@ -527,6 +527,8 @@ async function schema() {
    */
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS memory_model_override text");
   await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS scene_model_override text");
+  // Admin-only cache diagnostics. Hashes/token counts only; never prompt text.
+  await pool().query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS writer_cache_probe_state jsonb NOT NULL DEFAULT '{}'::jsonb");
   // The counter that says which archived version a recorded provenance entry
   // refers to; see migration 0028 and src/lib/provenance.ts.
   await pool().query("ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_version integer NOT NULL DEFAULT 1");
@@ -738,6 +740,9 @@ async function schema() {
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT 'deepseek'");
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS response_length text NOT NULL DEFAULT 'natural'");
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS writer_funding text NOT NULL DEFAULT 'afterglow'");
+  // Admin-only provider/cache experiments. The chat path reads this only for
+  // accounts explicitly listed in AFTERGLOW_ADMIN_USER_IDS.
+  await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS admin_writer_upstream_overrides jsonb NOT NULL DEFAULT '{}'::jsonb");
   // One default persona per account rather than per installation.
   await pool().query("DROP INDEX IF EXISTS personas_single_default_idx");
   await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS personas_user_default_idx ON personas (user_id) WHERE is_default");
@@ -1432,12 +1437,19 @@ export function settingsFromRow(row: Record<string, unknown>): AppSettings {
   const storedPreset = String(row.roleplay_preset || "immersive");
   const roleplayPreset: AppSettings["roleplayPreset"] = roleplayEngineIds.includes(storedPreset as AppSettings["roleplayPreset"])
     ? storedPreset as AppSettings["roleplayPreset"] : "immersive";
+  const rawOverrides = row.admin_writer_upstream_overrides;
+  const adminWriterUpstreamOverrides = rawOverrides && typeof rawOverrides === "object" && !Array.isArray(rawOverrides)
+    ? Object.fromEntries(Object.entries(rawOverrides as Record<string, unknown>)
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1].trim()))
+        .map(([modelId, provider]) => [modelId, provider.trim()]))
+    : {};
   return {
     ownerName: String(row.owner_name), ownerProfile: String(row.owner_profile), providerId: String(row.provider_id || "deepseek"), model: String(row.model),
     roleplayPreset,
     responseLength: responseLengths.includes(String(row.response_length) as AppSettings["responseLength"]) ? row.response_length as AppSettings["responseLength"] : "natural",
     temperature: Number(row.temperature), maxTokens: Number(row.max_tokens), contextMessages: Number(row.context_messages), contextTokenBudget: Number(row.context_token_budget || 12000),
     consolidationInterval: Number(row.consolidation_interval), memoryLimit: Number(row.memory_limit), memoryTokenBudget: Number(row.memory_token_budget || 6000),
+    adminWriterUpstreamOverrides,
   };
 }
 

@@ -694,6 +694,11 @@ export type AppSettings = {
   consolidationInterval: number;
   memoryLimit: number;
   memoryTokenBudget: number;
+  /**
+   * Admin-only, per-model OpenRouter upstream pins used for provider/cache
+   * experiments. Ordinary accounts never receive or influence this field.
+   */
+  adminWriterUpstreamOverrides?: Record<string, string>;
 };
 
 export type UsageSummary = {
@@ -718,6 +723,58 @@ export type UsageSummary = {
 export type UsageBreakdown = UsageSummary & { key: string };
 
 export type UsageRangeSummary = { id: string; label: string; from: string | null; to: string | null };
+
+export type AdminWriterRoutingEndpoint = {
+  tag: string;
+  name: string;
+  providerName: string;
+  promptUsdPerMillion: number | null;
+  cachedUsdPerMillion: number | null;
+  outputUsdPerMillion: number | null;
+  quantization: string | null;
+  status: string | null;
+  cacheCapable: boolean;
+  withinCostGuard: boolean;
+};
+
+export type AdminWriterRoutingResponse = {
+  modelId: string;
+  selected: string | null;
+  shippedDefault: string;
+  endpoints: AdminWriterRoutingEndpoint[];
+  note: string;
+};
+
+export type WriterCacheProbeSample = {
+  createdAt: string;
+  action: string;
+  model: string;
+  upstreamProvider: string | null;
+  upstreamOverride: string | null;
+  promptTokens: number;
+  cachedTokens: number;
+  actualRatio: number | null;
+  structuralPrefixTokens: number;
+  structuralRatio: number | null;
+  gapTokens: number;
+  anchorMoved: boolean | null;
+  sharedMessages: number;
+  totalMessages: number;
+  placement: string | null;
+};
+
+export type WriterCacheProbeResponse = {
+  samples: WriterCacheProbeSample[];
+  summary: {
+    samples: number;
+    promptTokens: number;
+    cachedTokens: number;
+    structuralPrefixTokens: number;
+    actualRatio: number | null;
+    structuralRatio: number | null;
+    gapTokens: number;
+  };
+};
 
 export type UsageResponse = {
   /** The window every figure below describes. */

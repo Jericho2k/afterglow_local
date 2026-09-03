@@ -24,6 +24,7 @@ import { responseLengthPlan } from "@/lib/response-length";
 import { completionBudgetFor, escalatedCompletionBudget } from "@/lib/reasoning";
 import { contextExceededMessage, fitConversation } from "@/lib/context-budget";
 import { inferenceSessionId } from "@/lib/inference-session";
+import { buildWriterCacheProbe, compareWriterCacheProbe, parseWriterCacheProbe } from "@/lib/cache-probe";
 import { ProviderError, classifyProviderFailure, logProviderDiagnostic, publicErrorMessage, publicErrorStatus } from "@/lib/provider-errors";
 import { ByokError, type InferenceFunding } from "@/lib/byok";
 import { acceptFundedFallback, credentialFor, planWriterFunding, settleWriterFunding, type WriterFundingPlan } from "@/lib/writer-funding";
@@ -164,6 +165,16 @@ export async function POST(request: Request) {
   const conversationModelDefinition = resolveModel(conversationSelection.providerId,conversationSelection.modelId);
   const modelDefinition = resolveModel(selection.providerId, selection.modelId);
   const engineDefinition = resolveEngine(engineId);
+  /*
+   * Admin-only provider/cache lab.
+   *
+   * Ordinary accounts never receive this setting and, even if a stale value
+   * somehow exists in their row, it is ignored here. The override changes only
+   * WHICH OpenRouter host serves the same writer model.
+   */
+  const adminWriterUpstreamOverride = isAdminAccount(account) && selection.providerId === "openrouter"
+    ? settings.adminWriterUpstreamOverrides?.[selection.modelId]?.trim() || undefined
+    : undefined;
   /*
    * Model retirement, handled rather than crashed into.
    *
@@ -588,6 +599,18 @@ export async function POST(request: Request) {
   diagnostic.transcriptMessagesSent = fitted.messages.length;
   diagnostic.transcriptTrimmed = fitted.dropped ?? 0;
   const completionMessages = writerMessages(writerPrompt, fitted.messages, placement);
+  /*
+   * Compare the exact request shape with the previous writer request without
+   * storing any prompt text. Only the owner/admin account pays this tiny hash
+   * cost; ordinary readers do not participate in the experiment.
+   */
+  const cacheProbeEnabled = isAdminAccount(account) && selection.providerId === "openrouter";
+  const cacheProbe = cacheProbeEnabled
+    ? buildWriterCacheProbe(completionMessages, selection.modelId, adminWriterUpstreamOverride)
+    : null;
+  const cacheProbeComparison = cacheProbe
+    ? compareWriterCacheProbe(parseWriterCacheProbe((row as Record<string, unknown>).writer_cache_probe_state), cacheProbe)
+    : null;
   let writerFunding: InferenceFunding = { type: "afterglow" };
   try {
     // The ciphertext is read and decrypted only now: after context assembly,
@@ -698,6 +721,7 @@ export async function POST(request: Request) {
     // ask for the same upstream host, which is what lets its prompt cache stay
     // warm; a different story is a different session and shares nothing.
     sessionId: inferenceSessionId("rp_generation", conversationId),
+    ...(adminWriterUpstreamOverride ? { upstreamProviderOverride: adminWriterUpstreamOverride } : {}),
   };
   diagnostic.sessionScoped = Boolean(completionOptions.sessionId);
   diagnostic.reasoning = completionOptions.thinking === true ? "on"
@@ -712,6 +736,14 @@ export async function POST(request: Request) {
     // The provider accepted the request and handed back a stream. Everything
     // after this mark is the model thinking; everything before it is ours.
     timeline.mark("provider-accepted");
+    if (cacheProbe) {
+      // The request has reached OpenRouter, so it is now the correct comparison
+      // point for the next generation. Hashes/token counts only; no prompt text.
+      void asUser(account.id, (client) => client.query(
+        "UPDATE conversations SET writer_cache_probe_state=$1::jsonb WHERE id=$2 AND user_id=$3",
+        [JSON.stringify(cacheProbe), conversationId, account.id],
+      )).catch((error) => console.error("Writer cache probe state update failed", error));
+    }
   } catch (error) {
     // The operator gets the status, the route and the upstream body; the
     // reader gets one sentence. These are two different strings on purpose —
@@ -822,7 +854,21 @@ export async function POST(request: Request) {
       const exhaustedProviders: string[] = [];
       const recordAttemptUsage = async () => {
         if (!usage) return;
-        await recordUsageEvent({ userId: account.id, conversationId, providerId: selection.providerId, model: selection.modelId, actualModel: actualProviderModel, rpEngineId: engineId, responseLength, fundingSource, kind: action === "send" ? "chat" : action, taskRoute: "rp_generation", usage });
+        await recordUsageEvent({
+          userId: account.id, conversationId, providerId: selection.providerId,
+          model: selection.modelId, actualModel: actualProviderModel,
+          rpEngineId: engineId, responseLength, fundingSource,
+          kind: action === "send" ? "chat" : action, taskRoute: "rp_generation",
+          metadata: cacheProbeComparison ? {
+            cacheProbe: {
+              ...cacheProbeComparison,
+              upstreamOverride: adminWriterUpstreamOverride ?? null,
+              placement,
+              anchorStep: Number(process.env.TRANSCRIPT_ANCHOR_STEP) || 16,
+            },
+          } : undefined,
+          usage,
+        });
       };
       /** Everything known about why a stream produced no prose. */
       const emptyDiagnostic = () => {
