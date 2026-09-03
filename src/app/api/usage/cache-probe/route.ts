@@ -21,7 +21,7 @@ export async function GET(request: Request) {
        FROM usage_events
       WHERE ${predicate}
         AND task_route='rp_generation'
-        AND provider_metadata ? 'cacheProbe'
+        AND (provider_metadata->'cacheProbe') IS NOT NULL
       ORDER BY created_at DESC
       LIMIT 80`,
     values,
