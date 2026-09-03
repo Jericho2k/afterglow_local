@@ -1,5 +1,5 @@
 import { asUser, getUserSettings } from "@/lib/db";
-import { costPolicyFor, providerModelId, resolveModel, safeProviderTag } from "@/lib/provider";
+import { costCeilingFor, providerModelId, resolveModel, safeProviderTag } from "@/lib/provider";
 import { adminRequired, currentAccount, unauthorized } from "@/lib/session";
 
 const supportedModels = new Set(["glm-5.3-flash"]);
@@ -42,7 +42,7 @@ async function endpointsFor(modelId: string): Promise<EndpointRow[]> {
     data?: { endpoints?: Array<Record<string, unknown>> };
   } | null;
   const endpoints = Array.isArray(body?.data?.endpoints) ? body!.data!.endpoints! : [];
-  const ceiling = costPolicyFor(modelId)?.maxPrice ?? null;
+  const ceiling = costCeilingFor(modelId);
 
   return endpoints.map((endpoint) => {
     const pricing = endpoint.pricing && typeof endpoint.pricing === "object"
