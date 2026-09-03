@@ -293,7 +293,7 @@ export type RouteProvenance = {
   failureReason?: string;
 };
 
-export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; providerId?: string; model: string; actualModel?: string; rpEngineId?: string; responseLength?: ResponseLength; fundingSource?: FundingSource; kind: UsageKind; taskRoute?: string; routing?: RouteProvenance; usage: LLMUsage }) {
+export async function recordUsageEvent(input: { userId: string; conversationId?: string | null; providerId?: string; model: string; actualModel?: string; rpEngineId?: string; responseLength?: ResponseLength; fundingSource?: FundingSource; kind: UsageKind; taskRoute?: string; routing?: RouteProvenance; metadata?: Record<string, unknown>; usage: LLMUsage }) {
   const usage = normalizedUsage(input.usage);
   /*
    * PROVIDER-REPORTED COST WINS, ALWAYS.
@@ -328,6 +328,7 @@ export async function recordUsageEvent(input: { userId: string; conversationId?:
     ...(input.usage.cost_details ? { costDetails: input.usage.cost_details } : {}),
     ...(input.usage.upstream_provider ? { upstreamProvider:input.usage.upstream_provider } : {}),
     ...(input.routing ? { routing: input.routing } : {}),
+    ...(input.metadata ? input.metadata : {}),
   };
   await userQuery(
     input.userId,
