@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { approvedProviderPool, availableModels, catalogModelIds, dedicatedProviderFor, modelCapabilities, providerPolicyFor } from "@/lib/provider";
+import { approvedProviderPool, availableModels, catalogModelIds, costCeilingFor, dedicatedProviderFor, modelCapabilities, providerPolicyFor } from "@/lib/provider";
 import { classifyProviderFailure, publicErrorMessage, ProviderError } from "@/lib/provider-errors";
 import { completionWithUsage } from "@/lib/llm";
 
@@ -170,6 +170,25 @@ describe("production routing is Z.AI and nothing else", () => {
     expect(providerPolicyFor("glm-5.3-flash", 0, [])).toEqual({ only: ["novita"], allowFallbacks: false });
   });
 
+  it("lets the admin provider lab pin one host without weakening price or privacy guards", () => {
+    // The lab is deliberately stronger than routingMode=auto: choosing another
+    // provider for a cache comparison is never permission to make spend
+    // unbounded or to relax the no-training floor.
+    vi.stubEnv("PROVIDER_ROUTING_MODE", "auto");
+    expect(costCeilingFor("glm-5.3-flash")).toEqual({ prompt: 0.20, completion: 0.60 });
+    expect(providerPolicyFor("glm-5.3-flash", 0, [], { upstreamProviderOverride: "deepinfra" })).toEqual({
+      only: ["deepinfra"],
+      allowFallbacks: false,
+      maxPrice: { prompt: 0.20, completion: 0.60 },
+      dataCollection: "deny",
+    });
+  });
+
+  it("ignores a malformed request-scoped provider tag and keeps the shipped route", () => {
+    expect(providerPolicyFor("glm-5.3-flash", 0, [], { upstreamProviderOverride: "../deepinfra" })?.only)
+      .toEqual(["z-ai"]);
+  });
+
   it("lets an operator move the host without a deploy, still exclusively", () => {
     // The three-in-the-morning control: Z.AI is renamed or down for a day, and
     // the route is corrected from a dashboard. It is still ONE host with
@@ -219,6 +238,31 @@ describe("what actually leaves the process", () => {
      */
     expect(bodies[0].session_id).toBe("conversation-42");
     expect(bodies[0].reasoning).toEqual({ enabled: false });
+  });
+
+  it("puts the admin provider pin on the wire without losing session affinity or guards", async () => {
+    enableOpenRouter();
+    const bodies = captureRequests(ok);
+
+    await completionWithUsage(
+      { providerId: "openrouter", modelId: "glm-5.3-flash" },
+      [{ role: "user", content: "Hi" }],
+      {
+        modelId: "glm-5.3-flash",
+        sessionId: "conversation-42",
+        thinking: "low",
+        upstreamProviderOverride: "deepinfra",
+      },
+    );
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].provider).toEqual({
+      only: ["deepinfra"],
+      allow_fallbacks: false,
+      max_price: { prompt: 0.20, completion: 0.60 },
+      data_collection: "deny",
+    });
+    expect(bodies[0].session_id).toBe("conversation-42");
   });
 
   it("puts an effort level on the wire, and never a refusal", async () => {
