@@ -542,7 +542,7 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
               description: "Use Afterglow's normal dedicated GLM 5.3 Flash route.",
             },
             ...writerRouting.endpoints
-              .filter((endpoint) => endpoint.cacheCapable && endpoint.withinCostGuard)
+              .filter((endpoint) => endpoint.tag !== writerRouting.shippedDefault && endpoint.cacheCapable && endpoint.withinCostGuard)
               .sort((a, b) => (a.promptUsdPerMillion ?? Infinity) - (b.promptUsdPerMillion ?? Infinity))
               .map((endpoint) => ({
                 value: endpoint.tag,
