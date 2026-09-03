@@ -694,6 +694,11 @@ export type AppSettings = {
   consolidationInterval: number;
   memoryLimit: number;
   memoryTokenBudget: number;
+  /**
+   * Admin-only, per-model OpenRouter upstream pins used for provider/cache
+   * experiments. Ordinary accounts never receive or influence this field.
+   */
+  adminWriterUpstreamOverrides?: Record<string, string>;
 };
 
 export type UsageSummary = {
