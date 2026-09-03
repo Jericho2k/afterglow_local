@@ -1490,8 +1490,34 @@ export function providerPolicyFor(
   modelId: string,
   attempt: number,
   failedProviders: string[] = [],
-  options: { finalAttempt?: boolean } = {},
+  options: { finalAttempt?: boolean; upstreamProviderOverride?: string | null } = {},
 ): ProviderRoutingPolicy | null {
+  /*
+   * ADMIN WRITER-PROVIDER LAB.
+   *
+   * This override is supplied only by the authenticated chat route after it
+   * has established that the caller is an Afterglow admin. It deliberately
+   * outranks the catalogue's dedicatedProvider so the owner can compare the
+   * SAME model on another OpenRouter host without changing what ordinary
+   * readers use.
+   *
+   * It remains a hard pin: one host, fallbacks off, same privacy and price
+   * floors. If the chosen host no longer satisfies either guard, OpenRouter
+   * refuses the request instead of silently routing to a different endpoint
+   * and contaminating the experiment.
+   */
+  const override = options.upstreamProviderOverride?.trim();
+  if (override && safeProviderTag(override)) {
+    const cost = costPolicyFor(modelId);
+    const privacy = dataPolicyFor(modelId);
+    return {
+      only: [override],
+      allowFallbacks: false,
+      ...(cost ? { maxPrice: cost.maxPrice } : {}),
+      ...(privacy ? { dataCollection: privacy.dataCollection, ...(privacy.zdr ? { zdr: true } : {}) } : {}),
+    };
+  }
+
   const pinned = pinnedProviderFor(modelId);
   if (pinned) return { only: [pinned], allowFallbacks: false };
   /*
