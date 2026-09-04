@@ -63,7 +63,15 @@ export const blankDraft: CreationDraft = {
   gallery: [],
   proposedWorld: null,
   visibility: "private",
+  // Every creation starts clean and unclassified for sharing. Both are
+  // decisions somebody makes, not defaults worth inheriting.
+  contentMode: "clean",
   nsfwEnabled: false,
+  shareTitle: "",
+  shareTagline: "",
+  shareImagePath: "",
+  shareImageUrl: "",
+  shareMediaStatus: "unreviewed",
 };
 
 /**

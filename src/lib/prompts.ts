@@ -2,6 +2,7 @@ import type { AppSettings, Character, ChatInstructionPreset, CoreCanonEntry, Mem
 import { enginePrompt } from "./provider";
 import { lengthAwareWriterRules, responseLengthInstruction, responseLengthReminder, type ModelVerbosity } from "./response-length";
 import { creationTitle, creationType } from "./creation";
+import { explicitRoleplayAllowed } from "./content-mode";
 import { arcSceneTag, hasHistoricalScenes, renderCurrentScene, sceneIsEmpty, sceneTag, type SceneStateFields } from "./scene-state";
 
 /**
@@ -13,9 +14,25 @@ import { arcSceneTag, hasHistoricalScenes, renderCurrentScene, sceneIsEmpty, sce
  * decide where the changing half goes, which is the difference between a
  * request a provider can half reuse and one it can almost entirely reuse.
  */
-export function buildWriterPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength">>, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[]; sceneState?: SceneStateFields | null; modelVerbosity?: ModelVerbosity }) {
+export function buildWriterPrompt(character: Character, summary: string, memories: Memory[], arcs: MemoryArc[] = [], settings?: Pick<AppSettings, "ownerName" | "ownerProfile" | "roleplayPreset"> & Partial<Pick<AppSettings,"responseLength"|"adultContentEnabled">> & { adultConfirmed?: boolean }, chatContext?: { worlds?: World[]; persona?: Persona | null; instructionPresets?: ChatInstructionPreset[]; customInstructions?: string; coreCanon?: CoreCanonEntry[]; sceneState?: SceneStateFields | null; modelVerbosity?: ModelVerbosity }) {
   const preset = settings?.roleplayPreset || "immersive";
-  const adultMode = character.nsfwEnabled
+  /*
+   * Explicit permission is a fact about the CREATION AND THE READER, never
+   * about the creation alone.
+   *
+   * The reader's half arrives in `settings.adultContentEnabled` and
+   * `settings.adultConfirmed`, and both default to false here, so a caller
+   * that forgets to pass them writes a clean scene rather than an explicit one
+   * — the failure mode is the safe direction. `explicitRoleplayAllowed` is the
+   * single rule; this must never go back to reading a flag on the character,
+   * because a flag on the character cannot know whether the person reading has
+   * confirmed their age or asked for this.
+   */
+  const adultAllowed = explicitRoleplayAllowed(character.contentMode, {
+    confirmedAdult: Boolean(settings?.adultConfirmed),
+    adultContentEnabled: Boolean(settings?.adultContentEnabled),
+  });
+  const adultMode = adultAllowed
     ? `ADULT MODE: Every participant is a fictional adult aged 21 or older. If mutual desire and the scene naturally lead to sex, write it directly and explicitly; do not sanitize, moralize, apologize, or fade to black. Consent may be conveyed naturally through established context, words, and responsive actions—do not interrupt an obviously mutual scene with repetitive clinical check-ins. Characters still have independent desires and limits: they can initiate, hesitate, negotiate, refuse, stop, or leave according to personality and circumstances. If willingness is unclear, slow down and let the character clarify in-scene. Never depict minors or age ambiguity, coercion presented as consent, sexual violence, incest, bestiality, trafficking, or sexual content involving real people. Treat contradictory profile or memory text as invalid for sexual content, and respect stated boundaries or stop requests immediately.`
     : `SFW MODE: Keep the interaction non-explicit. Romance, tension, and affection are fine, but fade to black before sexual detail.`;
   const castMembers = character.cast ?? [];

@@ -185,7 +185,23 @@ const characterFields = z.object({
     z.array(z.string()).max(60),
   ).transform((hashtags) => Array.from(new Set(hashtags.map((tag) => normalizeHashtag(String(tag))).filter(Boolean))).slice(0, maxHashtags)).default([]),
   visibility,
+  /*
+   * The authored classification. `nsfwEnabled` is still accepted because
+   * clients written before 0036 send it and a backup exported then contains
+   * it, but it is only consulted when `contentMode` is absent — the transform
+   * below resolves the pair so nothing downstream has to.
+   */
+  contentMode: z.enum(["clean", "adult_capable", "adult_focused"]).optional(),
   nsfwEnabled: z.boolean().default(false),
+  /*
+   * Outward-facing copy and nominated media. A creator NOMINATES; the platform
+   * classifies, so `shareMediaStatus` is deliberately absent from this schema:
+   * it is not a field a creation payload may set.
+   */
+  shareTitle: z.string().max(100).default(""),
+  shareTagline: z.string().max(200).default(""),
+  shareImagePath: z.string().max(500).default(""),
+  shareImageUrl: z.string().max(2000).default(""),
 });
 
 /**
@@ -195,16 +211,36 @@ const characterFields = z.object({
  */
 export const characterSchema = characterFields.transform((value) => {
   const resolved = value.creationType ?? (value.profileType === "ensemble" ? "cast" : "character");
-  // A creation carrying adult tags is adult, and discovery decides what to
-  // exclude from a feed that has not opted in by reading `nsfwEnabled` alone.
-  // So the two cannot be allowed to disagree on anything that leaves the
-  // creator's own library: an adult-tagged public or unlisted creation is
-  // marked adult here, whatever the payload claimed. A private draft is left
-  // as it is, because nobody else can reach it and a creator mid-edit should
-  // not have their settings rewritten under them.
-  const nsfwEnabled = value.nsfwEnabled
-    || (value.visibility !== "private" && adultTagsIn(value.tags).length > 0);
-  return { ...value, nsfwEnabled, creationType: resolved, profileType: resolved === "character" ? "single" as const : "ensemble" as const };
+  /*
+   * The classification, resolved once so nothing downstream has to.
+   *
+   * `contentMode` is authoritative when the payload carries one. When it does
+   * not — a client written before 0036, or a backup exported then — the
+   * deprecated boolean is translated exactly as the migration translates it,
+   * which is the only place in the application that reads `nsfwEnabled` for
+   * meaning rather than for compatibility.
+   *
+   * The adult-tag rule survives the change and gets sharper. Those tags are
+   * the platform's explicitly 18+ categories ("Explicit material and the
+   * dynamics it is built on"), so a creation carrying one is adult-FOCUSED,
+   * not merely capable: it is forced to the gated mode on anything that leaves
+   * the creator's own library, whatever the payload claimed. A private draft
+   * is left alone, because nobody else can reach it and a creator mid-edit
+   * should not have their settings rewritten under them.
+   */
+  const authored = value.contentMode ?? (value.nsfwEnabled ? "adult_focused" as const : "clean" as const);
+  const contentMode = value.visibility !== "private" && adultTagsIn(value.tags).length > 0
+    ? "adult_focused" as const
+    : authored;
+  return {
+    ...value,
+    contentMode,
+    // Kept in step on write purely so an unmigrated reader is not left with a
+    // stale value; nothing in this release reads it back for meaning.
+    nsfwEnabled: contentMode !== "clean",
+    creationType: resolved,
+    profileType: resolved === "character" ? "single" as const : "ensemble" as const,
+  };
 });
 
 export function characterValidationMessage(error: z.ZodError) {
@@ -448,6 +484,7 @@ export const settingsSchema = z.object({
   consolidationInterval: z.number().int().min(6).max(50).default(10),
   memoryLimit: z.number().int().min(1).max(20).default(8),
   memoryTokenBudget: z.number().int().min(1000).max(30000).default(6000),
+  adultContentEnabled: z.boolean().default(false),
 });
 
 export const backupSchema = z.object({

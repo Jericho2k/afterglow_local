@@ -28,7 +28,7 @@ const base: CreationSummary = {
   accent: "#e879a9",
   tags: ["Poetic", "Drama", "Enemies to Lovers"],
   hashtags: ["darkacademia"],
-  nsfwEnabled: false,
+  contentMode: "clean", nsfwEnabled: false,
   messageCount: 2_100_000,
   chatCount: 4210,
   saveCount: 48_200,
@@ -173,11 +173,11 @@ describe("layout stability", () => {
 
 describe("content rating", () => {
   it("marks an adult creation from its real setting", () => {
-    expect(text(render({ nsfwEnabled: true }))).toContain("18+");
+    expect(text(render({ contentMode: "adult_focused", nsfwEnabled: true }))).toContain("18+");
   });
 
   it("shows no rating badge on a creation its creator did not mark", () => {
-    expect(text(render({ nsfwEnabled: false }))).not.toContain("18+");
+    expect(text(render({ contentMode: "clean", nsfwEnabled: false }))).not.toContain("18+");
   });
 });
 

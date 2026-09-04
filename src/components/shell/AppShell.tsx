@@ -52,6 +52,7 @@ type WorldWithCount = StudioWorld;
 const defaultSettings: AppSettings = {
   ownerName: "You", ownerProfile: "", providerId: "deepseek", model: "deepseek-v4-flash", roleplayPreset: "immersive", responseLength: "natural", temperature: 0.95, maxTokens: 1800,
   contextMessages: 30, contextTokenBudget: 12000, consolidationInterval: 10, memoryLimit: 8, memoryTokenBudget: 6000,
+  adultContentEnabled: false,
 };
 
 function initials(name: string) { return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
@@ -638,6 +639,25 @@ export default function AppShell() {
   }, []);
   useEffect(() => { if (authenticated) { void loadCharacters(); void loadChatIndex().catch(() => undefined); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings; models: string[]; catalog: ModelCatalog; freeTier?: FreeTierStatusView }>("/api/settings").then((data) => { setSettings({...defaultSettings,...data.settings}); setModels(data.models ?? []); setModelCatalog(data.catalog ?? {providers:[],models:[],engines:[]}); setFreeTier(data.freeTier ?? null); }).catch(() => undefined); } }, [authenticated, loadCharacters, loadChatIndex, loadLibraries]);
   useEffect(()=>{if(!authenticated)return;if(new URLSearchParams(window.location.search).get("verification")==="success"){setAccountNotice("Email verified — welcome to Afterglow.");const timeout=window.setTimeout(()=>setAccountNotice(""),5000);return()=>window.clearTimeout(timeout);}},[authenticated]);
+  /*
+   * Back to the page that sent them here.
+   *
+   * A visitor who arrived on a public creation page from a search result or a
+   * shared link and pressed its sign-in control has already chosen what they
+   * want to read; landing them on the home feed instead loses that choice at
+   * the exact moment it was strongest. The public pages put it in `next`, and
+   * this spends it once the session exists.
+   *
+   * Only a same-origin ABSOLUTE PATH is honoured — no scheme, no host, and no
+   * protocol-relative `//evil.example` — so this cannot become a redirector
+   * for somebody else's link.
+   */
+  useEffect(()=>{
+    if(!authenticated)return;
+    const next=new URLSearchParams(window.location.search).get("next");
+    if(!next||!next.startsWith("/")||next.startsWith("//"))return;
+    window.location.replace(next);
+  },[authenticated]);
   /**
    * The address the tab arrived on, applied once.
    *

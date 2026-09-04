@@ -32,7 +32,7 @@ export const evalCharacter: Character = {
   responseDirective: "", boundaries: "", sourceMaterial: "", worldIds: [], tags: [], hashtags: [],
   quickFacts: [], gallery: [],
   publicStats: { messages: null, saves: null, chats: null, rank: null, rankCategory: null },
-  visibility: "private", ownedByViewer: true, nsfwEnabled: false,
+  visibility: "private", ownedByViewer: true, contentMode: "clean", nsfwEnabled: false,
   saveCount: 0, savedByViewer: false, creator: null,
   createdAt: day(1), updatedAt: day(1),
 };

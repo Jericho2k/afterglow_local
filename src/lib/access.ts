@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { contentModeFromLegacyFlag, isContentMode } from "./content-mode";
 import { castMembersFromRow, characterFromRow } from "./db";
 import type { Character } from "./types";
 
@@ -50,7 +51,7 @@ export async function ownedPersona(client: PoolClient, userId: string, personaId
 export const snapshotFields = [
   "name", "creationType", "title", "profileType", "tagline", "userRole", "avatarUrl", "avatarPath", "accent",
   "backstory", "cast", "lorebook", "personality", "scenario", "greeting", "alternateGreetings", "exampleDialogue",
-  "responseDirective", "boundaries", "nsfwEnabled",
+  "responseDirective", "boundaries", "contentMode", "nsfwEnabled",
 ] as const;
 
 export function characterSnapshot(character: Character) {
@@ -112,7 +113,23 @@ export function characterFromSnapshot(snapshot: Record<string, unknown>, charact
     gallery: [],
     publicStats: { messages: null, saves: null, chats: null, rank: null, rankCategory: null },
     visibility: "private",
+    /*
+     * A snapshot taken before 0036 has only the deprecated boolean, and its
+     * `true` translates to the restrictive mode for the same reason the
+     * migration does: a frozen definition that predates content modes cannot
+     * be claiming its story is merely adult-capable.
+     */
+    contentMode: isContentMode(snapshot.contentMode)
+      ? snapshot.contentMode
+      : contentModeFromLegacyFlag(Boolean(snapshot.nsfwEnabled)),
     nsfwEnabled: Boolean(snapshot.nsfwEnabled),
+    /*
+     * A frozen definition has no outward-facing half. Share media, the safe
+     * title and the safe line describe how a CREATION is presented to people
+     * who have not opened it; a snapshot describes a story already underway,
+     * and nothing in it is ever rendered as a public page.
+     */
+    shareImagePath: "", shareImageUrl: "", shareMediaStatus: "unreviewed", shareTitle: "", shareTagline: "",
     saveCount: 0,
     savedByViewer: false,
     creator: null,

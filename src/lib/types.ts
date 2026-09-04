@@ -26,6 +26,18 @@ export type CharacterCastMember = {
 export type CharacterVisibility = "private" | "unlisted" | "public";
 
 /**
+ * What a creation's roleplay is about, which is not the same question as what
+ * its cover may be shown to, and not the same question as what THIS reader may
+ * receive. See `src/lib/content-mode.ts` for all three rules and why they are
+ * separate. Authoritative from migration 0036; `nsfwEnabled` is deprecated.
+ */
+export type ContentMode = "clean" | "adult_capable" | "adult_focused";
+
+/** Re-exported so a consumer of `Character` needs one import, not two. */
+import type { ShareMediaStatus } from "./content-mode";
+export type { ShareMediaStatus };
+
+/**
  * How a creation is authored.
  *
  * "character" is one primary character, "cast" is several defined characters
@@ -111,7 +123,27 @@ export type Character = {
   visibility: CharacterVisibility;
   moderationStatus?: "active" | "removed";
   moderationReason?: string;
+  contentMode: ContentMode;
+  /**
+   * DEPRECATED. `contentMode` is authoritative — see `src/lib/content-mode.ts`.
+   * Retained only so records written before 0036 still round-trip.
+   */
   nsfwEnabled: boolean;
+  /*
+   * The outward-facing half, all optional because a record that predates 0036
+   * — a fixture, a backup, a snapshot — simply has none of it, and the absence
+   * resolves to the conservative answer everywhere: no nominated media, an
+   * unreviewed status, and no safe title, which together mean a branded card
+   * and neutral copy rather than a guess.
+   */
+  /** Creator-nominated preview image, used for link previews and nothing else. */
+  shareImagePath?: string;
+  shareImageUrl?: string;
+  /** Platform classification of that media. Only "safe" leaves Afterglow. */
+  shareMediaStatus?: ShareMediaStatus;
+  /** The outward name and line, written for people who have not chosen this yet. */
+  shareTitle?: string;
+  shareTagline?: string;
   /** Global saves. Same number as `publicStats.saves`, kept for card code. */
   saveCount?: number;
   /** Whether the caller has this in their saved library. Never anybody else's. */
@@ -148,6 +180,8 @@ export type CreationSummary = {
   tags: string[];
   /** Creator vocabulary, stored without the leading "#". */
   hashtags: string[];
+  contentMode: ContentMode;
+  /** Derived from `contentMode`; true for both adult modes. */
   nsfwEnabled: boolean;
   /** Global totals across every account. */
   messageCount: number;
@@ -694,6 +728,14 @@ export type AppSettings = {
   consolidationInterval: number;
   memoryLimit: number;
   memoryTokenBudget: number;
+  /**
+   * Whether this reader has asked for explicit content.
+   *
+   * Half of the reader's side of `explicitRoleplayAllowed`; the other half is
+   * the age confirmation on their profile. Off by default, so an adult-capable
+   * story stays clean until somebody says otherwise.
+   */
+  adultContentEnabled: boolean;
   /**
    * Admin-only, per-model OpenRouter upstream pins used for provider/cache
    * experiments. Ordinary accounts never receive or influence this field.
