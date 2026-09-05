@@ -292,7 +292,21 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT c.id, c.name, c.title, c.share_title, c.share_tagline, c.accent, c.content_mode,
+  SELECT c.id,
+         /*
+          * The internal name and the page title are BLANKED for a gated
+          * creation, rather than merely ignored by the caller that renders it.
+          *
+          * `safeShareTitle` already refuses to display them, but this function
+          * is also what `/api/public/creations/[id]` returns as JSON, so
+          * shipping them meant an explicit title left the database for an
+          * anonymous request and sat in a response body — displayed or not.
+          * A field that must never be shown outside is a field that must never
+          * be sent outside.
+          */
+         CASE WHEN c.content_mode = 'adult_focused' THEN '' ELSE c.name END,
+         CASE WHEN c.content_mode = 'adult_focused' THEN '' ELSE c.title END,
+         c.share_title, c.share_tagline, c.accent, c.content_mode,
          c.share_image_path, c.share_image_url, c.share_media_status,
          -- The avatar travels so a preview can fall back to a nominated cover,
          -- but only `share_media_status = 'safe'` lets any of it out; that is
@@ -412,7 +426,10 @@ $$;
  */
 DROP FUNCTION IF EXISTS public.public_creation_gallery(uuid);
 CREATE FUNCTION public.public_creation_gallery(p_id uuid)
-RETURNS TABLE (id uuid, storage_path text, external_url text, caption text, position integer)
+-- `sort_position` rather than `position`: the column is called `position` on
+-- the table and that is legal, but a RETURNS TABLE entry is a function
+-- PARAMETER name, and `position` is a col_name_keyword — reserved there.
+RETURNS TABLE (id uuid, storage_path text, external_url text, caption text, sort_position integer)
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
@@ -546,9 +563,12 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT c.id, c.name,
-         -- The real title is blanked for a gated row exactly as the tagline is:
-         -- it is page copy, and `share_title` is the outward name.
+  SELECT c.id,
+         -- Name and title are both blanked for a gated row exactly as the
+         -- tagline is: they are page copy, and `share_title` is the outward
+         -- name. See `public_creation_safe_landing` for why these are absent
+         -- from the result rather than ignored by the caller.
+         CASE WHEN c.content_mode = 'adult_focused' THEN '' ELSE c.name END,
          CASE WHEN c.content_mode = 'adult_focused' THEN '' ELSE c.title END,
          CASE WHEN c.content_mode = 'adult_focused' THEN '' ELSE c.tagline END,
          c.share_title, c.share_tagline,
