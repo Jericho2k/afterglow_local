@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { BadgeCheck, Compass, Images, MessageCircle, Sparkles, Tag, Users } from "lucide-react";
 import { castSectionLabel, creationTitle, inlineTitle } from "@/lib/creation";
-import { contentModeBadge, readableWithoutAccount } from "@/lib/content-mode";
+import { contentModeBadge, readableWithoutAccount, safeShareTitle } from "@/lib/content-mode";
 import { compactCount } from "@/lib/format";
 import { accentVariables } from "@/lib/accent";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import { RichContent } from "@/components/rich";
-import type { PublicCreationCard, PublicCreationPage } from "@/lib/public-view";
+import type { PublicCreationPage, PublicSafeLanding } from "@/lib/public-view";
 import styles from "./profile.module.css";
 
 /**
@@ -151,25 +151,27 @@ export function PublicCreationView({ page }: { page: PublicCreationPage }) {
 /**
  * The gate an adult-focused creation shows instead of its page.
  *
- * It is a real landing page rather than a wall: the creation's name, its
- * tagline, its creator, and share-safe media if any was nominated — enough to
- * tell somebody whether this is what they were looking for, and nothing that
- * they did not consent to see. Everything else waits behind an account and a
- * confirmed age.
- *
- * The cover is deliberately absent unless it was nominated as share-safe. The
- * gate is the surface most likely to be opened by somebody who did not know
- * what they were clicking, which is the worst possible place to gamble on a
- * picture being tame.
+ * A real landing page rather than a wall, built from the SAFE LANDING model
+ * and nothing else: the outward name its creator nominated (or neutral copy
+ * naming only them), the line they wrote for the outside, and media only if
+ * the platform classified it safe. The creation's own title and tagline are
+ * page copy written for somebody who already chose it, and they are not in
+ * this component's input at all — so the gate cannot leak them by an edit.
  */
-export function AdultCreationGate({ card }: { card: PublicCreationCard }) {
-  const title = creationTitle(card);
-  const href = `/characters/${card.id}`;
-  const cover = card.share.kind === "storage"
-    ? avatarSource(characterAvatarBucket, card.share.path, "")
-    : card.share.kind === "external" ? card.share.url : "";
+export function AdultCreationGate({ landing }: { landing: PublicSafeLanding }) {
+  const href = `/characters/${landing.id}`;
+  const name = safeShareTitle({
+    contentMode: landing.contentMode,
+    shareTitle: landing.shareTitle,
+    title: landing.title,
+    name: landing.name,
+    creatorUsername: landing.creator.username,
+  });
+  const cover = landing.share.kind === "storage"
+    ? avatarSource(characterAvatarBucket, landing.share.path, "")
+    : landing.share.kind === "external" ? landing.share.url : "";
 
-  return <main className={styles.page} style={accentVariables(card.accent) as React.CSSProperties}>
+  return <main className={styles.page} style={accentVariables(landing.accent) as React.CSSProperties}>
     <div className={styles.hero}>
       <div className={styles.heroMedia}>
         {cover ? <img src={cover} alt="" /> : <span className={styles.heroFallback}>18+</span>}
@@ -177,11 +179,11 @@ export function AdultCreationGate({ card }: { card: PublicCreationCard }) {
         <div className={styles.heroScrim} />
       </div>
       <div className={styles.heroCopy}>
-        <h1 className={styles.name}>{title}</h1>
-        {card.tagline && <p className={styles.tagline}>{card.tagline}</p>}
-        {card.creator.username && <p className={styles.byline}>
-          <Link className={styles.bylineCreator} href={`/creators/${encodeURIComponent(card.creator.username)}`}>
-            {card.creator.displayName || card.creator.username}
+        <h1 className={styles.name}>{name}</h1>
+        {landing.shareTagline && <p className={styles.tagline}>{landing.shareTagline}</p>}
+        {landing.creator.username && <p className={styles.byline}>
+          <Link className={styles.bylineCreator} href={`/creators/${encodeURIComponent(landing.creator.username)}`}>
+            {landing.creator.displayName || landing.creator.username}
           </Link>
         </p>}
       </div>
@@ -201,11 +203,11 @@ export function AdultCreationGate({ card }: { card: PublicCreationCard }) {
           </Link>
         </div>
       </section>
-      {card.creator.username && <section className={styles.card}>
+      {landing.creator.username && <section className={styles.card}>
         <header><Users size={16} /><h2>More from this creator</h2></header>
         <p className={styles.prose}>
-          <Link href={`/creators/${encodeURIComponent(card.creator.username)}`}>
-            See everything {card.creator.displayName || card.creator.username} has published
+          <Link href={`/creators/${encodeURIComponent(landing.creator.username)}`}>
+            See everything {landing.creator.displayName || landing.creator.username} has published
           </Link>
         </p>
       </section>}
@@ -214,8 +216,8 @@ export function AdultCreationGate({ card }: { card: PublicCreationCard }) {
 }
 
 /** Chooses between the two, so a caller cannot render the wrong one. */
-export function PublicCreation({ card, page }: { card: PublicCreationCard; page: PublicCreationPage | null }) {
+export function PublicCreation({ landing, page }: { landing: PublicSafeLanding; page: PublicCreationPage | null }) {
   return page && readableWithoutAccount(page.contentMode)
     ? <PublicCreationView page={page} />
-    : <AdultCreationGate card={card} />;
+    : <AdultCreationGate landing={landing} />;
 }

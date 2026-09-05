@@ -3,7 +3,9 @@ import { publicWorldCard } from "@/lib/public-view";
 import { indexableWithoutAccount, readableWithoutAccount } from "@/lib/content-mode";
 import { absoluteUrl, metaDescription, shareImageUrl } from "@/lib/site";
 import { worldCoverBucket } from "@/lib/storage";
+import { currentAccount } from "@/lib/session";
 import WorldProfile from "./profile";
+import { PublicWorldView } from "./public-view";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
@@ -32,7 +34,18 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   };
 }
 
+/**
+ * One address, two readers. See the creation page for the reasoning.
+ *
+ * A world's anonymous form is a card rather than a page, because the lore IS
+ * the world and reading it is a signed-in act — the same rule that has always
+ * kept a creation's greeting off its public page. An unclassified world has no
+ * anonymous form at all, so it falls through to the signed-in page.
+ */
 export default async function WorldPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return <WorldProfile worldId={id} />;
+  const account = await currentAccount();
+  if (account) return <WorldProfile worldId={id} />;
+  const card = await publicWorldCard(id).catch(() => null);
+  return card ? <PublicWorldView card={card} /> : <WorldProfile worldId={id} />;
 }

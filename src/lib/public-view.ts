@@ -31,6 +31,8 @@ export type PublicSafeLanding = {
   id: string;
   name: string;
   title: string;
+  /** The creator's outward-facing name, empty when they nominated none. */
+  shareTitle: string;
   /** The creator's outward-facing line. Empty means the gate says something generic. */
   shareTagline: string;
   accent: string;
@@ -44,6 +46,7 @@ export type PublicCreationCard = {
   name: string;
   title: string;
   tagline: string;
+  shareTitle: string;
   shareTagline: string;
   creationType: CreationType;
   profileType: "single" | "ensemble";
@@ -113,6 +116,7 @@ function cardFromRow(row: Record<string, unknown>): PublicCreationCard {
     name: String(row.name || ""),
     title: String(row.title || ""),
     tagline: String(row.tagline || ""),
+    shareTitle: String(row.share_title || ""),
     shareTagline: String(row.share_tagline || ""),
     creationType: creationTypeOf(row),
     profileType: row.profile_type === "ensemble" ? "ensemble" : "single",
@@ -154,6 +158,7 @@ export async function publicSafeLanding(id: string): Promise<PublicSafeLanding |
     id: String(row.id),
     name: String(row.name || ""),
     title: String(row.title || ""),
+    shareTitle: String(row.share_title || ""),
     shareTagline: String(row.share_tagline || ""),
     accent: String(row.accent || "#e879a9"),
     contentMode: contentMode(row.content_mode),

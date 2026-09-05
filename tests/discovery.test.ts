@@ -36,7 +36,7 @@ const unlisted = "aaaaaaaa-0000-4000-8000-000000000005";
 
 type Summary = {
   id: string; title: string; name: string; creationType: string; tagline: string;
-  tags: string[]; hashtags: string[]; nsfwEnabled: boolean;
+  tags: string[]; hashtags: string[]; contentMode: string; nsfwEnabled: boolean;
   messageCount: number; chatCount: number; saveCount: number; savedByViewer: boolean;
   ownedByViewer: boolean; creator: { username: string } | null;
 };

@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { publicCreatorProfile } from "@/lib/public-view";
 import { absoluteUrl, metaDescription, shareImageUrl } from "@/lib/site";
 import { profileAvatarBucket } from "@/lib/storage";
+import { currentAccount } from "@/lib/session";
 import CreatorProfile from "./profile";
+import { PublicCreatorView } from "./public-view";
 
 export async function generateMetadata({ params }: { params: Promise<{ username: string }> }): Promise<Metadata> {
   const { username } = await params;
@@ -44,5 +46,9 @@ export async function generateMetadata({ params }: { params: Promise<{ username:
 
 export default async function CreatorPage({ params }: { params: Promise<{ username: string }> }) {
   const { username } = await params;
-  return <CreatorProfile username={decodeURIComponent(username)} />;
+  const name = decodeURIComponent(username);
+  const account = await currentAccount();
+  if (account) return <CreatorProfile username={name} />;
+  const profile = await publicCreatorProfile(name).catch(() => null);
+  return profile ? <PublicCreatorView profile={profile} /> : <CreatorProfile username={name} />;
 }
