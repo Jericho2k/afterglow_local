@@ -54,7 +54,7 @@ export async function GET(request: Request) {
     const creations = await asUser(account.id, async (client) => {
       const result = await client.query(
         `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
-           c.tags,c.hashtags,c.nsfw_enabled,c.visibility,c.message_count,c.chat_count,c.like_count,
+           c.tags,c.hashtags,c.content_mode,c.content_mode,c.nsfw_enabled,c.visibility,c.message_count,c.chat_count,c.like_count,
            c.published_at,c.created_at,c.updated_at,
            p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path
          FROM characters c
@@ -103,7 +103,7 @@ export async function GET(request: Request) {
          c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,
          c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,
          c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,
-         c.nsfw_enabled,c.visibility,c.like_count,c.chat_count,c.message_count,
+         c.content_mode,c.nsfw_enabled,c.visibility,c.like_count,c.chat_count,c.message_count,
          c.published_at,c.created_at,c.updated_at
        FROM characters c WHERE c.user_id=$1 ORDER BY c.updated_at DESC`,
       [account.id],

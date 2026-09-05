@@ -48,7 +48,7 @@ const persona: Persona = {
 
 const profile: Profile = {
   id: "cccccccc-0000-4000-8000-000000000001",
-  username: "", displayName: "Alex", avatarPath: "", bio: "", plan: "free",
+  username: "", displayName: "Alex", avatarPath: "", bio: "", plan: "free", adultConfirmed: false,
   createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
 };
 

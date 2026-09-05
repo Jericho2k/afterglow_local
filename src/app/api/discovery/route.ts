@@ -81,10 +81,20 @@ export async function GET(request: Request) {
     // Their card simply has no save control, which the grid already handles.
   ];
 
-  // Adult content is opt-in, and the opt-in is a property of this request
-  // only: it widens what a feed may return, never what an account is allowed
-  // to see, and it is never persisted as a preference.
-  if (!query.includeAdult) where.push("c.nsfw_enabled=false");
+  /*
+   * Adult content is opt-in, and the opt-in is a property of this request
+   * only: it widens what a feed may return, never what an account is allowed
+   * to see, and it is never persisted as a preference.
+   *
+   * What it filters is 18+ PRESENTATION — `adult_focused` — and not the
+   * capability to write an explicit scene. An adult-capable creation belongs
+   * in the ordinary feed: it reads as an ordinary story to a reader who has
+   * not asked for anything else, and it only becomes explicit for a reader
+   * who has confirmed their age and turned it on. Filtering it out here is
+   * what the old `nsfw_enabled=false` did, and it hid most of the catalogue
+   * from most of its audience.
+   */
+  if (!query.includeAdult) where.push("c.content_mode<>'adult_focused'");
 
   if (query.types.length) {
     values.push(query.types);
@@ -130,7 +140,7 @@ export async function GET(request: Request) {
   const page = await asUser(account.id, async (client) => {
     const result = await client.query(
       `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
-         c.tags,c.hashtags,c.nsfw_enabled,c.message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
+         c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
          p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
          (mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c

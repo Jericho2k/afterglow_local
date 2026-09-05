@@ -613,6 +613,11 @@ export type Profile = {
   avatarPath: string;
   bio: string;
   plan: "free" | "beta" | "pro";
+  /**
+   * Whether this account has stated it belongs to an adult. Half of
+   * `explicitRoleplayAllowed`; the other half is a settings preference.
+   */
+  adultConfirmed: boolean;
   createdAt: string;
   updatedAt: string;
 };

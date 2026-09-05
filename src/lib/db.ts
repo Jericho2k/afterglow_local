@@ -1571,6 +1571,7 @@ export function profileFromRow(row: Record<string, unknown>) {
     id: String(row.id), username: String(row.username || ""), displayName: String(row.display_name || ""),
     avatarPath: String(row.avatar_path || ""), bio: String(row.bio || ""),
     plan: (["free","beta","pro"].includes(plan) ? plan : "free") as "free" | "beta" | "pro",
+    adultConfirmed: Boolean(row.adult_confirmed_at),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }

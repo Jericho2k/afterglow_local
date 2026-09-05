@@ -12,6 +12,7 @@ import { compactCount } from "@/lib/format";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import type { CharacterVisibility, OwnedCreationSummary } from "@/lib/types";
 import { MoreMenu, type MoreMenuItem } from "@/components/nav";
+import { presentsAsAdult } from "@/lib/content-mode";
 import styles from "./creations.module.css";
 
 /**
@@ -224,7 +225,7 @@ function OwnedCard({ creation, busy, onEdit, onDelete }: {
           : <span className={styles.coverFallback} aria-hidden>{title.split(/\s+/).filter(Boolean).map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "?"}</span>}
         <div className={styles.coverScrim} />
         <div className={styles.badges}>
-          {creation.nsfwEnabled && <em className={`${styles.badge} ${styles.badgeAdult}`}>18+</em>}
+          {presentsAsAdult(creation.contentMode) && <em className={`${styles.badge} ${styles.badgeAdult}`}>18+</em>}
           {type === "cast" && <em className={styles.badge}><Users size={11} aria-hidden />Cast</em>}
           {type === "scenario" && <em className={styles.badge}><Compass size={11} aria-hidden />Scenario</em>}
         </div>

@@ -84,24 +84,24 @@ beforeEach(async () => {
   // One of each authoring structure, published, plus a draft and an unlisted one.
   await query(
     `INSERT INTO characters (id,user_id,name,title,creation_type,profile_type,tagline,description,visibility,published_at,
-       tags,hashtags,nsfw_enabled,message_count,chat_count,like_count,greeting,personality,response_directive,boundaries,source_material,cast_members)
+       tags,hashtags,content_mode,nsfw_enabled,message_count,chat_count,like_count,greeting,personality,response_directive,boundaries,source_material,cast_members)
      VALUES ($1,$2,'Seraphine','Seraphine','character','single','The girl who writes your name in the margins of her poetry.',
-       'A poet who keeps her drafts hidden.','public',now(),$3::text[],$4::text[],false,2100,180,48,
+       'A poet who keeps her drafts hidden.','public',now(),$3::text[],$4::text[],'clean',false,2100,180,48,
        'You find her notebook.','Guarded, sharp.','Always answer in second person.','No violence.','pasted card dump','[]'::jsonb)`,
     [seraphine, alice, ["Poetic", "Drama", "Enemies to Lovers"], ["darkacademia", "poetry"]],
   );
   await query(
     `INSERT INTO characters (id,user_id,name,title,creation_type,profile_type,tagline,description,visibility,published_at,
-       tags,hashtags,nsfw_enabled,message_count,chat_count,like_count)
+       tags,hashtags,content_mode,nsfw_enabled,message_count,chat_count,like_count)
      VALUES ($1,$2,'The Final War','The Final War','scenario','ensemble','The heroes are running out of options.',
-       'A siege that never ends.','public',now(),$3::text[],$4::text[],true,3600,900,96)`,
+       'A siege that never ends.','public',now(),$3::text[],$4::text[],'adult_focused',true,3600,900,96)`,
     [finalWar, alice, ["Action", "Superhero", "AnyPOV"], ["mha", "villainau"]],
   );
   await query(
     `INSERT INTO characters (id,user_id,name,title,creation_type,profile_type,tagline,visibility,published_at,
-       tags,hashtags,nsfw_enabled,message_count,chat_count,like_count)
+       tags,hashtags,content_mode,nsfw_enabled,message_count,chat_count,like_count)
      VALUES ($1,$2,'Roommates From Hell','Roommates From Hell','cast','ensemble','Three roommates. One apartment. Absolutely no peace.',
-       'public',now(),$3::text[],$4::text[],false,120,60,4)`,
+       'public',now(),$3::text[],$4::text[],'clean',false,120,60,4)`,
     [roommates, alice, ["Comedy", "Slice of Life"], ["chaos"]],
   );
   await query(
@@ -291,6 +291,26 @@ describe("18+ inclusion", () => {
     const { creations } = await rawFeed();
     expect(ids(creations)).not.toContain(finalWar);
     expect(ids(creations).sort()).toEqual([seraphine, roommates].sort());
+  });
+
+  it("keeps an adult-capable creation in the ordinary feed", async () => {
+    /*
+     * The behaviour change this release exists for.
+     *
+     * The feed's 18+ filter is about how a creation PRESENTS itself, not about
+     * what its writer could be asked to do. A story that stays clean unless
+     * its reader steers otherwise belongs in front of readers who have not
+     * opted into anything — it simply writes cleanly for them, which is
+     * `explicitRoleplayAllowed`'s job rather than the feed's. Excluding it, as
+     * `nsfw_enabled=false` did, hid most of a catalogue from most of its
+     * audience.
+     */
+    await query("UPDATE characters SET content_mode='adult_capable' WHERE id=$1", [finalWar]);
+    const { creations } = await rawFeed();
+    expect(ids(creations)).toContain(finalWar);
+    // And it is still capable: the mode says so even while the feed shows it.
+    expect(creations.find((creation) => creation.id === finalWar)?.contentMode).toBe("adult_capable");
+    await query("UPDATE characters SET content_mode='adult_focused' WHERE id=$1", [finalWar]);
   });
 
   it("excludes adult creations for every filter, ordering and search that did not opt in", async () => {

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {useRouter, useSearchParams} from "next/navigation";
 import type { AppSettings, Character, Conversation, FreeTierStatusView, Memory, Message, ModelCatalog, ModelDefinition, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
 import { api } from "@/lib/api-client";
+import { explicitRoleplayAllowed } from "@/lib/content-mode";
 import { composerPlaceholder, creationKindLine, creationSubject, creationTitle, inlineTitle } from "@/lib/creation";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
 import { DiscoveryFeed } from "@/components/feed";
@@ -197,6 +198,22 @@ export default function AppShell() {
   const routeHandledRef=useRef(false);
   const [atBottom, setAtBottom] = useState(true);
   const selected = useMemo(() => characters.find((item) => item.id === selectedId) ?? null, [characters, selectedId]);
+  /*
+   * What the writer may actually do in THIS story, for THIS reader.
+   *
+   * The strip used to read the creation's flag alone and say "18+ adult mode"
+   * to a reader who had confirmed nothing and asked for nothing — describing a
+   * permission that did not exist. All three facts are required, and they are
+   * the same three `explicitRoleplayAllowed` checks on the server, so the
+   * label and the prompt cannot disagree.
+   */
+  const explicitHere = useMemo(
+    () => Boolean(selected) && explicitRoleplayAllowed(selected!.contentMode, {
+      confirmedAdult: Boolean(profile?.adultConfirmed),
+      adultContentEnabled: Boolean(settings.adultContentEnabled),
+    }),
+    [selected, profile?.adultConfirmed, settings.adultContentEnabled],
+  );
   const activePersona = useMemo(() => personas.find((item) => item.id === conversation?.personaId) ?? personas.find((item) => item.isDefault) ?? null, [personas, conversation?.personaId]);
   const closeStoryNavigation=()=>setStoryNavigation((state)=>closeStorySurface(state));
   const openComposerTool=(child:StoryChild)=>{setStoryNavigation(openChatChild(child));setComposerToolsOpen(false);};
@@ -1346,7 +1363,7 @@ export default function AppShell() {
           {chatNotice && <div className="success-banner" role="status"><Check size={14} aria-hidden /><strong>{chatNotice}</strong><button onClick={() => setChatNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
           <div className="composer-wrap">
             {!atBottom && <button className="jump-latest" aria-label="Jump to the latest message" onClick={scrollToBottom}><ArrowDown size={13} aria-hidden />Latest</button>}
-            <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span aria-hidden>·</span><span>{activePersona?.name || "You"}</span>{conversation && activeInstructionCount(conversation) > 0 && <><span aria-hidden>·</span><span>{activeInstructionCount(conversation)} instructions</span></>}</div>
+            <div className="mode-strip"><span className={explicitHere ? "adult-on" : ""}>{explicitHere ? "18+ adult mode" : "SFW mode"}</span><span aria-hidden>·</span><span>{activePersona?.name || "You"}</span>{conversation && activeInstructionCount(conversation) > 0 && <><span aria-hidden>·</span><span>{activeInstructionCount(conversation)} instructions</span></>}</div>
             {composerToolsOpen && <div className="composer-tools">
               <button onClick={() => openComposerTool("world")}><Globe2 size={16} aria-hidden /><strong>Worlds</strong><small>{storyWorlds===null?"In this story":storyWorlds.length===1?"1 in this story":`${storyWorlds.length} in this story`}</small></button>
               <button onClick={() => openComposerTool("persona")}><Users size={16} aria-hidden /><strong>Persona</strong><small>{activePersona?.name || "Choose who you are"}</small></button>
