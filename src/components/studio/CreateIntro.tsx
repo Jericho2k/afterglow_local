@@ -106,7 +106,9 @@ export function CreateIntro({ draft, update, onChangeType, onGenerated, onContin
           // Only a deliberate choice is sent. Left untouched, the model
           // decides the structure from the material itself.
           creationType: typeChosen ? draft.creationType : null,
-          nsfwEnabled: draft.nsfwEnabled,
+          // The generator only needs to know whether explicit material is on
+          // the table, which is the capability rather than the presentation.
+          nsfwEnabled: draft.contentMode !== "clean",
         }),
       });
       const generated = draftFromCharacter(data.creation as Character);

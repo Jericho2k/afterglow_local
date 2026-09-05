@@ -24,7 +24,7 @@ const character: Character = {
   exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "",
   worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [],
   publicStats: { messages: null, saves: null, chats: null, rank: null, rankCategory: null },
-  visibility: "private", nsfwEnabled: false, saveCount: 0, savedByViewer: false,
+  visibility: "private", contentMode: "clean", nsfwEnabled: false, saveCount: 0, savedByViewer: false,
   creator: null, ownedByViewer: true,
   createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
 };

@@ -9,6 +9,7 @@ import { compactCount, exactCount } from "@/lib/format";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { creatorProfileHref } from "@/lib/follows";
 import type { CreationSummary } from "@/lib/types";
+import { presentsAsAdult } from "@/lib/content-mode";
 import styles from "./feed.module.css";
 
 /**
@@ -82,7 +83,7 @@ export function CreationCard({ creation, priority = false, onToggleSave }: {
           : <span className={styles.coverFallback} aria-hidden>{initials(title)}</span>}
         <div className={styles.coverScrim} />
         <div className={styles.coverBadges}>
-          {creation.nsfwEnabled && <em className={`${styles.badge} ${styles.badgeAdult}`}>18+</em>}
+          {presentsAsAdult(creation.contentMode) && <em className={`${styles.badge} ${styles.badgeAdult}`}>18+</em>}
           {/* The authoring structure, only where it tells a reader something:
               nobody needs a card to announce that a character is a character. */}
           {type === "cast" && <em className={styles.badge}><Users size={11} aria-hidden />Cast</em>}

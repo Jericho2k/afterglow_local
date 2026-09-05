@@ -22,7 +22,7 @@ export const benchmarkCharacter: Character = {
   exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "", worldIds: [], tags: [], hashtags: [],
   quickFacts: [], gallery: [],
   publicStats: { messages: null, saves: null, chats: null, rank: null, rankCategory: null },
-  visibility: "private", ownedByViewer: true, nsfwEnabled: false,
+  visibility: "private", ownedByViewer: true, contentMode: "clean", nsfwEnabled: false,
   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
 };
 

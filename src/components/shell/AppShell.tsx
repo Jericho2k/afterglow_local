@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {useRouter, useSearchParams} from "next/navigation";
 import type { AppSettings, Character, Conversation, FreeTierStatusView, Memory, Message, ModelCatalog, ModelDefinition, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
 import { api } from "@/lib/api-client";
+import { explicitRoleplayAllowed } from "@/lib/content-mode";
 import { composerPlaceholder, creationKindLine, creationSubject, creationTitle, inlineTitle } from "@/lib/creation";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
 import { DiscoveryFeed } from "@/components/feed";
@@ -52,6 +53,7 @@ type WorldWithCount = StudioWorld;
 const defaultSettings: AppSettings = {
   ownerName: "You", ownerProfile: "", providerId: "deepseek", model: "deepseek-v4-flash", roleplayPreset: "immersive", responseLength: "natural", temperature: 0.95, maxTokens: 1800,
   contextMessages: 30, contextTokenBudget: 12000, consolidationInterval: 10, memoryLimit: 8, memoryTokenBudget: 6000,
+  adultContentEnabled: false,
 };
 
 function initials(name: string) { return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
@@ -196,6 +198,22 @@ export default function AppShell() {
   const routeHandledRef=useRef(false);
   const [atBottom, setAtBottom] = useState(true);
   const selected = useMemo(() => characters.find((item) => item.id === selectedId) ?? null, [characters, selectedId]);
+  /*
+   * What the writer may actually do in THIS story, for THIS reader.
+   *
+   * The strip used to read the creation's flag alone and say "18+ adult mode"
+   * to a reader who had confirmed nothing and asked for nothing — describing a
+   * permission that did not exist. All three facts are required, and they are
+   * the same three `explicitRoleplayAllowed` checks on the server, so the
+   * label and the prompt cannot disagree.
+   */
+  const explicitHere = useMemo(
+    () => Boolean(selected) && explicitRoleplayAllowed(selected!.contentMode, {
+      confirmedAdult: Boolean(profile?.adultConfirmed),
+      adultContentEnabled: Boolean(settings.adultContentEnabled),
+    }),
+    [selected, profile?.adultConfirmed, settings.adultContentEnabled],
+  );
   const activePersona = useMemo(() => personas.find((item) => item.id === conversation?.personaId) ?? personas.find((item) => item.isDefault) ?? null, [personas, conversation?.personaId]);
   const closeStoryNavigation=()=>setStoryNavigation((state)=>closeStorySurface(state));
   const openComposerTool=(child:StoryChild)=>{setStoryNavigation(openChatChild(child));setComposerToolsOpen(false);};
@@ -638,6 +656,25 @@ export default function AppShell() {
   }, []);
   useEffect(() => { if (authenticated) { void loadCharacters(); void loadChatIndex().catch(() => undefined); void loadLibraries().catch(() => undefined); api<{ settings: AppSettings; models: string[]; catalog: ModelCatalog; freeTier?: FreeTierStatusView }>("/api/settings").then((data) => { setSettings({...defaultSettings,...data.settings}); setModels(data.models ?? []); setModelCatalog(data.catalog ?? {providers:[],models:[],engines:[]}); setFreeTier(data.freeTier ?? null); }).catch(() => undefined); } }, [authenticated, loadCharacters, loadChatIndex, loadLibraries]);
   useEffect(()=>{if(!authenticated)return;if(new URLSearchParams(window.location.search).get("verification")==="success"){setAccountNotice("Email verified — welcome to Afterglow.");const timeout=window.setTimeout(()=>setAccountNotice(""),5000);return()=>window.clearTimeout(timeout);}},[authenticated]);
+  /*
+   * Back to the page that sent them here.
+   *
+   * A visitor who arrived on a public creation page from a search result or a
+   * shared link and pressed its sign-in control has already chosen what they
+   * want to read; landing them on the home feed instead loses that choice at
+   * the exact moment it was strongest. The public pages put it in `next`, and
+   * this spends it once the session exists.
+   *
+   * Only a same-origin ABSOLUTE PATH is honoured — no scheme, no host, and no
+   * protocol-relative `//evil.example` — so this cannot become a redirector
+   * for somebody else's link.
+   */
+  useEffect(()=>{
+    if(!authenticated)return;
+    const next=new URLSearchParams(window.location.search).get("next");
+    if(!next||!next.startsWith("/")||next.startsWith("//"))return;
+    window.location.replace(next);
+  },[authenticated]);
   /**
    * The address the tab arrived on, applied once.
    *
@@ -1326,7 +1363,7 @@ export default function AppShell() {
           {chatNotice && <div className="success-banner" role="status"><Check size={14} aria-hidden /><strong>{chatNotice}</strong><button onClick={() => setChatNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
           <div className="composer-wrap">
             {!atBottom && <button className="jump-latest" aria-label="Jump to the latest message" onClick={scrollToBottom}><ArrowDown size={13} aria-hidden />Latest</button>}
-            <div className="mode-strip"><span className={selected.nsfwEnabled ? "adult-on" : ""}>{selected.nsfwEnabled ? "18+ adult mode" : "SFW mode"}</span><span aria-hidden>·</span><span>{activePersona?.name || "You"}</span>{conversation && activeInstructionCount(conversation) > 0 && <><span aria-hidden>·</span><span>{activeInstructionCount(conversation)} instructions</span></>}</div>
+            <div className="mode-strip"><span className={explicitHere ? "adult-on" : ""}>{explicitHere ? "18+ adult mode" : "SFW mode"}</span><span aria-hidden>·</span><span>{activePersona?.name || "You"}</span>{conversation && activeInstructionCount(conversation) > 0 && <><span aria-hidden>·</span><span>{activeInstructionCount(conversation)} instructions</span></>}</div>
             {composerToolsOpen && <div className="composer-tools">
               <button onClick={() => openComposerTool("world")}><Globe2 size={16} aria-hidden /><strong>Worlds</strong><small>{storyWorlds===null?"In this story":storyWorlds.length===1?"1 in this story":`${storyWorlds.length} in this story`}</small></button>
               <button onClick={() => openComposerTool("persona")}><Users size={16} aria-hidden /><strong>Persona</strong><small>{activePersona?.name || "Choose who you are"}</small></button>

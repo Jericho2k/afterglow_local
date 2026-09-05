@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { contentMode, contentModeFromLegacyFlag, shareMediaStatus } from "./content-mode";
 import { maxLoreBlockText, normalizeBlocks } from "./rich-content";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { responseLengths, roleplayEngineIds, type AppSettings, type Character, type ChatInstructionPreset, type Conversation, type CoreCanonEntry, type CreationSummary, type Memory, type MemoryArc, type Message, type OwnedCreationSummary, type Persona, type ScenePresence, type SceneStamp, type SceneState, type SceneTime, type SceneTimeKind, type World, type WorldSummary } from "./types";
@@ -678,6 +679,32 @@ async function schema() {
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS user_role text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS hashtags text[] NOT NULL DEFAULT ARRAY[]::text[]");
+  /*
+   * Content mode and share media (migration 0036).
+   *
+   * The column is added NULLABLE and backfilled before it is defaulted, which
+   * is not ceremony: adding it as `NOT NULL DEFAULT 'clean'` would silently
+   * reclassify every existing adult creation as clean on a database that has
+   * not run the migration yet — turning off its adult roleplay and publishing
+   * its page to anonymous visitors in one statement. The backfill is the same
+   * conservative translation 0036 performs, for the same reason.
+   *
+   * The migration remains what a deployment must apply. Only it carries the
+   * constraints, the deprecation of `nsfw_enabled`, and the functions the
+   * anonymous read path is built from.
+   */
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS content_mode text");
+  await pool().query("UPDATE characters SET content_mode = CASE WHEN nsfw_enabled THEN 'adult_focused' ELSE 'clean' END WHERE content_mode IS NULL");
+  await pool().query("ALTER TABLE characters ALTER COLUMN content_mode SET DEFAULT 'clean'");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS share_image_path text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS share_image_url text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS share_tagline text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS share_title text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS share_media_status text NOT NULL DEFAULT 'unreviewed'");
+  // Worlds classify themselves and are not backfilled from anything: NULL
+  // means unclassified, which keeps a world out of every anonymous surface.
+  await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS content_mode text");
+  await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS share_media_status text NOT NULL DEFAULT 'unreviewed'");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_path text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_url text NOT NULL DEFAULT ''");
   await pool().query(`
@@ -743,6 +770,10 @@ async function schema() {
   // Admin-only provider/cache experiments. The chat path reads this only for
   // accounts explicitly listed in AFTERGLOW_ADMIN_USER_IDS.
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS admin_writer_upstream_overrides jsonb NOT NULL DEFAULT '{}'::jsonb");
+  // The reader's half of the adult rule. Both default to "has not said yet".
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS adult_confirmed_at timestamptz");
+  await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS adult_content_enabled boolean NOT NULL DEFAULT false");
+  await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS adult_content_enabled boolean NOT NULL DEFAULT false");
   // One default persona per account rather than per installation.
   await pool().query("DROP INDEX IF EXISTS personas_single_default_idx");
   await pool().query("CREATE UNIQUE INDEX IF NOT EXISTS personas_user_default_idx ON personas (user_id) WHERE is_default");
@@ -1037,6 +1068,38 @@ export async function userQuery<T extends QueryResultRow>(userId: string, text: 
   return asUser(userId, (client) => client.query<T>(text, values));
 }
 
+/**
+ * Runs a unit of work with no account at all.
+ *
+ * The counterpart to `asUser`, for the one thing this product has never been
+ * able to do: answer a request from somebody who has not signed in. It assumes
+ * `anon` — the role Supabase gives an unauthenticated caller — and publishes no
+ * subject, so `auth.uid()` is null and every policy written against it refuses.
+ *
+ * That refusal is the point. `anon` holds no privilege on any table in this
+ * schema, so a statement sent through here cannot read a row directly however
+ * it is written; the only things it can reach are the SECURITY DEFINER
+ * functions 0026 grants it, each of which returns published presentation
+ * columns and does not have a hidden field in its result type. A mistake in a
+ * caller is therefore a query that errors, not a query that leaks.
+ */
+export async function asVisitor<T>(fn: (client: PoolClient) => Promise<T>) {
+  await ensureSchema();
+  const enforced = await userSessionSupported();
+  const client = await pool().connect();
+  try {
+    await client.query(enforced ? "BEGIN; SET LOCAL ROLE anon; SELECT set_config('request.jwt.claims', '', true);" : "BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Ordered label/value pairs, bounded so a malformed row cannot flood the page. */
 function quickFactsFromRow(value: unknown) {
   if (!Array.isArray(value)) return [];
@@ -1131,7 +1194,17 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
     visibility: (["private","unlisted","public"].includes(String(row.visibility)) ? String(row.visibility) : "private") as Character["visibility"],
     moderationStatus:row.moderation_status==="removed"?"removed":"active",
     moderationReason:ownedByViewer?String(row.moderation_reason||""):"",
+    // A row selected before 0026 was applied carries only the boolean, and the
+    // legacy mapping is the restrictive one — see `contentModeFromLegacyFlag`.
+    contentMode: row.content_mode == null
+      ? contentModeFromLegacyFlag(Boolean(row.nsfw_enabled))
+      : contentMode(row.content_mode),
     nsfwEnabled: Boolean(row.nsfw_enabled),
+    shareImagePath: String(row.share_image_path || ""),
+    shareImageUrl: String(row.share_image_url || ""),
+    shareMediaStatus: shareMediaStatus(row.share_media_status),
+    shareTitle: String(row.share_title || ""),
+    shareTagline: String(row.share_tagline || ""),
     saveCount: Number(row.like_count || 0), savedByViewer: Boolean(row.saved_by_viewer),
     creator: row.creator_id ? { id: String(row.creator_id), username: String(row.creator_username || ""), displayName: String(row.creator_display_name || ""), avatarPath: String(row.creator_avatar_path || "") } : null,
     ownedByViewer,
@@ -1165,6 +1238,9 @@ export function creationSummaryFromRow(row: Record<string, unknown>, viewerId: s
     accent: String(row.accent || "#e879a9"),
     tags: textArrayFromRow(row.tags),
     hashtags: textArrayFromRow(row.hashtags),
+    contentMode: row.content_mode == null
+      ? contentModeFromLegacyFlag(Boolean(row.nsfw_enabled))
+      : contentMode(row.content_mode),
     nsfwEnabled: Boolean(row.nsfw_enabled),
     messageCount: Number(row.message_count || 0),
     chatCount: Number(row.chat_count || 0),
@@ -1449,6 +1525,9 @@ export function settingsFromRow(row: Record<string, unknown>): AppSettings {
     responseLength: responseLengths.includes(String(row.response_length) as AppSettings["responseLength"]) ? row.response_length as AppSettings["responseLength"] : "natural",
     temperature: Number(row.temperature), maxTokens: Number(row.max_tokens), contextMessages: Number(row.context_messages), contextTokenBudget: Number(row.context_token_budget || 12000),
     consolidationInterval: Number(row.consolidation_interval), memoryLimit: Number(row.memory_limit), memoryTokenBudget: Number(row.memory_token_budget || 6000),
+    // Absent on a row written before 0036, and absent means off: a reader who
+    // has never answered has not asked for explicit content.
+    adultContentEnabled: Boolean(row.adult_content_enabled),
     adminWriterUpstreamOverrides,
   };
 }
@@ -1463,6 +1542,19 @@ export async function getDefaultSettings() {
  * The calling account's settings, creating the row on first read so an account
  * that predates the settings table still resolves.
  */
+/**
+ * Whether this account has confirmed it belongs to an adult.
+ *
+ * `profiles.adult_confirmed_at` rather than a browser's local storage, because
+ * the decision it feeds — what a writer may produce, and whether a gated page
+ * opens — is made on the server for a reader who may be on their third device.
+ * A missing profile row is not confirmation.
+ */
+export async function readerConfirmedAdult(client: PoolClient, userId: string) {
+  const result = await client.query("SELECT adult_confirmed_at FROM profiles WHERE id=$1", [userId]);
+  return Boolean(result.rows[0]?.adult_confirmed_at);
+}
+
 export async function getUserSettings(client: PoolClient, userId: string) {
   const existing = await client.query("SELECT * FROM user_settings WHERE user_id=$1", [userId]);
   if (existing.rowCount) return settingsFromRow(existing.rows[0]);
@@ -1479,6 +1571,7 @@ export function profileFromRow(row: Record<string, unknown>) {
     id: String(row.id), username: String(row.username || ""), displayName: String(row.display_name || ""),
     avatarPath: String(row.avatar_path || ""), bio: String(row.bio || ""),
     plan: (["free","beta","pro"].includes(plan) ? plan : "free") as "free" | "beta" | "pro",
+    adultConfirmed: Boolean(row.adult_confirmed_at),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }

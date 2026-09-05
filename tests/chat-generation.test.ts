@@ -103,6 +103,52 @@ async function setAccountDefault(responseLength: string) {
   );
 }
 
+describe("the age gate is enforced where the story runs, not only where it is read", () => {
+  /*
+   * An adult-focused creation's page is gated, so its chat cannot be the way
+   * around the gate: a reader who has never confirmed their age is refused
+   * here as well, and told what would fix it rather than that the story does
+   * not exist.
+   *
+   * An adult-CAPABLE creation is deliberately not refused. It opens for
+   * anybody and simply writes cleanly until the reader confirms and opts in,
+   * which is `explicitRoleplayAllowed` rather than an access check.
+   */
+  async function confirmAge(confirmed: boolean) {
+    await query(
+      `INSERT INTO profiles (id,username,adult_confirmed_at) VALUES ($1,'reader',$2)
+       ON CONFLICT (id) DO UPDATE SET adult_confirmed_at=EXCLUDED.adult_confirmed_at`,
+      [owner, confirmed ? new Date().toISOString() : null],
+    );
+  }
+
+  it("refuses an adult-focused story to a reader who has confirmed nothing", async () => {
+    await query("UPDATE characters SET content_mode='adult_focused' WHERE id=$1", [characterId]);
+    await confirmAge(false);
+    const response = await chat.POST(post({ conversationId, content: "Say something.", action: "send" }));
+    expect(response.status).toBe(403);
+    const body = await response.json() as { reason?: string };
+    // Recoverable, and it says so: a 404 would have described the wrong problem.
+    expect(body.reason).toBe("adult_confirmation_required");
+    expect(streamCompletion).not.toHaveBeenCalled();
+  });
+
+  it("runs the same story once the reader has confirmed", async () => {
+    await query("UPDATE characters SET content_mode='adult_focused' WHERE id=$1", [characterId]);
+    await confirmAge(true);
+    const response = await send();
+    expect(response.status).toBe(200);
+    expect(streamCompletion).toHaveBeenCalled();
+  });
+
+  it("never gates an adult-capable story", async () => {
+    await query("UPDATE characters SET content_mode='adult_capable' WHERE id=$1", [characterId]);
+    await confirmAge(false);
+    const response = await send();
+    expect(response.status).toBe(200);
+  });
+});
+
 describe("response length reaches the provider", () => {
   it("sends a different output budget for each choice", async () => {
     const budgets: Record<string, number> = {};

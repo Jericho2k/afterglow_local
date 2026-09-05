@@ -31,7 +31,7 @@ const pageSize = 25;
 
 /** Columns a ranked creation card needs. Nothing hidden is selectable here. */
 const creationColumns = `c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
-  c.tags,c.hashtags,c.nsfw_enabled,c.message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
+  c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
   p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
   p.profile_border creator_profile_border,
   cs.rank creator_rank,cs.rank_total creator_rank_total,cs.followers creator_followers,cs.user_messages creator_user_messages,

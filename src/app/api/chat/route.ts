@@ -4,7 +4,7 @@ import { commitNewAssistantMessage, commitRegeneratedVariant, ProvenanceConflict
 import { createWriterStreamParser, reasoningBudgetExhausted, streamEnding, truncatedByLength } from "@/lib/stream-parse";
 import { logGeneration, reasonForCategory, type GenerationDiagnostic, type GenerationFailureReason, type GenerationStage } from "@/lib/generation-diagnostics";
 import { logTimeline, startTimeline } from "@/lib/request-timing";
-import { asUser, getUserSettings, messageFromRow, personaFromRow, worldFromRow } from "@/lib/db";
+import { asUser, getUserSettings, messageFromRow, personaFromRow, readerConfirmedAdult, worldFromRow } from "@/lib/db";
 import { streamWriterCompletion, type LLMUsage } from "@/lib/llm";
 import { maybeConsolidate, relevantContinuity } from "@/lib/memory";
 import { focusedRetrievalQuery, maybeBackfillMemoryEmbeddings, maybeCurateCanon, memoryRetrievalV2Enabled, retrieveContinuityV2 } from "@/lib/memory-v2";
@@ -16,6 +16,7 @@ import { conversationWorldRecords, ensureConversationWorlds } from "@/lib/conver
 import { anchoredFetchLimit, recallText, selectAnchoredMessages } from "@/lib/context";
 import { chatSchema } from "@/lib/schemas";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
+import { requiresAdultConfirmation } from "@/lib/content-mode";
 import { currentAccount, isAdminAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
 import { defaultReasoningFor, modelCapabilities, modelVerbosity, providerModelId, reasoningBudgetFor, reasoningIsMandatoryFor, resolveEngine, resolveModel, taskModelSelection } from "@/lib/provider";
@@ -102,6 +103,19 @@ export async function POST(request: Request) {
 
     const settings = await getUserSettings(client, account.id);
     /*
+     * The reader's half of the adult rule, read here so the writer prompt is
+     * built from both halves or from neither.
+     *
+     * An adult-FOCUSED creation additionally refuses to run at all without the
+     * confirmation: its page is gated, so its chat cannot be the way around
+     * the gate. An adult-CAPABLE creation runs either way and simply stays
+     * clean, which is the distinction this release exists to make.
+     */
+    const adultConfirmed = await readerConfirmedAdult(client, account.id);
+    if (requiresAdultConfirmation(character.contentMode) && !adultConfirmed) {
+      return { error: "adult-confirmation-required" as const };
+    }
+    /*
      * The worlds THIS STORY is written with.
      *
      * Not the Creation's — that is the whole point of the change. A story
@@ -136,13 +150,21 @@ export async function POST(request: Request) {
     return {
       row,
       character,
-      settings,
+      settings: { ...settings, adultConfirmed },
       worlds: worldRows.map((world) => worldFromRow(world)),
       persona: personaResult.rows[0] ? personaFromRow(personaResult.rows[0]) : null,
     };
   });
   timeline.mark("conversation+creation+worlds+persona");
-  if ("error" in prepared) { finish("refused", "unknown"); return Response.json({ error: prepared.error }, { status: 404 }); }
+  if ("error" in prepared) {
+    finish("refused", "unknown");
+    // A missing conversation and a refused one are different answers: the
+    // second is recoverable by confirming an age, so it says so rather than
+    // claiming the story does not exist.
+    return prepared.error === "adult-confirmation-required"
+      ? Response.json({ error: "Confirm you are 18 or over to open this creation.", reason: "adult_confirmation_required" }, { status: 403 })
+      : Response.json({ error: prepared.error }, { status: 404 });
+  }
   at("conversation_loaded");
   const { row, character, settings, worlds, persona } = prepared;
   const conversationSelection = {

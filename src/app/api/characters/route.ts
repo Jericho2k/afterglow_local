@@ -54,7 +54,7 @@ export async function GET(request: Request) {
     const creations = await asUser(account.id, async (client) => {
       const result = await client.query(
         `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
-           c.tags,c.hashtags,c.nsfw_enabled,c.visibility,c.message_count,c.chat_count,c.like_count,
+           c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.visibility,c.message_count,c.chat_count,c.like_count,
            c.published_at,c.created_at,c.updated_at,
            p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path
          FROM characters c
@@ -103,7 +103,8 @@ export async function GET(request: Request) {
          c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,
          c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,
          c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,
-         c.nsfw_enabled,c.visibility,c.like_count,c.chat_count,c.message_count,
+         c.content_mode,c.nsfw_enabled,c.share_title,c.share_tagline,c.share_image_path,c.share_image_url,c.share_media_status,
+         c.visibility,c.like_count,c.chat_count,c.message_count,
          c.published_at,c.created_at,c.updated_at
        FROM characters c WHERE c.user_id=$1 ORDER BY c.updated_at DESC`,
       [account.id],
@@ -134,12 +135,26 @@ export async function POST(request: Request) {
   const id = randomUUID();
   const c = parsed.data;
   const rich = richFields(c);
+  /*
+   * `content_mode` is written explicitly, and `nsfw_enabled` is written FROM
+   * it.
+   *
+   * 0036 deliberately has no synchronising trigger, so a column this statement
+   * does not name keeps its default — and the default is 'clean'. Omitting it
+   * did not merely lose a creator's choice: an adult-focused creation saved as
+   * clean becomes readable by anonymous visitors and search engines, which is
+   * the exact outcome the mode exists to prevent.
+   *
+   * `share_media_status` is deliberately NOT written here. A creator nominates
+   * media; only Afterglow classifies it, and a field a payload can set is not
+   * a classification.
+   */
 
   const row = await asUser(account.id, async (client) => {
     const result = await client.query(
-      `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,tags,quick_facts,creation_type,title,description,user_role,hashtags,description_rich,greeting_rich,alternate_greetings_rich,published_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::text[],$22::jsonb,$23,$24,$25,$26,$27::text[],$28::jsonb,$29::jsonb,$30::jsonb,CASE WHEN $20='public' THEN now() ELSE NULL END) RETURNING *`,
-      [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.visibility,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich],
+      `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,tags,quick_facts,creation_type,title,description,user_role,hashtags,description_rich,greeting_rich,alternate_greetings_rich,content_mode,share_title,share_tagline,share_image_path,share_image_url,published_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::text[],$22::jsonb,$23,$24,$25,$26,$27::text[],$28::jsonb,$29::jsonb,$30::jsonb,$31,$32,$33,$34,$35,CASE WHEN $20='public' THEN now() ELSE NULL END) RETURNING *`,
+      [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.contentMode!=="clean",c.visibility,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich,c.contentMode,c.shareTitle,c.shareTagline,c.shareImagePath,c.shareImageUrl],
     );
     // Only the caller's own worlds may be attached; the insert policy rejects
     // anything else, and filtering here turns that into a clean no-op instead

@@ -35,7 +35,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     // cannot be used to learn that an unpublished creation exists.
     const creations = await client.query(
       `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
-         c.tags,c.hashtags,c.nsfw_enabled,c.message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
+         c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
          pc.id creator_id,pc.username creator_username,pc.display_name creator_display_name,pc.avatar_path creator_avatar_path,
          (saved.character_id IS NOT NULL) saved_by_viewer
        FROM characters c

@@ -27,7 +27,7 @@ const character: Character = {
   exampleDialogue: "", responseDirective: "", boundaries: "", sourceMaterial: "",
   worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [],
   publicStats: { messages: null, saves: null, chats: null, rank: null, rankCategory: null },
-  visibility: "public", nsfwEnabled: false, saveCount: 0, savedByViewer: false,
+  visibility: "public", contentMode: "clean", nsfwEnabled: false, saveCount: 0, savedByViewer: false,
   creator: null, ownedByViewer: true,
   createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
 };
@@ -48,7 +48,7 @@ const persona: Persona = {
 
 const profile: Profile = {
   id: "cccccccc-0000-4000-8000-000000000001",
-  username: "", displayName: "Alex", avatarPath: "", bio: "", plan: "free",
+  username: "", displayName: "Alex", avatarPath: "", bio: "", plan: "free", adultConfirmed: false,
   createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
 };
 

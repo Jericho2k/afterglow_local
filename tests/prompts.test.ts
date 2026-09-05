@@ -9,8 +9,15 @@ const character: Character = {
   exampleDialogue: "A sample.", responseDirective: "Be vivid.", boundaries: "Respect stop words.",
   sourceMaterial: "", worldIds: [], tags: [], hashtags: [], quickFacts: [], gallery: [],
   publicStats: { messages: null, saves: null, chats: null, rank: null, rankCategory: null },
-  visibility: "private", ownedByViewer: true, nsfwEnabled: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  visibility: "private", ownedByViewer: true, contentMode: "adult_focused", nsfwEnabled: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
 };
+
+/**
+ * A reader who may receive explicit content: over 18 by their own statement,
+ * and having asked for it. Both halves are required — see
+ * `explicitRoleplayAllowed` in src/lib/content-mode.ts.
+ */
+const adultReader = { ownerName: "Alex", ownerProfile: "", roleplayPreset: "immersive" as const, adultConfirmed: true, adultContentEnabled: true };
 
 /**
  * A scenario-led creation: no primary character, a defined user role, and the
@@ -31,7 +38,10 @@ const scenario: Character = {
 
 describe("roleplay prompt", () => {
   it("includes continuity and adult-only safety boundaries", () => {
-    const prompt = roleplayPrompt(character, "They made a promise.", []);
+    // The reader's half is now part of the question: an adult creation writes
+    // an adult scene for a reader who has confirmed their age and asked for
+    // one, and this is that reader. See `explicitRoleplayAllowed`.
+    const prompt = roleplayPrompt(character, "They made a promise.", [], [], adultReader);
     expect(prompt).toContain("They made a promise.");
     expect(prompt).toContain("fictional adult aged 21 or older");
     expect(prompt).toContain("Never write the user's dialogue");
@@ -45,7 +55,7 @@ describe("roleplay prompt", () => {
   });
 
   it("supports a direct but autonomous adult roleplay preset", () => {
-    const prompt = roleplayPrompt(character, "", [], [], { ownerName:"Alex", ownerProfile:"", roleplayPreset:"raw" });
+    const prompt = roleplayPrompt(character, "", [], [], { ...adultReader, roleplayPreset:"raw" });
     expect(prompt).toContain("AFTERGLOW ROLEPLAY ENGINE — DIRECT");
     // The restraint that keeps a manner from becoming a subject. Without it,
     // choosing Direct made every conversation sexual, which is the failure the

@@ -76,7 +76,7 @@ export async function GET(request?: Request) {
      */
     const result = await client.query(
       `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
-         c.tags,c.hashtags,c.nsfw_enabled,c.message_count,c.user_message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
+         c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.message_count,c.user_message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
          p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
          (mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c JOIN profiles p ON p.id=c.user_id

@@ -92,8 +92,12 @@ export function BasicsStep({ draft, update, onChangeType, onError }: {
     <TagSelector
       tags={draft.tags}
       onChange={(tags) => update({ tags })}
-      adultMode={draft.nsfwEnabled}
-      onAdultMode={(nsfwEnabled) => update({ nsfwEnabled })}
+      /* The platform's adult tags are its explicitly 18+ categories, so
+         choosing one selects adult_focused rather than merely adult_capable —
+         the same rule `characterSchema` enforces server-side. Clearing it
+         returns to clean, which is what the switch it replaced did. */
+      adultMode={draft.contentMode === "adult_focused"}
+      onAdultMode={(adult) => update({ contentMode: adult ? "adult_focused" : "clean" })}
     />
     <HashtagInput hashtags={draft.hashtags} onChange={(hashtags) => update({ hashtags })} />
 

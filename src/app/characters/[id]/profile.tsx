@@ -13,6 +13,7 @@ import {
   creationTitle, creationType, inlineTitle, publicCastMembers,
 } from "@/lib/creation";
 import { accentVariables } from "@/lib/accent";
+import { contentModeBadge } from "@/lib/content-mode";
 import { castMemberKey } from "@/lib/cast";
 import { imageCount } from "@/lib/rich-content";
 import { RichContent } from "@/components/rich";
@@ -629,7 +630,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         </section>}
 
         {(character.tags.length > 0 || character.hashtags.length > 0) && <section id="tags" className={`${styles.card} ${illuminated === "tags" ? styles.illuminate : ""}`}>
-          <header><Tag size={16} /><h2>Tags</h2>{character.nsfwEnabled && <em className={styles.adultBadge}>18+</em>}</header>
+          <header><Tag size={16} /><h2>Tags</h2>{contentModeBadge(character.contentMode) && <em className={styles.adultBadge}>{contentModeBadge(character.contentMode)}</em>}</header>
           {/* Platform taxonomy and creator hashtags are two systems, so they
               are presented as two, never merged into one wall of chips. */}
           {character.tags.length > 0 && <ul className={styles.tagList}>{character.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul>}
@@ -638,7 +639,12 @@ export default function CharacterProfile({ characterId }: { characterId: string 
           {character.hashtags.length > 0 && <ul className={styles.hashtagList}>
             {character.hashtags.map((tag) => <li key={tag}><Link href={`/?q=%23${encodeURIComponent(tag)}`}>#{tag}</Link></li>)}
           </ul>}
-          {character.nsfwEnabled && <p className={styles.adultNote}>This creation may generate mature and explicit content.</p>}
+          {/* Two different sentences, because they are two different facts. An
+              adult-focused creation IS adult; an adult-capable one only
+              becomes explicit if this reader steers it there and has asked
+              for that, and saying so is the whole point of the distinction. */}
+          {character.contentMode === "adult_focused" && <p className={styles.adultNote}>This creation is 18+. Mature and explicit content is a core part of it.</p>}
+          {character.contentMode === "adult_capable" && <p className={styles.adultNote}>This story stays non-explicit unless you steer it otherwise and have turned on adult content.</p>}
         </section>}
 
         {character.quickFacts.length > 0 && <section id="facts" className={`${styles.card} ${illuminated === "facts" ? styles.illuminate : ""}`}>

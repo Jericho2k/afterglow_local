@@ -93,10 +93,16 @@ export async function POST(request: Request) {
       const id = randomUUID(); characterIds.set(item.id,id); const c = item.data;
       // Imported characters land private regardless of what the file claimed.
       // Publishing is a deliberate act in the owner's own library.
+      //
+      // The content mode DOES carry over, resolved by `characterSchema` from a
+      // pre-0036 file's boolean if that is all it has: what a creation is
+      // about survives an export, while how widely it is published does not.
+      // `share_media_status` is absent for the same reason it is absent from
+      // the create route — an import cannot bring its own classification.
       await client.query(
-        `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,creation_type,title,description,user_role,tags,hashtags,quick_facts)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,'private',$20,$21,$22,$23,$24::text[],$25::text[],$26::jsonb)`,
-        [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath ?? "",c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.creationType,c.title,c.description,c.userRole,c.tags,c.hashtags,JSON.stringify(c.quickFacts)],
+        `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,creation_type,title,description,user_role,tags,hashtags,quick_facts,content_mode,share_title,share_tagline,share_image_path,share_image_url)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,'private',$20,$21,$22,$23,$24::text[],$25::text[],$26::jsonb,$27,$28,$29,$30,$31)`,
+        [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath ?? "",c.accent,c.backstory,JSON.stringify(c.cast),c.personality,c.scenario,c.greeting,JSON.stringify(c.alternateGreetings),c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.contentMode!=="clean",c.creationType,c.title,c.description,c.userRole,c.tags,c.hashtags,JSON.stringify(c.quickFacts),c.contentMode,c.shareTitle,c.shareTagline,c.shareImagePath,c.shareImageUrl],
       );
       for (const sourceWorldId of c.worldIds) {
         const worldId = worldIds.get(sourceWorldId);
