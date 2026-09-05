@@ -417,3 +417,23 @@
   .primaryAction { transition: none; }
   .primaryAction:hover:not(:disabled) { transform: none; }
 }
+
+
+/*
+ * Creator links.
+ *
+ * A row of chips rather than a list of URLs: the label is what a reader
+ * chooses by and the host is what tells them where they are going, so both are
+ * shown and the full URL — which is unbounded and frequently ugly — is not.
+ * Wrapping is the natural behaviour at every width, and the bound on how many
+ * there can be lives in the database.
+ */
+.creatorLinks { list-style: none; display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0 0; padding: 0; }
+.creatorLinks a {
+  display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%;
+  border: 1px solid var(--line); border-radius: 999px; padding: 7px 13px;
+  color: var(--ink); font-size: 11px; text-decoration: none; background: rgba(255, 255, 255, .03);
+}
+.creatorLinks a:hover { background: rgba(255, 255, 255, .07); }
+.creatorLinks span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.creatorLinks small { color: var(--faint); font-size: 9px; white-space: nowrap; }

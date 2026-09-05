@@ -41,6 +41,26 @@
 
 .heroMedia { position: absolute; inset: 0; overflow: hidden; z-index: 0; }
 .heroMedia img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 22%; }
+
+/*
+ * The accent's ambient presence.
+ *
+ * A wash behind the hero rather than a border around it: at 22% alpha over
+ * near-black it reads as atmosphere, and a creator who chose an aggressive
+ * colour gets atmosphere in that colour rather than a coloured page.
+ *
+ * This is a BASE rule. It spent a release inside the `min-width: 900px` block
+ * — a stray brace, not a decision — so the phone, which is where most of this
+ * product is read, had no accent behind its hero at all while the comment
+ * above described the general case.
+ */
+.heroGlow {
+  position: absolute; inset: 0; z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(70% 34% at 50% 100%, var(--creation-accent-glow-strong, transparent), transparent 70%),
+    radial-gradient(120% 58% at 50% 100%, var(--creation-accent-glow, transparent), transparent 74%);
+}
 /*
  * Stand-in for a character with no artwork. It sits high in the frame and stays
  * faint so it reads as texture behind the name rather than colliding with it —
@@ -485,8 +505,29 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
 }
 .castAvatar img { width: 100%; height: 100%; object-fit: cover; }
 
-.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin: 0; background: var(--edge); border: 1px solid var(--edge); border-radius: 13px; overflow: hidden; }
-.facts > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; background: var(--surface); }
+/*
+ * Quick facts, which are creator-written and therefore any length.
+ *
+ * Two fixed columns meant a 375px phone gave each fact about 160px to hold a
+ * label AND a value on one row. "Distinguishing feature" beside "the scar she
+ * never explains" does not fit in that, so both sides wrapped to two or three
+ * lines each and the pair became a squeezed block of text with no visible
+ * relationship between them.
+ *
+ * `auto-fit` with a floor lets the row hold two facts when two genuinely fit
+ * and one when they do not, and below that floor the label and value stack —
+ * a fact reads as a small labelled paragraph rather than as a column fight.
+ * Nothing here caps the text: a creator's words are shown in full at every
+ * width, which is the point of the section.
+ */
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1px; margin: 0; background: var(--edge); border: 1px solid var(--edge); border-radius: 13px; overflow: hidden; }
+.facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px 14px; flex-wrap: wrap; padding: 12px 14px; background: var(--surface); }
+@media (max-width: 460px) {
+  /* Below this the two halves cannot share a row at any useful length, so
+     they stop trying and the value sits under its own label. */
+  .facts > div { flex-direction: column; align-items: flex-start; gap: 3px; }
+  .facts dd { text-align: left; }
+}
 .facts dt { margin: 0; font-size: 12px; color: var(--muted); }
 .facts > div { min-width: 0; }
 .facts dt { min-width: 0; overflow-wrap: anywhere; }
@@ -567,22 +608,7 @@ a.castLink:focus-visible { outline: 2px solid var(--creation-accent-readable, va
   .hero { min-height: 560px; display: grid; }
   .heroMedia img { object-position: 30% 26%; }
   .heroFallback { padding-bottom: 0; font-size: 132px; }
-  /*
- * The accent's ambient presence.
- *
- * A wash behind the hero rather than a border around it: at 22% alpha over
- * near-black it reads as atmosphere, and a creator who chose an aggressive
- * colour gets atmosphere in that colour rather than a coloured page.
- */
-.heroGlow {
-  position: absolute; inset: 0; z-index: 1;
-  pointer-events: none;
-  background:
-    radial-gradient(70% 34% at 50% 100%, var(--creation-accent-glow-strong, transparent), transparent 70%),
-    radial-gradient(120% 58% at 50% 100%, var(--creation-accent-glow, transparent), transparent 74%);
-}
-
-.heroScrim {
+  .heroScrim {
     background:
       linear-gradient(to right, rgba(11, 8, 13, .1) 0%, rgba(11, 8, 13, .55) 38%, rgba(11, 8, 13, .93) 68%, #0b080d 100%),
       linear-gradient(to top, #0b080d 1%, rgba(11, 8, 13, .35) 26%, transparent 60%);

@@ -9,6 +9,7 @@ import { AppMenuButton } from "@/components/ui";
 import { creationTitle, creationType, creationTypeLabels } from "@/lib/creation";
 import { creationActions, creationEditHref } from "@/lib/creation-actions";
 import { compactCount } from "@/lib/format";
+import { artPresentation, artStyle } from "@/lib/art-presentation";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import type { CharacterVisibility, OwnedCreationSummary } from "@/lib/types";
 import { MoreMenu, type MoreMenuItem } from "@/components/nav";
@@ -221,7 +222,7 @@ function OwnedCard({ creation, busy, onEdit, onDelete }: {
     <Link href={`/characters/${creation.id}`} className={styles.cardLink}>
       <div className={styles.cover}>
         {cover
-          ? <img src={cover} alt="" loading="lazy" decoding="async" />
+          ? <img src={cover} alt="" loading="lazy" decoding="async" style={artStyle(artPresentation(creation.artPresentation), "cover", "3:4")} />
           : <span className={styles.coverFallback} aria-hidden>{title.split(/\s+/).filter(Boolean).map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "?"}</span>}
         <div className={styles.coverScrim} />
         <div className={styles.badges}>

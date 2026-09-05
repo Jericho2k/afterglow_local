@@ -1,3 +1,4 @@
+import { creatorLinks } from "@/lib/creator-links";
 import { asUser, creationSummaryFromRow, profileFromRow } from "@/lib/db";
 import { creatorStanding, creatorStandingFor, refreshCreatorStatsIfStale, syncOwnCreatorStanding } from "@/lib/creator-stats";
 import { isProfileBorderId, unlockedBorders } from "@/lib/cosmetics";
@@ -76,7 +77,7 @@ export async function GET(request?: Request) {
      */
     const result = await client.query(
       `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
-         c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.message_count,c.user_message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
+         c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.banner_path,c.banner_url,c.art_presentation,c.message_count,c.user_message_count,c.chat_count,c.like_count,c.published_at,c.created_at,
          p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path,
          (mine.character_id IS NOT NULL) saved_by_viewer
        FROM characters c JOIN profiles p ON p.id=c.user_id
@@ -102,6 +103,7 @@ function publicProfile(row: Record<string, unknown>) {
       : [],
     followerCount: Number(row.follower_count || 0),
     followingCount: Number(row.following_count || 0),
+    links: creatorLinks(row.links),
   };
 }
 
@@ -135,9 +137,13 @@ export async function PATCH(request: Request) {
       // the two layers fail independently.
       const result = await client.query(
         `UPDATE profiles SET username=$1,display_name=$2,bio=$3,avatar_path=$4,
-           cover_path=$6,profile_border=$7,featured_achievements=$8::text[],updated_at=now()
+           cover_path=$6,profile_border=$7,featured_achievements=$8::text[],links=$9::jsonb,updated_at=now()
          WHERE id=$5 RETURNING *`,
-        [value.username || null, value.displayName, value.bio, value.avatarPath, account.id, value.coverPath, border, featured],
+        [value.username || null, value.displayName, value.bio, value.avatarPath, account.id, value.coverPath, border, featured,
+         // Re-validated on the way in rather than trusted from the schema
+         // alone: this is the value that ends up in an anchor on a page a
+         // logged-out stranger can open.
+         JSON.stringify(creatorLinks(value.links))],
       );
       return result.rows[0] ?? null;
     });

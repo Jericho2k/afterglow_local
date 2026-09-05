@@ -1,8 +1,9 @@
 "use client";
 
+import { creatorLinkHost, creatorLinkRel, type CreatorLink } from "@/lib/creator-links";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { BadgeCheck, CalendarDays, Globe2, MessageCircle, Pencil, Share2, Sparkles, TrendingUp, Users, X } from "lucide-react";
+import { BadgeCheck, CalendarDays, Globe2, Link as LinkIcon, MessageCircle, Pencil, Share2, Sparkles, TrendingUp, Users, X } from "lucide-react";
 import type { AchievementState } from "@/lib/achievements";
 import { profileBorder, type ProfileBorder } from "@/lib/cosmetics";
 import type { CreationSummary, WorldSummary } from "@/lib/types";
@@ -57,7 +58,7 @@ type ActivityEvent = {
 type Payload = {
   profile: {
     id: string; username: string; displayName: string; avatarPath: string; bio: string;
-    coverPath: string; profileBorder: string; createdAt: string;
+    coverPath: string; profileBorder: string; createdAt: string; links?: CreatorLink[];
   };
   owner: boolean;
   viewerFollows: boolean;
@@ -151,6 +152,7 @@ export default function CreatorProfile({ username }: { username: string }) {
   }, [username, sort, filter]);
 
   const profile = payload?.profile;
+  const links = profile?.links ?? [];
   const border = useMemo(() => payload?.border ?? profileBorder("default"), [payload]);
   const isFollowing = following ?? payload?.viewerFollows ?? false;
   const followerCount = followers ?? payload?.stats.followers ?? 0;
@@ -262,6 +264,26 @@ export default function CreatorProfile({ username }: { username: string }) {
       </div>
 
       {profile.bio && <p className={styles.bio}>{profile.bio}</p>}
+
+      {links.length > 0 && <ul className={styles.creatorLinks}>
+        {links.map((link) => <li key={link.url}>
+          {/*
+            * Somebody else's URL, on a page anybody can open.
+            *
+            * `creatorLinkRel` carries the whole safety argument — noopener so
+            * the opened tab gets no handle on this one, noreferrer so a
+            * creator's audience is not told which page sent them, nofollow and
+            * ugc so Afterglow is not lending its ranking to whatever this
+            * points at. The protocol was already restricted to http(s) before
+            * this value was stored; this is the second layer, not the first.
+            */}
+          <a href={link.url} rel={creatorLinkRel} target="_blank">
+            <LinkIcon size={13} aria-hidden />
+            <span>{link.label}</span>
+            <small>{creatorLinkHost(link.url)}</small>
+          </a>
+        </li>)}
+      </ul>}
     </header>
 
     {/* The three numbers this product actually cares about. */}

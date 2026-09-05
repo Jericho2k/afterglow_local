@@ -1,3 +1,4 @@
+import { artPresentationDocument } from "@/lib/art-presentation";
 import { asUser, characterFromRow, worldSummaryFromRow } from "@/lib/db";
 import { characterSchema, characterValidationMessage } from "@/lib/schemas";
 import { withCastMemberIds } from "@/lib/cast";
@@ -88,7 +89,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const supportsPreviews = await worldPreviewsSupported(account.id);
   const detail = await asUser(account.id, async (client) => {
     const result = await client.query(
-      `SELECT ${wantsEditPayload ? "c.*" : "c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,c.content_mode,c.nsfw_enabled,c.share_title,c.share_tagline,c.share_image_path,c.share_image_url,c.share_media_status,c.visibility,c.moderation_status,c.moderation_reason,c.like_count,c.chat_count,c.message_count,c.published_at,c.created_at,c.updated_at"},p.id creator_id,p.username creator_username,p.display_name creator_display_name,
+      `SELECT ${wantsEditPayload ? "c.*" : "c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,c.content_mode,c.nsfw_enabled,c.share_title,c.share_tagline,c.share_image_path,c.share_image_url,c.share_media_status,c.banner_path,c.banner_url,c.art_presentation,c.visibility,c.moderation_status,c.moderation_reason,c.like_count,c.chat_count,c.message_count,c.published_at,c.created_at,c.updated_at"},p.id creator_id,p.username creator_username,p.display_name creator_display_name,
          p.avatar_path creator_avatar_path,p.profile_border creator_border,
          COALESCE(p.follower_count,0) creator_followers,
          COALESCE(cs.user_messages,0) creator_messages,COALESCE(cs.published_creations,0) creator_creations,
@@ -326,10 +327,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
          creation_type=$23,title=$24,description=$25,user_role=$26,hashtags=$27::text[],
          description_rich=$28::jsonb,greeting_rich=$29::jsonb,alternate_greetings_rich=$30::jsonb,
          content_mode=$31,share_title=$32,share_tagline=$33,share_image_path=$34,share_image_url=$35,
+         banner_path=$36,banner_url=$37,art_presentation=$38::jsonb,
          published_at=CASE WHEN $18='public' AND published_at IS NULL THEN now() WHEN $18<>'public' THEN NULL ELSE published_at END,
          updated_at=now()
        WHERE id=$19 AND user_id=$20 RETURNING *`,
-      [c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.contentMode!=="clean",c.visibility,id,account.id,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich,c.contentMode,c.shareTitle,c.shareTagline,c.shareImagePath,c.shareImageUrl],
+      [c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.contentMode!=="clean",c.visibility,id,account.id,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich,c.contentMode,c.shareTitle,c.shareTagline,c.shareImagePath,c.shareImageUrl,c.bannerPath,c.bannerUrl,JSON.stringify(artPresentationDocument(c.artPresentation))],
     );
     if (!result.rowCount) return null;
     await client.query("DELETE FROM character_worlds WHERE character_id=$1", [id]);

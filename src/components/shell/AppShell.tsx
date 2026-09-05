@@ -1,10 +1,11 @@
 "use client";
 
+import { AdultGate, submitAdultState } from "@/components/AdultGate";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {useRouter, useSearchParams} from "next/navigation";
 import type { AppSettings, Character, Conversation, FreeTierStatusView, Memory, Message, ModelCatalog, ModelDefinition, Persona, Profile, SceneState, World, WorldSummary } from "@/lib/types";
 import { api } from "@/lib/api-client";
-import { explicitRoleplayAllowed } from "@/lib/content-mode";
+import { allowsExplicitRoleplay, explicitRoleplayAllowed, presentsAsAdult } from "@/lib/content-mode";
 import { composerPlaceholder, creationKindLine, creationSubject, creationTitle, inlineTitle } from "@/lib/creation";
 import { CreationStudio, type StudioWorld } from "@/components/studio";
 import { DiscoveryFeed } from "@/components/feed";
@@ -89,9 +90,10 @@ export default function AppShell() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isModerator,setIsModerator]=useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [ageAccepted, setAgeAccepted] = useState<boolean | null>(null);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(bootRoute?.view === "chat" ? bootRoute.characterId : null);
+  /** Whether the reader asked to enable 18+ roleplay and still owes a confirmation. */
+  const [adultPrompt, setAdultPrompt] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatIndex, setChatIndex] = useState<Conversation[]>([]);
   /**
@@ -638,7 +640,6 @@ export default function AppShell() {
   }, [loadCharacters, loadChatIndex, loadLibraries]);
 
   useEffect(() => {
-    setAgeAccepted(localStorage.getItem("afterglow_age_verified") === "yes");
     if (!supabaseBrowserConfigured()) { setAuthenticated(false); return; }
     const loadSession = () => api<{ authenticated: boolean; profile: Profile | null; isAdmin?: boolean;isModerator?:boolean }>("/api/session")
       .then((data) => { setAuthenticated(data.authenticated); setProfile(data.profile); setIsAdmin(Boolean(data.isAdmin));setIsModerator(Boolean(data.isModerator)); })
@@ -1174,12 +1175,11 @@ export default function AppShell() {
    * names a chat boots into a chat-shaped skeleton; everything else keeps the
    * splash it has always had.
    */
-  if (ageAccepted === null || authenticated === null) {
+  if (authenticated === null) {
     return bootRoute?.view === "chat"
       ? <main className="app-shell booting"><ChatSkeletonPanel /></main>
       : <div className="splash"><Logo /><div className="pulse" /></div>;
   }
-  if (!ageAccepted) return <AgeGate onAccept={() => { localStorage.setItem("afterglow_age_verified", "yes"); setAgeAccepted(true); }} />;
   if (!supabaseBrowserConfigured()) return <ConfigNotice />;
   if (!authenticated) return <AuthGate />;
 
@@ -1316,7 +1316,42 @@ export default function AppShell() {
       /> : activeView === "notifications" ? <NotificationsView onOpenMenu={toggleMenu} />
         : activeView === "rankings" ? <RankingsView onOpenMenu={toggleMenu} />
         : activeView === "reports" ? (isModerator?<AdminReports onOpenMenu={toggleMenu}/>:<DiscoveryFeed onOpenMenu={toggleMenu}/>)
-        : selected ? (
+        : selected && adultPrompt ? (
+          /* The same confirmation, reached from an adult-capable story rather
+             than from a gate in front of one. */
+          <AdultGate
+            variant="confirm"
+            title={creationTitle(selected)}
+            onContinue={(state) => {
+              setProfile((current) => (current ? { ...current, adultConfirmed: state.confirmedAdult } : current));
+              setSettings((current) => ({ ...current, adultContentEnabled: state.adultContentEnabled }));
+              setAdultPrompt(false);
+            }}
+            onBack={() => setAdultPrompt(false)}
+          />
+        ) : selected && presentsAsAdult(selected.contentMode) && !selected.ownedByViewer
+          && !(profile?.adultConfirmed && settings.adultContentEnabled) ? (
+          /*
+            * The same gate the creation page shows, in front of the story.
+            *
+            * Reached when a reader opens a chat directly — a link, a resumed
+            * story, the back button — without passing the creation page. The
+            * server refuses the message either way; this is what makes the
+            * refusal answerable instead of a dead end.
+            *
+            * Confirming updates `profile` and `settings` in place, so the chat
+            * renders on the next frame with no reload.
+            */
+          <AdultGate
+            variant={profile?.adultConfirmed ? "enable" : "confirm"}
+            title={creationTitle(selected)}
+            onContinue={(state) => {
+              setProfile((current) => (current ? { ...current, adultConfirmed: state.confirmedAdult } : current));
+              setSettings((current) => ({ ...current, adultContentEnabled: state.adultContentEnabled }));
+            }}
+            onBack={() => goToView("chats")}
+          />
+        ) : selected ? (
         <section className="chat-panel">
           <header className="chat-header">
             <div className="chat-identity"><AppMenuButton className="chat-menu-button" onOpen={toggleMenu} /><button className="identity-profile" title={`View ${creationTitle(selected)}`} onClick={() => openCharacterPage(selected.id)}><Avatar character={selected} large /><span><span className="eyebrow conversation-preview" title={conversation?.title}>{compactMessagePreview(conversation?.title || "Private conversation")}</span><strong>{creationTitle(selected)}</strong><small>{selected.creationType === "character" ? `Chatting as ${activePersona?.name || "You"}` : creationKindLine(selected)}</small></span></button></div>
@@ -1363,7 +1398,20 @@ export default function AppShell() {
           {chatNotice && <div className="success-banner" role="status"><Check size={14} aria-hidden /><strong>{chatNotice}</strong><button onClick={() => setChatNotice("")} aria-label="Dismiss"><X size={14} aria-hidden /></button></div>}
           <div className="composer-wrap">
             {!atBottom && <button className="jump-latest" aria-label="Jump to the latest message" onClick={scrollToBottom}><ArrowDown size={13} aria-hidden />Latest</button>}
-            <div className="mode-strip"><span className={explicitHere ? "adult-on" : ""}>{explicitHere ? "18+ adult mode" : "SFW mode"}</span><span aria-hidden>·</span><span>{activePersona?.name || "You"}</span>{conversation && activeInstructionCount(conversation) > 0 && <><span aria-hidden>·</span><span>{activeInstructionCount(conversation)} instructions</span></>}</div>
+            <div className="mode-strip"><span className={explicitHere ? "adult-on" : ""}>{explicitHere ? "18+ adult mode" : "SFW mode"}</span>{selected && allowsExplicitRoleplay(selected.contentMode) && !explicitHere && <>
+              <span aria-hidden>·</span>
+              {/*
+                * The way out of a story that CAN go explicit but is not.
+                *
+                * An adult-capable creation is readable and chattable by
+                * anybody, and stays clean until its reader asks otherwise —
+                * which previously they had no way to do. This is that way, and
+                * it asks whichever question is outstanding: a reader who has
+                * never confirmed gets the age gate, one who has gets the
+                * preference turned on where they stand.
+                */}
+              <button type="button" className="mode-enable" onClick={() => { if (profile?.adultConfirmed) { void submitAdultState({ adultContentEnabled: true }).then((state) => setSettings((current) => ({ ...current, adultContentEnabled: state.adultContentEnabled }))).catch(() => setError("Adult content could not be enabled.")); } else { setAdultPrompt(true); } }}>Enable 18+ roleplay</button>
+            </>}<span aria-hidden>·</span><span>{activePersona?.name || "You"}</span>{conversation && activeInstructionCount(conversation) > 0 && <><span aria-hidden>·</span><span>{activeInstructionCount(conversation)} instructions</span></>}</div>
             {composerToolsOpen && <div className="composer-tools">
               <button onClick={() => openComposerTool("world")}><Globe2 size={16} aria-hidden /><strong>Worlds</strong><small>{storyWorlds===null?"In this story":storyWorlds.length===1?"1 in this story":`${storyWorlds.length} in this story`}</small></button>
               <button onClick={() => openComposerTool("persona")}><Users size={16} aria-hidden /><strong>Persona</strong><small>{activePersona?.name || "Choose who you are"}</small></button>
@@ -1556,9 +1604,21 @@ function AuthGate() {
   </div></main>;
 }
 
-function AgeGate({ onAccept }: { onAccept: () => void }) {
-  return <main className="gate"><div className="gate-card"><Logo /><div className="gate-symbol">18+</div><span className="eyebrow">Adults only</span><h1>Before you enter.</h1><p>This private instance can host mature fictional roleplay. You must be at least 18 and of legal age where you live.</p><button className="primary" onClick={onAccept}>I am an adult — continue</button><small>Afterglow prohibits sexual content involving minors, non-consensual exploitation, or real people.</small></div></main>;
-}
+/*
+ * The product-wide age gate is GONE, deliberately.
+ *
+ * It asked everybody, on every device, before they had seen anything — and it
+ * recorded the answer in `localStorage`, which is not a record of anything: it
+ * was per-browser, cleared with site data, and told the server nothing. Since
+ * 0036 the real answer lives in `profiles.adult_confirmed_at`, and the question
+ * is asked where it means something — in front of the adult-focused creation
+ * somebody is actually opening, by `AdultGate`.
+ *
+ * Keeping both would have been worse than either: two age systems that can
+ * disagree, one of which the server has never heard of. If this deployment ever
+ * needs a product-wide 18+ wall, it belongs on the same server-side
+ * confirmation rather than beside it.
+ */
 
 /**
  * `rendered` is the ledger's FACTS — day, date, time, place, who is here.

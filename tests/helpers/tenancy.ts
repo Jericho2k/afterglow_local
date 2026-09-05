@@ -62,6 +62,28 @@ export const migrationFiles = [
   "0029_story_distance_aging.sql",
   "0030_provenance_parent_ownership.sql",
   "0031_free_tier_and_curated_routes.sql",
+  "0032_background_routing_and_scene_ledger.sql",
+  "0033_background_job_health.sql",
+  "0034_admin_writer_upstream_override.sql",
+  "0035_writer_cache_probe.sql",
+  "0036_public_content_modes.sql",
+  "0037_art_presentation_and_links.sql",
+] as const;
+
+/**
+ * Files this list deliberately omits, and why.
+ *
+ * Anything else missing is DRIFT, not a decision — which is what happened
+ * here: the list stopped at 0031 while production went on to 0037, so every
+ * suite built on it was exercising a `characters` table that no deployment
+ * has. `tests/migration-coverage.test.ts` compares this pair against the
+ * directory so the next gap fails a test instead of a production migration.
+ */
+export const migrationsNotApplied = [
+  // Supabase Storage buckets and their policies; the auth shim provides no
+  // `storage` schema, and nothing in these suites reads an image.
+  "0002_storage.sql",
+  "0010_world_covers_storage.sql",
 ] as const;
 
 export async function applyMigrations(pool: Pool, files: readonly string[]) {

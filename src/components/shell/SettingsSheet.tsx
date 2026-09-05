@@ -1,7 +1,8 @@
 "use client";
 
+import { submitAdultState, type AdultState } from "@/components/AdultGate";
 import { useEffect, useState } from "react";
-import { Database, Download, Gauge, KeyRound, ShieldCheck, Sparkles, Upload } from "lucide-react";
+import { Database, Download, Gauge, KeyRound, ShieldAlert, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import type { AdminWriterRoutingResponse, AppSettings, ModelCatalog, RoutingDiagnosticResponse, UsageResponse, WriterCacheProbeResponse } from "@/lib/types";
 import type { ByokMetadata, WriterFundingPreference } from "@/lib/byok";
 import type { UsageRangeId } from "@/lib/usage-range";
@@ -67,6 +68,17 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
   onImported: () => void;
 }) {
   const [form, setForm] = useState(settings);
+  /*
+   * Adult state is NOT part of `form`.
+   *
+   * The rest of this sheet is a draft that a Save button commits; this is a
+   * preference that takes effect when it is flipped, because it gates content
+   * rather than configuring a model, and a reader who switches it off expects
+   * it to be off — not to be off once they remember to press Save.
+   */
+  const [adult, setAdult] = useState<AdultState | null>(null);
+  const [adultBusy, setAdultBusy] = useState(false);
+  const [adultError, setAdultError] = useState("");
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [routing, setRouting] = useState<RoutingDiagnosticResponse | null>(null);
   const [writerRouting, setWriterRouting] = useState<AdminWriterRoutingResponse | null>(null);
@@ -87,6 +99,14 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   useEffect(() => { setForm(settings); }, [settings]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/adult")
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("unavailable"))))
+      .then((data: { adult: AdultState }) => { if (!cancelled) setAdult(data.adult); })
+      .catch(() => { if (!cancelled) setAdultError("Your adult content settings could not be loaded."); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -298,6 +318,43 @@ export function SettingsSheet({ isAdmin, settings, models, catalog, onClose, onS
           These apply when a new story is created. Every existing conversation keeps its own writer, engine, length and creativity, and changing them there never resets continuity.
         </p>
       </div>
+    </section>
+
+    <section className={styles.card} aria-labelledby="adult-heading">
+      <div className={styles.cardHeader}><ShieldAlert size={16} aria-hidden /><h2 id="adult-heading">Adult content</h2></div>
+      {adult === null
+        ? <p className={styles.fieldHint}>Loading…</p>
+        : <>
+          <p className={styles.fieldHint}>
+            {adult.confirmedAdult
+              ? "You have confirmed that you are 18 or older. This is recorded on your account, so you are not asked again on other devices."
+              : "You have not confirmed your age yet. You will be asked the first time you open a creation that contains adult content."}
+          </p>
+          <label className={styles.toggleRow}>
+            <span>
+              <strong>Allow 18+ roleplay and content</strong>
+              <small>
+                {adult.confirmedAdult
+                  ? "Turn this off at any time. Your age confirmation is kept, so turning it back on does not ask again."
+                  : "Confirm your age first. Opening an adult creation will ask you once."}
+              </small>
+            </span>
+            <input
+              type="checkbox"
+              checked={adult.adultContentEnabled}
+              disabled={adultBusy || !adult.confirmedAdult}
+              onChange={async (event) => {
+                const next = event.target.checked;
+                setAdultBusy(true);
+                setAdultError("");
+                try { setAdult(await submitAdultState({ adultContentEnabled: next })); }
+                catch (reason) { setAdultError(reason instanceof Error ? reason.message : "That could not be saved."); }
+                finally { setAdultBusy(false); }
+              }}
+            />
+          </label>
+          {adultError && <p className={styles.error} role="alert">{adultError}</p>}
+        </>}
     </section>
 
     <section className={styles.card} aria-labelledby="byok-heading">

@@ -1,3 +1,4 @@
+import { creatorLinks, type CreatorLink } from "./creator-links";
 import type { PoolClient } from "pg";
 import { creationSummaryFromRow, profileFromRow, worldSummaryFromRow } from "./db";
 import { creatorStandingFor } from "./creator-stats";
@@ -242,7 +243,7 @@ export async function creatorActivity(client: PoolClient, creatorId: string, lim
 }
 
 export type CreatorProfilePayload = {
-  profile: ReturnType<typeof profileFromRow> & { coverPath: string; profileBorder: string };
+  profile: ReturnType<typeof profileFromRow> & { coverPath: string; profileBorder: string; links: CreatorLink[] };
   owner: boolean;
   viewerFollows: boolean;
   stats: { followers: number; following: number; messages: number; creations: number; worlds: number; saves: number };
@@ -291,6 +292,10 @@ export async function creatorProfilePayload(
       ...profileFromRow(input.row),
       coverPath: String(input.row.cover_path || ""),
       profileBorder: String(input.row.profile_border || "default"),
+      // Validated on read as well as on write. A row could predate the
+      // validator, or have been written by hand, and the anchor this ends up
+      // in is on a page anybody can open.
+      links: creatorLinks(input.row.links),
     },
     owner,
     viewerFollows: Boolean(follows.rowCount),

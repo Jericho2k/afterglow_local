@@ -6,6 +6,7 @@ import { Bookmark, Compass, MessageCircle, Users } from "lucide-react";
 import { accentVariables, normalizeAccent } from "@/lib/accent";
 import { creationTitle, creationType } from "@/lib/creation";
 import { compactCount, exactCount } from "@/lib/format";
+import { artPresentation, artStyle } from "@/lib/art-presentation";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { creatorProfileHref } from "@/lib/follows";
 import type { CreationSummary } from "@/lib/types";
@@ -73,6 +74,7 @@ export function CreationCard({ creation, priority = false, onToggleSave }: {
       <div className={styles.cover}>
         {showCover
           ? <img
+              style={artStyle(artPresentation(creation.artPresentation), "cover", "3:4")}
               src={cover}
               alt=""
               loading={priority ? "eager" : "lazy"}
