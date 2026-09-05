@@ -25,7 +25,11 @@ It is an original application, not a copy of JuicyChat or Kindroid. The useful c
   - relevance-ranked long-term memories and keyword journals
 - Configurable automatic memory consolidation plus manual refresh
 - Manual pinned journals with recall keywords; inspect, edit, pin, unpin, or delete memories
-- Per-character adult/SFW mode, adult age gate, and explicit consent boundaries
+- Three content modes per creation — clean, adult-capable, and adult-focused · 18+ — replacing the single adult flag, so a story that may become explicit is not treated as an 18+ page
+- Public creation, world and creator pages that a logged-out visitor and a search engine can actually read, with adult-focused work behind a safe landing gate
+- Creator-nominated, platform-reviewed share media and outward-facing copy, kept separate from the page's own title, tagline and gallery
+- Adult age gate held as durable account state, so explicit roleplay needs the creation's capability, the reader's confirmed age, and the reader's opt-in
+- Explicit consent boundaries in every adult prompt
 - Supabase Auth accounts with email/password sign-up, sign-in, and persistent sessions
 - Per-account ownership of every character, world, persona, chat, message, and memory, enforced by PostgreSQL row level security
 - Character visibility model (private / unlisted / public) ready for a creator marketplace, with chats and memories that stay private even when the character is published
@@ -87,6 +91,17 @@ psql "$DATABASE_URL" -f supabase/migrations/0022_social_discovery.sql
 psql "$DATABASE_URL" -f supabase/migrations/0023_branch_copy_indexes.sql
 psql "$DATABASE_URL" -f supabase/migrations/0024_byok_creation_moderation.sql
 psql "$DATABASE_URL" -f supabase/migrations/0025_writer_openrouter_byok.sql
+psql "$DATABASE_URL" -f supabase/migrations/0026_memory_transparency.sql
+psql "$DATABASE_URL" -f supabase/migrations/0027_consolidation_cursor.sql
+psql "$DATABASE_URL" -f supabase/migrations/0028_generation_provenance.sql
+psql "$DATABASE_URL" -f supabase/migrations/0029_story_distance_aging.sql
+psql "$DATABASE_URL" -f supabase/migrations/0030_provenance_parent_ownership.sql
+psql "$DATABASE_URL" -f supabase/migrations/0031_free_tier_and_curated_routes.sql
+psql "$DATABASE_URL" -f supabase/migrations/0032_background_routing_and_scene_ledger.sql
+psql "$DATABASE_URL" -f supabase/migrations/0033_background_job_health.sql
+psql "$DATABASE_URL" -f supabase/migrations/0034_admin_writer_upstream_override.sql
+psql "$DATABASE_URL" -f supabase/migrations/0035_writer_cache_probe.sql
+psql "$DATABASE_URL" -f supabase/migrations/0036_public_content_modes.sql
 ```
 
 Every file is idempotent, so re-running them is safe. `0002_storage.sql` touches the `storage` schema and only applies to Supabase.
@@ -142,6 +157,47 @@ The admin ledger defines cost per 100 user messages as total recorded inference 
 The default provider, model, and RP engine apply only when a new conversation starts. Existing conversations retain all three and can switch them from chat tools without changing the transcript, rolling state, memories, arcs, character, world, or persona. `DEFAULT_LLM_PROVIDER`, `DEFAULT_LLM_MODEL`, `DEEPSEEK_MODEL`, and `DEFAULT_RP_ENGINE` set the deployment defaults. `RP_MODEL_ROUTE=conversation` respects that per-story writer, while `MEMORY_CONSOLIDATION_MODEL_ROUTE`, `MEMORY_CURATION_MODEL_ROUTE`, and `CHARACTER_IMPORT_MODEL_ROUTE` keep background work independent from it. Check the provider's official model documentation before changing IDs because model names evolve.
 
 Railway's official deployment pattern is a Next.js service plus a referenced PostgreSQL `DATABASE_URL`; see [Deploy a Next.js app with Postgres](https://docs.railway.com/guides/nextjs).
+
+## Public pages and content modes
+
+A creation says what it is, and that is three states rather than one flag:
+
+| mode | explicit roleplay | 18+ presentation | readable without an account |
+| --- | --- | --- | --- |
+| `clean` | no | no | yes |
+| `adult_capable` | if the reader steers there and has opted in | no | yes |
+| `adult_focused` | yes | yes | safe landing only |
+
+`content_mode` is authoritative from migration `0036`. The old `nsfw_enabled`
+boolean remains for one release, deprecated and maintained by nobody: it can
+express "may this go explicit" and neither of the other two questions, and an
+`adult_capable` row's value for it means nothing.
+
+Explicit content requires all three of: the creation being capable of it, the
+reader having confirmed they are 18 or over (`profiles.adult_confirmed_at`),
+and the reader having asked for it (`user_settings.adult_content_enabled`).
+The rule lives in one function, `explicitRoleplayAllowed`, and both the writer
+prompt and the chat mode strip read it, so the label and the prompt cannot
+disagree.
+
+Anonymous requests never touch `asUser`. They run through `asVisitor`, which
+assumes the `anon` role with no subject, and the only things that role may
+reach are the `SECURITY DEFINER` functions `0036` grants it. Those functions'
+result types contain no prompt column, no account column and no lore, so a
+hidden field is absent rather than filtered. An adult-focused creation answers
+with a safe landing model — its outward name, its creator, and the line its
+creator wrote for the outside — and never its own title or tagline.
+
+External preview media is a platform review state (`unreviewed` / `safe` /
+`adult` / `rejected`), not a creator's checkbox. Only `safe` reaches an
+Open Graph tag; everything else falls back to a branded card at `/api/og/card`.
+Every existing row starts `unreviewed`, because nothing in the database was
+published under a promise about link previews.
+
+`/sitemap.xml` lists public clean and adult-capable creations, classified
+non-adult worlds, and the creators who have at least one listable creation.
+Gate pages are `noindex`: they render correctly when shared without inviting a
+crawler to keep a page it may not see.
 
 ## Memory design
 
