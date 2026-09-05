@@ -4,6 +4,7 @@ import { Compass, Sparkles } from "lucide-react";
 import { creationTypeLabels } from "@/lib/creation";
 import type { CreationType } from "@/lib/types";
 import { CoverPicker, GalleryEditor, QuickFactsEditor } from "./MediaFields";
+import { FramingFields } from "./FramingFields";
 import { CreationTypeSelector } from "./CreationTypeSelector";
 import { HashtagInput } from "./HashtagInput";
 import { TagSelector } from "./TagSelector";
@@ -65,6 +66,18 @@ export function BasicsStep({ draft, update, onChangeType, onError }: {
       avatarPath={draft.avatarPath}
       avatarUrl={draft.avatarUrl}
       accent={draft.accent}
+      onChange={(changes) => update(changes)}
+      onError={onError}
+    />
+
+    {/* Framing follows the upload it frames, so the two read as one decision:
+        choose the picture, then say which part of it must survive. */}
+    <FramingFields
+      avatarPath={draft.avatarPath}
+      avatarUrl={draft.avatarUrl}
+      bannerPath={draft.bannerPath ?? ""}
+      bannerUrl={draft.bannerUrl ?? ""}
+      presentation={draft.artPresentation}
       onChange={(changes) => update(changes)}
       onError={onError}
     />

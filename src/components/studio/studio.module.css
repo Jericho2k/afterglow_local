@@ -565,6 +565,47 @@
 }
 .coverPreview img { width: 100%; height: 100%; object-fit: cover; }
 .coverActions { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; justify-content: center; }
+
+/*
+ * Framing.
+ *
+ * The picker is the image itself, so it is sized to be looked at rather than to
+ * fit a form row: big enough on a phone to place a point on a face, and capped
+ * on a desktop so it does not become the whole step.
+ */
+.framingRow { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; min-width: 0; }
+.focalFrame {
+  position: relative; flex: 1 1 260px; max-width: 420px; min-width: 0;
+  aspect-ratio: 4 / 3; border-radius: 14px; overflow: hidden;
+  border: 1px solid var(--line); background: #120f13;
+  cursor: crosshair; touch-action: none;
+}
+.focalFrame img { width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; user-select: none; }
+.focalFrame:focus-visible { outline: 2px solid var(--rose); outline-offset: 2px; }
+/* The marker sits ON the point, so it is translated by half its own size
+   rather than anchored at its corner. */
+.focalMarker {
+  position: absolute; transform: translate(-50%, -50%);
+  display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+  color: #fff; background: rgba(0, 0, 0, .38); border: 2px solid rgba(255, 255, 255, .9);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .5); pointer-events: none;
+}
+.framingSide { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.cropPreviews { list-style: none; display: flex; flex-wrap: wrap; gap: 10px; margin: 0; padding: 0; }
+.cropPreviews li { display: flex; flex-direction: column; gap: 4px; }
+.cropPreviews small { color: var(--faint); font-size: 8px; text-align: center; }
+.cropWindow { display: block; width: 74px; border-radius: 9px; overflow: hidden; border: 1px solid var(--line); background: #120f13; }
+.cropWindow[data-ratio="3:4"] { aspect-ratio: 3 / 4; }
+.cropWindow[data-ratio="1:1"] { aspect-ratio: 1; }
+.cropWindow[data-ratio="16:9"] { width: 118px; aspect-ratio: 16 / 9; }
+.cropWindow img { width: 100%; height: 100%; object-fit: cover; }
+.bannerPreview {
+  flex: 0 0 auto; width: min(210px, 100%); aspect-ratio: 16 / 9;
+  display: grid; place-items: center; border-radius: 13px; overflow: hidden;
+  border: 1px solid var(--line); background: #120f13; color: var(--faint);
+}
+.bannerPreview img { width: 100%; height: 100%; object-fit: cover; }
+.framingNote { color: var(--faint); font-size: 9px; line-height: 1.5; }
 .fileButton {
   display: inline-flex;
   align-items: center;
@@ -1187,3 +1228,22 @@
   color: #1a0d14;
   background: linear-gradient(102deg, #ffd9ea 4%, var(--creation-accent, #e879a9) 46%, var(--creation-accent-soft, #b892f0) 96%);
 }
+
+
+/*
+ * Card import.
+ *
+ * A file button and an outcome, and the outcome matters more than it looks: a
+ * creator who has just handed over a character they spent months on needs to
+ * see what was read, what was guessed, and that nothing is public yet.
+ */
+.cardImport { display: flex; flex-direction: column; gap: 10px; }
+.importNotice {
+  display: flex; gap: 11px; align-items: flex-start;
+  border: 1px solid rgba(232, 121, 169, .22); background: rgba(232, 121, 169, .07);
+  border-radius: 13px; padding: 13px 14px; color: var(--rose2);
+}
+.importNotice > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.importNotice strong { font-size: 11px; }
+.importNotice small { color: var(--muted); font-size: 9.5px; line-height: 1.55; }
+.importNotice ul { margin: 3px 0 0; padding-left: 16px; color: var(--muted); font-size: 9.5px; line-height: 1.6; }

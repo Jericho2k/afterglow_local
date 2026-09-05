@@ -1,3 +1,4 @@
+import { artPresentation, type ArtPresentation } from "./art-presentation";
 import type { PoolClient } from "pg";
 import { asUser } from "./db";
 import { rankingBoardSize, rankingCategories, type CreationRank } from "./rankings";
@@ -90,7 +91,7 @@ export type RankedCreatorRow = {
   worlds: number;
   saves: number;
   viewerFollows: boolean;
-  topCreation: { id: string; title: string; avatarPath: string; avatarUrl: string; accent: string; messages: number } | null;
+  topCreation: { id: string; title: string; avatarPath: string; avatarUrl: string; accent: string; messages: number; artPresentation: ArtPresentation } | null;
 };
 
 /**
@@ -121,7 +122,7 @@ export async function rankedCreators(
        p.id,p.username,p.display_name,p.avatar_path,p.profile_border,
        (f.creator_user_id IS NOT NULL) viewer_follows,
        top.id top_id,top.title top_title,top.name top_name,top.avatar_path top_avatar_path,
-       top.avatar_url top_avatar_url,top.accent top_accent,top.user_message_count top_messages
+       top.avatar_url top_avatar_url,top.accent top_accent,top.art_presentation top_art_presentation,top.user_message_count top_messages
      FROM creator_stats cs
      JOIN profiles p ON p.id=cs.user_id AND p.username IS NOT NULL
      LEFT JOIN profile_follows f ON f.creator_user_id=cs.user_id AND f.follower_user_id=$1
@@ -158,6 +159,7 @@ export async function rankedCreators(
         avatarPath: String(row.top_avatar_path || ""),
         avatarUrl: String(row.top_avatar_url || ""),
         accent: String(row.top_accent || "#e879a9"),
+        artPresentation: artPresentation(row.top_art_presentation),
         messages: Number(row.top_messages || 0),
       }
       : null,

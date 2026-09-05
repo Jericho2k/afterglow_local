@@ -10,6 +10,7 @@ import { compactCount, exactCount } from "@/lib/format";
 import { creatorProfileHref, toggleCreatorFollow } from "@/lib/follows";
 import { profileBorder, type ProfileBorder } from "@/lib/cosmetics";
 import { overallBoardLabel, rankingCategoryLabel } from "@/lib/rankings";
+import { artPresentation, artStyle, type ArtPresentation } from "@/lib/art-presentation";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import type { CreationSummary } from "@/lib/types";
 import { CreatorAvatar } from "@/components/creator";
@@ -53,7 +54,7 @@ type RankedCreator = {
   id: string; username: string; displayName: string; avatarPath: string; border: ProfileBorder;
   followers: number; messages: number; creations: number;
   viewerFollows: boolean; owner: boolean;
-  topCreation: { id: string; title: string; avatarPath: string; avatarUrl: string; accent: string; messages: number } | null;
+  topCreation: { id: string; title: string; avatarPath: string; avatarUrl: string; accent: string; messages: number; artPresentation?: ArtPresentation } | null;
 };
 
 type CreationsPage = {
@@ -260,7 +261,7 @@ function RankedCreationRow({ entry, category }: { entry: RankedCreation; categor
       </span>
 
       <span className={styles.art}>
-        {artwork ? <img src={artwork} alt="" loading="lazy" decoding="async" /> : <span aria-hidden>{initials(title)}</span>}
+        {artwork ? <img src={artwork} alt="" loading="lazy" decoding="async" style={artStyle(artPresentation(entry.creation.artPresentation), "cover", "1:1")} /> : <span aria-hidden>{initials(title)}</span>}
       </span>
 
       <span className={styles.rowCopy}>
@@ -360,7 +361,7 @@ function RankedCreatorRow({ entry, onError }: { entry: RankedCreator; onError: (
           be for the thing somebody is actually looking for. */}
       {top && <Link className={styles.topCreation} href={`/characters/${top.id}`} title={`${top.title} — ${exactCount(top.messages)} messages`}>
         <span className={styles.topArt}>
-          {topArt ? <img src={topArt} alt="" loading="lazy" /> : <span aria-hidden>{initials(top.title)}</span>}
+          {topArt ? <img src={topArt} alt="" loading="lazy" style={artStyle(artPresentation(top.artPresentation), "cover", "1:1")} /> : <span aria-hidden>{initials(top.title)}</span>}
         </span>
         <span className={styles.topCopy}>
           <small>Most read</small>

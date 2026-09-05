@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ClipboardPaste, Clock3, Globe2, Info, PenLine, Sparkles, Trash2, Wand2 } from "lucide-react";
+import { AlertTriangle, ClipboardPaste, Clock3, FileUp, Globe2, Info, PenLine, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import type { Character, CreationType } from "@/lib/types";
 import type { CreationAiNotice, CreationWorldDraft } from "@/lib/creation-ai";
+import { CardImport } from "./CardImport";
 import { CreationTypeSelector } from "./CreationTypeSelector";
 import { Counter, Field, TextArea, TextInput, Toggle } from "./fields";
 import { draftFromCharacter, type CreationDraft } from "./draft";
@@ -36,7 +37,7 @@ type GenerateResponse = {
   stats: { sourceCharacters: number; organizedCharacters: number; castMembers: number; openings: number; tags: number; hashtags: number; unknownTags: string[]; worldCharacters: number; audited: boolean };
 };
 
-type Mode = "idea" | "import";
+type Mode = "idea" | "import" | "card";
 
 const relative = (iso: string) => {
   const value = Date.parse(iso);
@@ -158,15 +159,30 @@ export function CreateIntro({ draft, update, onChangeType, onGenerated, onContin
         <button type="button" aria-pressed={mode === "import"} onClick={() => setMode("import")}>
           <ClipboardPaste size={14} aria-hidden />Paste everything
         </button>
+        {/* A file, not prose. This one calls no model and rewrites nothing,
+            which is why it is a peer of the other two rather than an option
+            inside Paste everything. */}
+        <button type="button" aria-pressed={mode === "card"} onClick={() => setMode("card")}>
+          <FileUp size={14} aria-hidden />Import a card
+        </button>
       </div>
 
       <p className={styles.modeNote}>
-        {mode === "import"
-          ? "Import keeps your writing as it is. It works out the structure, separates world material from character material, finds your openings and example dialogue, and files everything where it belongs."
-          : "Quick idea invents the rest. Give it a concept and it writes a first draft you can rework."}
+        {mode === "card"
+          ? "Reads a SillyTavern or Chub card file directly. No AI, no rewriting: every field arrives exactly as its author wrote it, and lorebook entries become a world you can edit."
+          : mode === "import"
+            ? "Import keeps your writing as it is. It works out the structure, separates world material from character material, finds your openings and example dialogue, and files everything where it belongs."
+            : "Quick idea invents the rest. Give it a concept and it writes a first draft you can rework."}
       </p>
 
-      <Field
+      {mode === "card" && <CardImport
+        draft={draft}
+        hasWork={hasWork}
+        onImported={(imported, notes) => onGenerated(imported, notes.map((note) => ({ kind: "source" as const, message: note })))}
+        onError={onError}
+      />}
+
+      {mode !== "card" && <><Field
         label={mode === "import" ? "Your material" : "Your idea"}
         hint={mode === "import"
           ? "Paste anything: a character card, a scenario, several characters, a lorebook, a long prompt, JSON. The original is kept on the creation for you to look at later."
@@ -214,7 +230,7 @@ export function CreateIntro({ draft, update, onChangeType, onGenerated, onContin
         {mode === "import"
           ? "Your text stays exactly where it is while this runs. Long material takes longer because it is being read in full rather than summarised."
           : "Writing a first draft. You will land in the studio with everything editable."}
-      </p>}
+      </p>}</>}
     </section>
 
     <Field

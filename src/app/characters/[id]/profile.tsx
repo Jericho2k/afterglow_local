@@ -13,6 +13,7 @@ import {
   creationTitle, creationType, inlineTitle, publicCastMembers,
 } from "@/lib/creation";
 import { accentVariables } from "@/lib/accent";
+import { artPresentation, bannerArt } from "@/lib/art-presentation";
 import { contentModeBadge } from "@/lib/content-mode";
 import { castMemberKey } from "@/lib/cast";
 import { imageCount } from "@/lib/rich-content";
@@ -397,7 +398,23 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   if (error && !detail) return <main className={styles.state}><Sparkles size={26} /><h1>Creation unavailable</h1><p>{error}</p><Link href="/">Return to Afterglow</Link></main>;
   if (!detail || !character) return <main className={styles.state}><Sparkles size={26} className={styles.spin} /><h1>Opening creation</h1></main>;
 
-  const image = avatarSource(characterAvatarBucket, character.avatarPath, character.avatarUrl);
+  /*
+   * The hero image, and how this creation asked for it to be framed.
+   *
+   * `bannerArt` answers both halves at once: a creation with a dedicated wide
+   * image uses it, and one without uses its primary artwork with the cover
+   * focal point — which is exactly what this page did before banners existed.
+   * A creation whose creator has set no focal point gets an empty style object,
+   * so the stylesheet's own crop still applies and nothing moves.
+   */
+  const hero = bannerArt({
+    avatarPath: character.avatarPath,
+    avatarUrl: character.avatarUrl,
+    bannerPath: character.bannerPath ?? "",
+    bannerUrl: character.bannerUrl ?? "",
+    presentation: artPresentation(character.artPresentation),
+  });
+  const image = avatarSource(characterAvatarBucket, hero.path, hero.url);
   const created = relative(character.createdAt);
   // The hero is titled with the creation, which is not necessarily anybody's
   // name: "The Final War" and "Your New Roommate" are both valid titles.
@@ -478,7 +495,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
     {detail.owner&&character.moderationStatus==="removed"&&<div className={styles.moderationNotice} role="status"><ShieldAlert size={16} aria-hidden/><div><strong>This creation was removed by Afterglow.</strong><span>It is private and locked from publishing while moderation is active.{character.moderationReason?` ${character.moderationReason}`:""}</span></div></div>}
     <div className={styles.hero}>
       <div className={styles.heroMedia}>
-        {image ? <img src={image} alt="" /> : <span className={styles.heroFallback}>{initials(character.name)}</span>}
+        {image ? <img src={image} alt="" style={hero.style} /> : <span className={styles.heroFallback}>{initials(character.name)}</span>}
         <div className={styles.heroGlow} />
         <div className={styles.heroScrim} />
       </div>

@@ -71,6 +71,11 @@ export const blankDraft: CreationDraft = {
   shareTagline: "",
   shareImagePath: "",
   shareImageUrl: "",
+  // No banner and no framing: an untouched creation renders exactly as every
+  // creation did before framing existed.
+  bannerPath: "",
+  bannerUrl: "",
+  artPresentation: {},
   shareMediaStatus: "unreviewed",
 };
 

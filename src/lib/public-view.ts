@@ -1,5 +1,7 @@
 import { asVisitor } from "./db";
 import { contentMode, isContentMode, shareMedia, shareMediaStatus, worldReadableWithoutAccount, type ShareMedia } from "./content-mode";
+import { artPresentation, type ArtPresentation } from "./art-presentation";
+import { creatorLinks, type CreatorLink } from "./creator-links";
 import { normalizeBlocks } from "./rich-content";
 import type { RichBlock } from "./rich-content";
 import type { ContentMode, CreationType } from "./types";
@@ -54,6 +56,15 @@ export type PublicCreationCard = {
   contentMode: ContentMode;
   /** Resolved by `shareMedia`; a fallback means "use the branded card". */
   share: ShareMedia;
+  /**
+   * The creation's own artwork and how to frame it.
+   *
+   * Distinct from `share` above, and the distinction is the point: `share` is
+   * what may leave Afterglow, this is what an anonymous page draws. A gated
+   * creation's row carries neither — the SQL blanks it — so a shelf falls back
+   * to nominated media or the branded card without deciding anything itself.
+   */
+  art: { avatarPath: string; avatarUrl: string; bannerPath: string; bannerUrl: string; presentation: ArtPresentation };
   tags: string[];
   hashtags: string[];
   stats: { messages: number; chats: number; saves: number };
@@ -70,7 +81,7 @@ export type PublicCreationPage = PublicCreationCard & {
   avatar: { path: string; url: string };
   cast: { key: string; name: string; role: string; blurb: string; avatarPath: string; avatarUrl: string }[];
   gallery: { id: string; storagePath: string; externalUrl: string; caption: string }[];
-  creatorProfile: { username: string; displayName: string; avatarPath: string; border: string; followers: number };
+  creatorProfile: { username: string; displayName: string; avatarPath: string; border: string; followers: number; links: CreatorLink[] };
   createdAt: string;
 };
 
@@ -97,6 +108,7 @@ export type PublicCreatorProfile = {
   publishedCreations: number;
   publishedWorlds: number;
   rank: number | null;
+  links: CreatorLink[];
   creations: PublicCreationCard[];
 };
 
@@ -129,6 +141,13 @@ function cardFromRow(row: Record<string, unknown>): PublicCreationCard {
       avatarPath: String(row.avatar_path || ""),
       avatarUrl: String(row.avatar_url || ""),
     }),
+    art: {
+      avatarPath: String(row.avatar_path || ""),
+      avatarUrl: String(row.avatar_url || ""),
+      bannerPath: String(row.banner_path || ""),
+      bannerUrl: String(row.banner_url || ""),
+      presentation: artPresentation(row.art_presentation),
+    },
     tags: Array.isArray(row.tags) ? row.tags.map((tag) => String(tag)) : [],
     hashtags: Array.isArray(row.hashtags) ? row.hashtags.map((tag) => String(tag)) : [],
     stats: {
@@ -236,6 +255,7 @@ export async function publicCreationPage(id: string): Promise<PublicCreationPage
         avatarPath: String(row.creator_avatar_path || ""),
         border: String(row.creator_border || "default"),
         followers: Number(row.creator_follower_count || 0),
+        links: creatorLinks(row.creator_links),
       },
       createdAt: new Date(String(row.created_at)).toISOString(),
     };
@@ -299,6 +319,7 @@ export async function publicCreatorProfile(username: string, limit = 24): Promis
       publishedCreations: Number(row.published_creations || 0),
       publishedWorlds: Number(row.published_worlds || 0),
       rank: row.rank == null ? null : Number(row.rank),
+      links: creatorLinks(row.links),
       // These rows carry no `updated_at`; a card only ever shows publication.
       creations: creations.rows.map((creation) => cardFromRow({ ...creation, updated_at: creation.published_at ?? new Date(0).toISOString() })),
     };

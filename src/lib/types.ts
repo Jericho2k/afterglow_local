@@ -1,3 +1,4 @@
+import type { ArtPresentation } from "./art-presentation";
 import type { RichBlock } from "./rich-content";
 
 export type CharacterCastMember = {
@@ -144,6 +145,19 @@ export type Character = {
   /** The outward name and line, written for people who have not chosen this yet. */
   shareTitle?: string;
   shareTagline?: string;
+  /**
+   * Optional wide artwork for desktop. Absent means the primary artwork is
+   * used with its own focal point — see `bannerArt`.
+   */
+  bannerPath?: string;
+  bannerUrl?: string;
+  /**
+   * How the artwork is framed. Absent or `{}` means the creator has chosen
+   * nothing and every surface keeps its stylesheet default — see
+   * `src/lib/art-presentation.ts`. Optional for the same reason the share
+   * fields are: a fixture, a snapshot or a pre-0037 backup simply has none.
+   */
+  artPresentation?: ArtPresentation;
   /** Global saves. Same number as `publicStats.saves`, kept for card code. */
   saveCount?: number;
   /** Whether the caller has this in their saved library. Never anybody else's. */
@@ -175,6 +189,10 @@ export type CreationSummary = {
   tagline: string;
   avatarUrl: string;
   avatarPath: string;
+  /** Wide artwork and framing, so a card crops exactly as the page does. */
+  bannerPath?: string;
+  bannerUrl?: string;
+  artPresentation?: ArtPresentation;
   accent: string;
   /** Platform taxonomy. Never merged with `hashtags`. */
   tags: string[];

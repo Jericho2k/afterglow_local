@@ -4,6 +4,7 @@ import { castSectionLabel, creationTitle, inlineTitle } from "@/lib/creation";
 import { contentModeBadge, readableWithoutAccount, safeShareTitle } from "@/lib/content-mode";
 import { compactCount } from "@/lib/format";
 import { accentVariables } from "@/lib/accent";
+import { bannerArt } from "@/lib/art-presentation";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import { RichContent } from "@/components/rich";
 import type { PublicCreationPage, PublicSafeLanding } from "@/lib/public-view";
@@ -34,14 +35,29 @@ function signInHref(path: string) {
 export function PublicCreationView({ page }: { page: PublicCreationPage }) {
   const title = creationTitle(page);
   const badge = contentModeBadge(page.contentMode);
-  const image = avatarSource(characterAvatarBucket, page.avatar.path, page.avatar.url);
+  /*
+   * The same framing decision as the signed-in page, from the same data.
+   *
+   * This is why `art` travels on the public view model at all: a visitor who
+   * finds a creation through a search result must see the crop its creator
+   * chose, not a second opinion formed by whichever component happened to
+   * render it. `bannerArt` is the one place that decision is made.
+   */
+  const hero = bannerArt({
+    avatarPath: page.art.avatarPath,
+    avatarUrl: page.art.avatarUrl,
+    bannerPath: page.art.bannerPath,
+    bannerUrl: page.art.bannerUrl,
+    presentation: page.art.presentation,
+  });
+  const image = avatarSource(characterAvatarBucket, hero.path, hero.url);
   const href = `/characters/${page.id}`;
   const creatorName = page.creatorProfile.displayName || page.creatorProfile.username;
 
   return <main className={styles.page} style={accentVariables(page.accent) as React.CSSProperties}>
     <div className={styles.hero}>
       <div className={styles.heroMedia}>
-        {image ? <img src={image} alt="" /> : <span className={styles.heroFallback}>{initials(page.name)}</span>}
+        {image ? <img src={image} alt="" style={hero.style} /> : <span className={styles.heroFallback}>{initials(page.name)}</span>}
         <div className={styles.heroGlow} />
         <div className={styles.heroScrim} />
       </div>

@@ -704,6 +704,17 @@ async function schema() {
   // Worlds classify themselves and are not backfilled from anything: NULL
   // means unclassified, which keeps a world out of every anonymous surface.
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS content_mode text");
+  /*
+   * Art presentation and creator links (migration 0037).
+   *
+   * `{}` and `[]` reproduce today's behaviour exactly: no focal point means
+   * every surface keeps its stylesheet crop, and no links means no link row.
+   * The migration is still what a deployment must apply — only it carries the
+   * shape constraints and the public functions that expose these anonymously.
+   */
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS art_presentation jsonb NOT NULL DEFAULT '{}'::jsonb");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS banner_path text NOT NULL DEFAULT ''");
+  await pool().query("ALTER TABLE characters ADD COLUMN IF NOT EXISTS banner_url text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS share_media_status text NOT NULL DEFAULT 'unreviewed'");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_path text NOT NULL DEFAULT ''");
   await pool().query("ALTER TABLE worlds ADD COLUMN IF NOT EXISTS cover_url text NOT NULL DEFAULT ''");
@@ -771,6 +782,9 @@ async function schema() {
   // accounts explicitly listed in AFTERGLOW_ADMIN_USER_IDS.
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS admin_writer_upstream_overrides jsonb NOT NULL DEFAULT '{}'::jsonb");
   // The reader's half of the adult rule. Both default to "has not said yet".
+  // Creator links (0037). Placed after `profiles` exists, which is the only
+  // ordering constraint any of these have.
+  await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS links jsonb NOT NULL DEFAULT '[]'::jsonb");
   await pool().query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS adult_confirmed_at timestamptz");
   await pool().query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS adult_content_enabled boolean NOT NULL DEFAULT false");
   await pool().query("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS adult_content_enabled boolean NOT NULL DEFAULT false");

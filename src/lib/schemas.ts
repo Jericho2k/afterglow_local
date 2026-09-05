@@ -3,6 +3,20 @@ import { creationTypes, responseLengths, roleplayEngineIds } from "./types";
 import { discoverySorts } from "./discovery";
 import { adultTagsIn, canonicalTag, maxHashtags, maxTags, normalizeHashtag } from "./tags";
 import { maxBlockText, maxBlocks, maxCaption, maxLoreBlockText } from "./rich-content";
+import { creatorLinks, maxCreatorLinkLabel, maxCreatorLinkUrl, maxCreatorLinks } from "./creator-links";
+
+/**
+ * A point inside an image, as fractions of its width and height.
+ *
+ * Clamped rather than refused. These arrive from a pointer drag, so a value of
+ * 1.0000001 is a rounding artefact of the drag, not a creator asking for
+ * something impossible, and failing their save over it would be absurd.
+ */
+const focalPoint = z.object({
+  x: z.coerce.number().transform((value) => Math.min(1, Math.max(0, value))),
+  y: z.coerce.number().transform((value) => Math.min(1, Math.max(0, value))),
+});
+
 
 const text = (max: number, min = 0) => z.preprocess(
   (value) => value == null ? "" : typeof value === "string" ? value : String(value),
@@ -202,6 +216,25 @@ const characterFields = z.object({
   shareTagline: z.string().max(200).default(""),
   shareImagePath: z.string().max(500).default(""),
   shareImageUrl: z.string().max(2000).default(""),
+  /*
+   * Presentation, not pixels.
+   *
+   * A focal point is a pair of fractions describing the original image, so a
+   * payload cannot make the server rewrite an upload — the worst a bad one can
+   * do is frame a picture badly, which its creator can see and correct. Values
+   * outside 0–1 are clamped rather than rejected: a slider that overshoots by a
+   * rounding error should not fail a save.
+   */
+  bannerPath: z.string().max(500).default(""),
+  bannerUrl: z.string().max(2000).default(""),
+  artPresentation: z.preprocess(
+    (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {}),
+    z.object({
+      cover: z.object({ focal: focalPoint.optional() }).optional(),
+      banner: z.object({ focal: focalPoint.optional() }).optional(),
+      aspects: z.record(z.string().max(12), z.object({ focal: focalPoint.optional() })).optional(),
+    }),
+  ).default({}),
 });
 
 /**
@@ -385,6 +418,20 @@ export const profileSchema = z.object({
   ]).default(""),
   displayName: text(80, 1),
   bio: text(2000).default(""),
+  /*
+   * External links, validated by `creatorLinks` rather than by a pattern here.
+   *
+   * The rule that matters is which protocols may reach an anchor's href, and
+   * that is a question for a URL parser — one that agrees with the browser
+   * about what a URL is — not for a regular expression that agrees only with
+   * whoever wrote it. Anything unparseable or non-http is dropped, silently and
+   * on purpose: a refused save teaches a creator nothing about which of six
+   * links was the problem.
+   */
+  links: z.preprocess((value) => creatorLinks(value), z.array(z.object({
+    label: z.string().max(maxCreatorLinkLabel),
+    url: z.string().max(maxCreatorLinkUrl),
+  })).max(maxCreatorLinks)).default([]),
   avatarPath: storagePath,
   /**
    * The banner behind the avatar. Same storage rules as the avatar: an object

@@ -1,5 +1,6 @@
+import { creatorLinkHost, creatorLinkRel } from "@/lib/creator-links";
 import Link from "next/link";
-import { Sparkles } from "lucide-react";
+import { Link as LinkIcon, Sparkles } from "lucide-react";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { compactCount } from "@/lib/format";
 import { presentsAsAdult, safeShareTitle } from "@/lib/content-mode";
@@ -22,6 +23,7 @@ function initials(name: string) {
 
 export function PublicCreatorView({ profile }: { profile: PublicCreatorProfile }) {
   const name = profile.displayName || profile.username;
+  const links = profile.links ?? [];
   const avatar = avatarSource(profileAvatarBucket, profile.avatarPath, "");
   const signIn = `/?next=${encodeURIComponent(`/creators/${encodeURIComponent(profile.username)}`)}`;
 
@@ -47,8 +49,27 @@ export function PublicCreatorView({ profile }: { profile: PublicCreatorProfile }
     </div>
 
     <div className={styles.body}>
-      {profile.bio && <section className={styles.card}>
-        <p className={styles.bio}>{profile.bio}</p>
+      {(profile.bio || links.length > 0) && <section className={styles.card}>
+        {profile.bio && <p className={styles.bio}>{profile.bio}</p>}
+        {links.length > 0 && <ul className={styles.creatorLinks}>
+        {links.map((link) => <li key={link.url}>
+          {/*
+            * Somebody else's URL, on a page anybody can open.
+            *
+            * `creatorLinkRel` carries the whole safety argument — noopener so
+            * the opened tab gets no handle on this one, noreferrer so a
+            * creator's audience is not told which page sent them, nofollow and
+            * ugc so Afterglow is not lending its ranking to whatever this
+            * points at. The protocol was already restricted to http(s) before
+            * this value was stored; this is the second layer, not the first.
+            */}
+          <a href={link.url} rel={creatorLinkRel} target="_blank">
+            <LinkIcon size={13} aria-hidden />
+            <span>{link.label}</span>
+            <small>{creatorLinkHost(link.url)}</small>
+          </a>
+        </li>)}
+      </ul>}
       </section>}
 
       <section className={styles.card}>

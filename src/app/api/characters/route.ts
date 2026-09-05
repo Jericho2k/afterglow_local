@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { artPresentationDocument } from "@/lib/art-presentation";
 import { asUser, characterFromRow, ownedCreationFromRow } from "@/lib/db";
 import { characterSchema, characterValidationMessage } from "@/lib/schemas";
 import { withCastMemberIds } from "@/lib/cast";
@@ -54,7 +55,7 @@ export async function GET(request: Request) {
     const creations = await asUser(account.id, async (client) => {
       const result = await client.query(
         `SELECT c.id,c.user_id,c.name,c.title,c.creation_type,c.profile_type,c.tagline,c.avatar_url,c.avatar_path,c.accent,
-           c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.visibility,c.message_count,c.chat_count,c.like_count,
+           c.tags,c.hashtags,c.content_mode,c.nsfw_enabled,c.banner_path,c.banner_url,c.art_presentation,c.visibility,c.message_count,c.chat_count,c.like_count,
            c.published_at,c.created_at,c.updated_at,
            p.id creator_id,p.username creator_username,p.display_name creator_display_name,p.avatar_path creator_avatar_path
          FROM characters c
@@ -104,6 +105,7 @@ export async function GET(request: Request) {
          c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,
          c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,
          c.content_mode,c.nsfw_enabled,c.share_title,c.share_tagline,c.share_image_path,c.share_image_url,c.share_media_status,
+         c.banner_path,c.banner_url,c.art_presentation,
          c.visibility,c.like_count,c.chat_count,c.message_count,
          c.published_at,c.created_at,c.updated_at
        FROM characters c WHERE c.user_id=$1 ORDER BY c.updated_at DESC`,
@@ -152,9 +154,9 @@ export async function POST(request: Request) {
 
   const row = await asUser(account.id, async (client) => {
     const result = await client.query(
-      `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,tags,quick_facts,creation_type,title,description,user_role,hashtags,description_rich,greeting_rich,alternate_greetings_rich,content_mode,share_title,share_tagline,share_image_path,share_image_url,published_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::text[],$22::jsonb,$23,$24,$25,$26,$27::text[],$28::jsonb,$29::jsonb,$30::jsonb,$31,$32,$33,$34,$35,CASE WHEN $20='public' THEN now() ELSE NULL END) RETURNING *`,
-      [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.contentMode!=="clean",c.visibility,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich,c.contentMode,c.shareTitle,c.shareTagline,c.shareImagePath,c.shareImageUrl],
+      `INSERT INTO characters (id,user_id,name,profile_type,tagline,avatar_url,avatar_path,accent,backstory,cast_members,lorebook,personality,scenario,greeting,alternate_greetings,example_dialogue,response_directive,boundaries,source_material,nsfw_enabled,visibility,tags,quick_facts,creation_type,title,description,user_role,hashtags,description_rich,greeting_rich,alternate_greetings_rich,content_mode,share_title,share_tagline,share_image_path,share_image_url,banner_path,banner_url,art_presentation,published_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'',$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::text[],$22::jsonb,$23,$24,$25,$26,$27::text[],$28::jsonb,$29::jsonb,$30::jsonb,$31,$32,$33,$34,$35,$36,$37,$38::jsonb,CASE WHEN $20='public' THEN now() ELSE NULL END) RETURNING *`,
+      [id,account.id,c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.contentMode!=="clean",c.visibility,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich,c.contentMode,c.shareTitle,c.shareTagline,c.shareImagePath,c.shareImageUrl,c.bannerPath,c.bannerUrl,JSON.stringify(artPresentationDocument(c.artPresentation))],
     );
     // Only the caller's own worlds may be attached; the insert policy rejects
     // anything else, and filtering here turns that into a clean no-op instead
