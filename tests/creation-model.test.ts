@@ -217,4 +217,83 @@ describe("creation persistence", () => {
     // The visitor sees the cast, never the definitions that steer the model.
     expect(detail.character.cast[0].description).toBe("");
   });
+
+  /*
+   * The content mode has to survive the statement that writes it.
+   *
+   * `characterSchema` resolving a mode is not the same as a row carrying one:
+   * 0036 has no synchronising trigger, so a column the INSERT does not name
+   * keeps its default of 'clean'. These go through the real routes and read the
+   * row back, because that gap is invisible to any test that stops at the
+   * schema — and it is not a cosmetic gap. An adult-focused creation persisted
+   * as clean loses its writer's permission AND becomes readable by anonymous
+   * visitors and search engines.
+   */
+  async function mode(id: string) {
+    const row = await query("SELECT content_mode,nsfw_enabled,share_title,share_tagline FROM characters WHERE id=$1", [id]);
+    return row.rows[0] as { content_mode: string; nsfw_enabled: boolean; share_title: string; share_tagline: string };
+  }
+
+  it("persists an adult-capable creation as adult-capable", async () => {
+    const created = await (await characters.POST(post({
+      name: "Slow Burn",
+      title: "Slow Burn",
+      creationType: "character",
+      tagline: "Neither of you says it first.",
+      contentMode: "adult_capable",
+      shareTitle: "Slow Burn",
+      shareTagline: "A quiet, unhurried romance.",
+      visibility: "public",
+    }))).json();
+    expect(created.character.contentMode).toBe("adult_capable");
+
+    const stored = await mode(created.character.id);
+    expect(stored.content_mode).toBe("adult_capable");
+    // Written from the mode, never authored: an adult-capable creation is
+    // capable of explicit roleplay, so the deprecated column says so.
+    expect(stored.nsfw_enabled).toBe(true);
+    expect(stored.share_title).toBe("Slow Burn");
+    expect(stored.share_tagline).toBe("A quiet, unhurried romance.");
+
+    // And it survives the read path a page actually uses.
+    const reloaded = await (await characterDetail.GET(new Request("http://test"), params(created.character.id))).json();
+    expect(reloaded.character.contentMode).toBe("adult_capable");
+  });
+
+  it("carries a mode change through every transition", async () => {
+    const created = await (await characters.POST(post({ name: "Mara", title: "Mara", visibility: "public" }))).json();
+    expect((await mode(created.character.id)).content_mode).toBe("clean");
+    expect((await mode(created.character.id)).nsfw_enabled).toBe(false);
+
+    async function patch(contentMode: string) {
+      const response = await characterDetail.PATCH(
+        new Request("http://test", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Mara", title: "Mara", visibility: "public", contentMode }) }),
+        params(created.character.id),
+      );
+      expect(response.status).toBe(200);
+      return (await response.json()).character as Character;
+    }
+
+    expect((await patch("adult_capable")).contentMode).toBe("adult_capable");
+    expect((await mode(created.character.id)).content_mode).toBe("adult_capable");
+
+    expect((await patch("adult_focused")).contentMode).toBe("adult_focused");
+    expect((await mode(created.character.id)).content_mode).toBe("adult_focused");
+
+    // And back down, because a creator who over-classified must be able to
+    // correct it — the migration's one-way conservatism is about existing
+    // rows, not about what a creator may choose afterwards.
+    expect((await patch("clean")).contentMode).toBe("clean");
+    const cleaned = await mode(created.character.id);
+    expect(cleaned.content_mode).toBe("clean");
+    expect(cleaned.nsfw_enabled).toBe(false);
+  });
+
+  it("keeps a pre-0036 payload's meaning when it only knows the old flag", async () => {
+    // A client or backup written before content modes sends the boolean alone.
+    // It resolves the restrictive way, matching the migration exactly.
+    const created = await (await characters.POST(post({ name: "Legacy", title: "Legacy", nsfwEnabled: true }))).json();
+    expect(created.character.contentMode).toBe("adult_focused");
+    expect((await mode(created.character.id)).content_mode).toBe("adult_focused");
+  });
 });

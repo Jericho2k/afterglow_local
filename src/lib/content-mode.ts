@@ -175,11 +175,17 @@ export const contentModeLabels: Record<ContentMode, string> = {
   adult_focused: "Adult-focused · 18+",
 };
 
-/** The badge a card shows. Clean creations carry none. */
+/**
+ * The badge a card shows, which only adult_focused has.
+ *
+ * Adult-capable deliberately carries NONE. A badge reading "18+ capable" was
+ * still an 18+ badge to everybody who saw it — the same treatment, the same
+ * chilling effect on who opens the page — which is the presentation this mode
+ * exists to avoid. What an adult-capable creation says about itself is said in
+ * prose on its own page, where there is room to say it accurately.
+ */
 export function contentModeBadge(mode: ContentMode) {
-  if (mode === "adult_focused") return "18+";
-  if (mode === "adult_capable") return "18+ capable";
-  return "";
+  return presentsAsAdult(mode) ? "18+" : "";
 }
 
 export const contentModeDescriptions: Record<ContentMode, string> = {

@@ -88,7 +88,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const supportsPreviews = await worldPreviewsSupported(account.id);
   const detail = await asUser(account.id, async (client) => {
     const result = await client.query(
-      `SELECT ${wantsEditPayload ? "c.*" : "c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,c.nsfw_enabled,c.visibility,c.moderation_status,c.moderation_reason,c.like_count,c.chat_count,c.message_count,c.published_at,c.created_at,c.updated_at"},p.id creator_id,p.username creator_username,p.display_name creator_display_name,
+      `SELECT ${wantsEditPayload ? "c.*" : "c.id,c.user_id,c.name,c.profile_type,c.creation_type,c.title,c.tagline,c.description,c.user_role,c.avatar_url,c.avatar_path,c.accent,c.backstory,c.cast_members,c.lorebook,c.personality,c.scenario,c.greeting,c.alternate_greetings,c.description_rich,c.greeting_rich,c.alternate_greetings_rich,c.example_dialogue,c.response_directive,c.boundaries,c.tags,c.hashtags,c.quick_facts,c.content_mode,c.nsfw_enabled,c.share_title,c.share_tagline,c.share_image_path,c.share_image_url,c.share_media_status,c.visibility,c.moderation_status,c.moderation_reason,c.like_count,c.chat_count,c.message_count,c.published_at,c.created_at,c.updated_at"},p.id creator_id,p.username creator_username,p.display_name creator_display_name,
          p.avatar_path creator_avatar_path,p.profile_border creator_border,
          COALESCE(p.follower_count,0) creator_followers,
          COALESCE(cs.user_messages,0) creator_messages,COALESCE(cs.published_creations,0) creator_creations,
@@ -325,10 +325,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       `UPDATE characters SET name=$1,profile_type=$2,tagline=$3,avatar_url=$4,avatar_path=$5,accent=$6,backstory=$7,cast_members=$8::jsonb,lorebook='',personality=$9,scenario=$10,greeting=$11,alternate_greetings=$12::jsonb,example_dialogue=$13,response_directive=$14,boundaries=$15,source_material=$16,nsfw_enabled=$17,visibility=$18,tags=$21::text[],quick_facts=$22::jsonb,
          creation_type=$23,title=$24,description=$25,user_role=$26,hashtags=$27::text[],
          description_rich=$28::jsonb,greeting_rich=$29::jsonb,alternate_greetings_rich=$30::jsonb,
+         content_mode=$31,share_title=$32,share_tagline=$33,share_image_path=$34,share_image_url=$35,
          published_at=CASE WHEN $18='public' AND published_at IS NULL THEN now() WHEN $18<>'public' THEN NULL ELSE published_at END,
          updated_at=now()
        WHERE id=$19 AND user_id=$20 RETURNING *`,
-      [c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.nsfwEnabled,c.visibility,id,account.id,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich],
+      [c.name,c.profileType,c.tagline,c.avatarUrl,c.avatarPath,c.accent,c.backstory,JSON.stringify(withCastMemberIds(c.cast)),c.personality,c.scenario,rich.greeting,rich.alternateGreetings,c.exampleDialogue,c.responseDirective,c.boundaries,c.sourceMaterial,c.contentMode!=="clean",c.visibility,id,account.id,c.tags,JSON.stringify(c.quickFacts),c.creationType,c.title,rich.description,c.userRole,c.hashtags,rich.descriptionRich,rich.greetingRich,rich.alternateGreetingsRich,c.contentMode,c.shareTitle,c.shareTagline,c.shareImagePath,c.shareImageUrl],
     );
     if (!result.rowCount) return null;
     await client.query("DELETE FROM character_worlds WHERE character_id=$1", [id]);
