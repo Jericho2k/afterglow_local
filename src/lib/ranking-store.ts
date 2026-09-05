@@ -127,7 +127,7 @@ export async function rankedCreators(
      JOIN profiles p ON p.id=cs.user_id AND p.username IS NOT NULL
      LEFT JOIN profile_follows f ON f.creator_user_id=cs.user_id AND f.follower_user_id=$1
      LEFT JOIN LATERAL (
-       SELECT id,title,name,avatar_path,avatar_url,accent,user_message_count
+       SELECT id,title,name,avatar_path,avatar_url,accent,art_presentation,user_message_count
        FROM characters
        WHERE user_id=cs.user_id AND visibility='public'
        ORDER BY user_message_count DESC, like_count DESC, id
