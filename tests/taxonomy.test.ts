@@ -157,9 +157,22 @@ describe("one taxonomy, two surfaces", () => {
 });
 
 describe("adult tags and adult mode", () => {
-  const withTags = (tags: string[], nsfwEnabled: boolean) => ({ ...blankDraft, title: "A title", tags, nsfwEnabled });
+  /*
+   * The second argument is now which MODE the creator chose, because that is
+   * what the rule is about. The platform's adult tags are its explicitly 18+
+   * categories, so they agree with adult_focused and with nothing else —
+   * adult_capable is the "may become explicit" case and is not a claim these
+   * tags make.
+   */
+  const withTags = (tags: string[], adult: boolean) => ({
+    ...blankDraft,
+    title: "A title",
+    tags,
+    contentMode: adult ? "adult_focused" as const : "clean" as const,
+    nsfwEnabled: adult,
+  });
 
-  it("refuses to publish adult-tagged work with adult mode off", () => {
+  it("refuses to publish adult-tagged work outside the 18+ mode", () => {
     const problems = draftProblems(withTags(["BDSM"], false));
     expect(problems.some((problem) => problem.step === "publish")).toBe(true);
     expect(problems.find((problem) => problem.step === "publish")!.message).toContain("BDSM");
@@ -172,7 +185,7 @@ describe("adult tags and adult mode", () => {
     expect(message).not.toContain("Romance");
   });
 
-  it("publishes adult-tagged work once adult mode is on", () => {
+  it("publishes adult-tagged work once the 18+ mode is chosen", () => {
     expect(draftProblems(withTags(["BDSM", "Femdom"], true)).some((problem) => problem.step === "publish")).toBe(false);
   });
 

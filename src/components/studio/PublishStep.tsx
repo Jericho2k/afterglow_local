@@ -4,7 +4,8 @@ import { Eye, Link2, Lock, Trash2 } from "lucide-react";
 import { creationTitle, creationTypeLabels } from "@/lib/creation";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import type { CharacterVisibility } from "@/lib/types";
-import { ChoiceList, SectionCard, Toggle } from "./fields";
+import { contentModeDescriptions, contentModeLabels, contentModes, publicVisibilityNotice } from "@/lib/content-mode";
+import { ChoiceList, Field, SectionCard, TextInput } from "./fields";
 import type { CreationDraft, DraftProblem } from "./draft";
 import styles from "./studio.module.css";
 
@@ -72,14 +73,63 @@ export function PublishStep({ draft, update, problems, onGoToStep, onDelete, exi
       />
     </SectionCard>
 
-    <SectionCard title="Content" description="Set whether this is adult work. It decides the badge on the card and the rules the roleplay follows.">
-      <Toggle
-        label="Adult mode · 18+"
-        description="Allows consensual explicit roleplay between fictional adults, and marks the card 18+. Readers see it only when they have opted into 18+ content."
-        checked={draft.nsfwEnabled}
-        onChange={(nsfwEnabled) => update({ nsfwEnabled })}
+    {/*
+      * Three choices where there used to be a switch.
+      *
+      * The switch asked one question and answered two: turning it on both let
+      * the roleplay go explicit AND marked the creation 18+, which put every
+      * story that merely COULD become explicit behind the same wall as one
+      * that exists to be. Most creations are the middle case, and the middle
+      * case is the one that was being hidden.
+      *
+      * The copy for each option says what will actually happen to the work,
+      * because that is what the creator is deciding.
+      */}
+    <SectionCard title="Content" description="What kind of story is this? It decides how the roleplay behaves and who can read the page.">
+      <ChoiceList
+        label="Content mode"
+        value={draft.contentMode}
+        onChange={(contentMode) => update({ contentMode })}
+        options={contentModes.map((mode) => ({
+          value: mode,
+          label: contentModeLabels[mode],
+          description: contentModeDescriptions[mode],
+        }))}
       />
+      {draft.visibility === "public" && <p className={styles.hint}>
+        {publicVisibilityNotice(draft.contentMode)}
+      </p>}
     </SectionCard>
+
+    {/*
+      * The outward-facing half, shown only where it can matter.
+      *
+      * A private or unlisted creation is never previewed anywhere, so asking
+      * its author to write copy for a search result would be asking them to
+      * fill in a field with no consequence.
+      */}
+    {draft.visibility === "public" && <SectionCard
+      title="How this looks when it is shared"
+      description="What people see in a search result, a link preview, or — for 18+ work — the page they land on before signing in. Written separately from the page's own title and tagline, which are for readers who have already chosen this."
+    >
+      <Field label="Share title" optional hint={draft.contentMode === "adult_focused"
+        ? "Required for your name to appear outside Afterglow at all. Without one, shared links read “18+ creation by @you”."
+        : "Defaults to the title above when you leave it empty."}>
+        <TextInput value={draft.shareTitle ?? ""} onChange={(shareTitle) => update({ shareTitle })} maxLength={100} placeholder={title} />
+      </Field>
+      <Field label="Share description" optional hint="One line, safe for anywhere a link can be pasted.">
+        <TextInput value={draft.shareTagline ?? ""} onChange={(shareTagline) => update({ shareTagline })} maxLength={200} placeholder="A line that works on somebody's work machine" />
+      </Field>
+      <p className={styles.hint}>
+        {/*
+          * Said plainly, because the alternative is a creator discovering the
+          * rule when their preview does not appear. Nomination is theirs;
+          * classification is not, and pretending otherwise would make the
+          * policy a checkbox.
+          */}
+        Preview images are reviewed by Afterglow before they can appear outside the site. Until yours is reviewed, shared links show an Afterglow card instead of your artwork.
+      </p>
+    </SectionCard>}
 
     <p className={styles.hint}>
       {draft.visibility === "public"

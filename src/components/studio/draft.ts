@@ -212,11 +212,13 @@ export function draftProblems(draft: CreationDraft): DraftProblem[] {
   if (draft.creationType === "scenario" && !draft.scenario.trim() && !draft.backstory.trim()) {
     problems.push({ step: "definition", message: "Describe what happens in this scenario." });
   }
-  // Adult tags and adult mode cannot disagree. Choosing an adult tag turns
-  // adult mode on for the creator; this is the guard for the case where they
-  // then turn it back off, so nothing tagged 18+ can be published as safe.
+  // Adult tags and the content mode cannot disagree. Choosing an adult tag
+  // selects the 18+ mode for the creator; this is the guard for the case where
+  // they then change it back, so nothing tagged 18+ is published as an open
+  // page. Adult-CAPABLE is not enough here: these are the platform's explicitly
+  // 18+ categories, not the "may become explicit" case.
   const adult = adultTagsIn(draft.tags);
-  if (adult.length && !draft.nsfwEnabled) {
+  if (adult.length && draft.contentMode !== "adult_focused") {
     problems.push({
       step: "publish",
       message: `${adult.slice(0, 3).join(", ")}${adult.length > 3 ? ` and ${adult.length - 3} more` : ""} ${adult.length === 1 ? "is an adult tag" : "are adult tags"}. Turn on adult mode, or remove ${adult.length === 1 ? "it" : "them"} from your tags.`,

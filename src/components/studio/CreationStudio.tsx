@@ -257,8 +257,8 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
     // creator decide which of the two to change rather than being corrected
     // after the fact.
     const adult = adultTagsIn(draft.tags);
-    if (adult.length && !draft.nsfwEnabled && draft.visibility !== "private") {
-      setError(`${adult.slice(0, 3).join(", ")}${adult.length > 3 ? ` and ${adult.length - 3} more` : ""} ${adult.length === 1 ? "is an adult tag" : "are adult tags"}, so this cannot be shared without adult mode. Turn adult mode on, remove ${adult.length === 1 ? "it" : "them"}, or keep the creation private.`);
+    if (adult.length && draft.contentMode !== "adult_focused" && draft.visibility !== "private") {
+      setError(`${adult.slice(0, 3).join(", ")}${adult.length > 3 ? ` and ${adult.length - 3} more` : ""} ${adult.length === 1 ? "is an adult tag" : "are adult tags"}, so this can only be shared as Adult-focused · 18+. Change the content mode, remove ${adult.length === 1 ? "it" : "them"}, or keep the creation private.`);
       goToStep("publish");
       return;
     }
