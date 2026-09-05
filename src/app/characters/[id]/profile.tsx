@@ -13,6 +13,8 @@ import {
   creationTitle, creationType, inlineTitle, publicCastMembers,
 } from "@/lib/creation";
 import { accentVariables } from "@/lib/accent";
+import { AdultGate, type AdultState } from "@/components/AdultGate";
+import { presentsAsAdult } from "@/lib/content-mode";
 import { artPresentation, bannerArt } from "@/lib/art-presentation";
 import { contentModeBadge } from "@/lib/content-mode";
 import { castMemberKey } from "@/lib/cast";
@@ -110,6 +112,17 @@ function rememberCreation(characterId: string, patch: Partial<{ detail: Detail; 
 export default function CharacterProfile({ characterId }: { characterId: string }) {
   const router = useRouter();
   const [detail, setDetail] = useState<Detail | null>(null);
+  /*
+   * The reader's own adult standing.
+   *
+   * Read here rather than inferred from the creation, because it is a fact
+   * about the ACCOUNT and the page has to know it before it renders anything:
+   * an adult-focused creation must show its gate instead of itself, not after
+   * itself. `null` means "not answered yet", which is why the page waits for it
+   * rather than treating an unloaded state as "not confirmed" and flashing a
+   * gate at somebody who confirmed months ago.
+   */
+  const [adult, setAdult] = useState<AdultState | null>(null);
   const [comments, setComments] = useState<CharacterComment[] | null>(null);
   const [error, setError] = useState("");
   const [active, setActive] = useState("");
@@ -144,6 +157,17 @@ export default function CharacterProfile({ characterId }: { characterId: string 
    * a blank screen here — the entry was fetched seconds ago, by this reader, in
    * this tab, and the revalidation replaces it either way.
    */
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/adult")
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("unavailable"))))
+      .then((data: { adult: AdultState }) => { if (!cancelled) setAdult(data.adult); })
+      // A failure here must not block the page: the server gate is the real
+      // one, so the worst case is a reader meeting it at the chat instead.
+      .catch(() => { if (!cancelled) setAdult({ confirmedAdult: false, confirmedAt: null, adultContentEnabled: false }); });
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     const cached = creationCache.get(characterId);
     if (cached) { setDetail(cached.detail); setComments(cached.comments); }
@@ -396,7 +420,30 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   }, [characterId, draft]);
 
   if (error && !detail) return <main className={styles.state}><Sparkles size={26} /><h1>Creation unavailable</h1><p>{error}</p><Link href="/">Return to Afterglow</Link></main>;
-  if (!detail || !character) return <main className={styles.state}><Sparkles size={26} className={styles.spin} /><h1>Opening creation</h1></main>;
+  if (!detail || !character || (presentsAsAdult(character.contentMode) && !adult)) {
+    return <main className={styles.state}><Sparkles size={26} className={styles.spin} /><h1>Opening creation</h1></main>;
+  }
+
+  /*
+   * An adult-focused creation, in front of a reader who has not opened it yet.
+   *
+   * BEFORE the page, not over it: the gate replaces the creation rather than
+   * covering it, so nothing of an 18+ creation is painted for somebody who has
+   * not said they are 18. Which question it asks depends on what is missing —
+   * an age that was never stated, or a preference that is switched off.
+   *
+   * The owner is exempt: a creator opening their own creation has already seen
+   * everything in it, and asking them to confirm their age to look at their own
+   * work would be theatre. The chat route still checks server-side.
+   */
+  if (presentsAsAdult(character.contentMode) && adult && !detail.owner && (!adult.confirmedAdult || !adult.adultContentEnabled)) {
+    return <AdultGate
+      variant={adult.confirmedAdult ? "enable" : "confirm"}
+      title={creationTitle(character)}
+      onContinue={setAdult}
+      onBack={() => router.back()}
+    />;
+  }
 
   /*
    * The hero image, and how this creation asked for it to be framed.

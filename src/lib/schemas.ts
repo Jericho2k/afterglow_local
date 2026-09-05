@@ -517,6 +517,22 @@ export const gallerySchema = z.object({
   })).max(12).default([]),
 });
 
+/**
+ * A change to the reader's own adult state.
+ *
+ * Notice what is NOT here: a timestamp. A caller says THAT they confirm and
+ * the database decides when, so an account's confirmation cannot be backdated
+ * by a request — and `confirm` is a literal `true` rather than a boolean,
+ * because "unconfirm" is not an operation this endpoint performs and a
+ * `confirm: false` that silently did nothing would be worse than a refusal.
+ */
+export const adultStateSchema = z.object({
+  confirm: z.literal(true).optional(),
+  adultContentEnabled: z.boolean().optional(),
+}).refine((value) => value.confirm !== undefined || value.adultContentEnabled !== undefined, {
+  message: "Nothing to change",
+});
+
 export const settingsSchema = z.object({
   ownerName: text(80, 1).default("You"),
   ownerProfile: text(5000).default(""),
