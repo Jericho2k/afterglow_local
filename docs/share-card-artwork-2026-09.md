@@ -140,6 +140,83 @@ every shape at 1200×630 and at 400×210, which is roughly what Discord and
 Telegram paint. The thumbnail is the same PNG painted small, which is what those
 clients do — not a second composition at a smaller size.
 
+## The half that did not work: image formats
+
+_Added after the release, because the section above turned out to be a claim
+rather than a description._
+
+0039 shipped, the card composed correctly, the creator's profile picture drew —
+and public creations still shared cards with no artwork on them. Every layer
+this document describes was doing its job. The failure was one step further
+down, in the only place nobody had looked:
+
+**The renderer behind `next/og` draws PNG and JPEG. `uploadImage` accepts PNG,
+JPEG, WebP and GIF, and the storage buckets allow all four.**
+
+So a creator whose cover was a WebP got a card with everything on it except the
+picture. What made it survive a release is the failure mode, not the gap:
+Satori does not throw on an image it cannot use, and it does not warn. It omits
+the `<img>` and renders the rest of the composition perfectly. The output is a
+valid 200, a valid PNG, and a card that is byte-for-byte what a creation with no
+artwork at all would produce. From the outside there is no way to tell "the
+artwork was dropped" from "there is no artwork" from "this creation is gated" —
+which is exactly the deduction the previous round of debugging tried to make.
+
+(A `data:` WebP is worse in a different way: that one throws, from inside the
+response stream, after `new ImageResponse(...)` has already returned — so the
+route's own try/catch never sees it either.)
+
+`tests/og-artwork.test.tsx` pins all of this against the bundled renderer by
+rendering the same neutral frame twice and comparing bytes, which is the only
+way to distinguish "drew it" from "quietly skipped it". If a Next upgrade
+changes what Satori can draw, that test fails and the supported list moves
+deliberately.
+
+### What changed
+
+**Nothing is silent any more.** `src/lib/og-artwork.ts` fetches the picture
+before the composition is built, identifies it from its magic bytes — not its
+suffix, not its `Content-Type` — and returns one of a small set of named
+outcomes: `absent`, `blocked_scheme`, `unreachable`, `no_response`, `oversized`,
+`unsupported_format`, `ready`. Only `ready` draws.
+
+* The bytes are handed to the renderer **inline**, so the check is binding: it
+  cannot re-fetch its way into something else, and nothing unidentified can
+  reach the code path that throws mid-stream.
+* `/api/og/card` puts the outcome in `X-Og-Artwork` (and `X-Og-Artwork-Format`,
+  and `X-Og-Avatar`). A production card can now be diagnosed with `curl -I`.
+* `/api/admin/og-card-diagnostics?id=…`, behind the existing moderator gate,
+  walks the whole chain for one creation — the row's columns, the `open_*`
+  columns the SQL function returned, the view model, the card model, the render
+  outcome — so "where did the artwork go" is a request rather than a deduction.
+  It returns byte counts and media types, never image bytes.
+
+**New uploads cannot land in this state.** `uploadImage(file, bucket, {
+renderable: true })` re-encodes anything the card cannot draw, in the browser,
+using the decoder it already has: PNG when the picture has transparency, JPEG
+when it does not, longest edge capped at 2048. An animated GIF becomes its first
+frame, which is what every crop in the product already shows. The file picker's
+accept list is unchanged — a creator should not have to know any of this. The
+flag is set on the four images that can become card artwork (cover, banner,
+nominated share image, imported card art) plus the profile picture; gallery and
+rich-content images are stored exactly as uploaded.
+
+**Existing WebP and GIF artwork is named, not hidden.** The studio's share-image
+field reads the stored object's suffix — which `avatarObjectPath` wrote, so it
+is a fact for our own storage — and tells the creator that link previews cannot
+draw that format and that re-uploading fixes it. It stays silent for anything it
+cannot identify, such as an imported card's external URL.
+
+### Why not transcode server-side
+
+It would need an image codec in the runtime (`sharp` or equivalent), which is a
+dependency, a build concern and a per-render cost, to solve a problem the
+browser already has a decoder for. Converting at the door is cheaper, happens
+once per upload instead of once per crawl, and leaves the stored asset and the
+card showing the same picture. If a server-side transcode is ever wanted — to
+repair the covers uploaded before this — it should write a new object and update
+the row, not convert on the fly.
+
 ## If 0039 is not applied
 
 Worth stating because the failure is silent and the symptom is confusing. The

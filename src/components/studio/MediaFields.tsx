@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ImagePlus, Images, Trash2, Upload, X } from "lucide-react";
 import { shareMediaNotice } from "@/lib/content-mode";
+import { declaredImageType, knownUnrenderable } from "@/lib/og-artwork";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import { uploadImage } from "@/lib/uploads";
 import type { CreationDraft, StagedGalleryImage } from "./draft";
@@ -29,7 +30,7 @@ export function CoverPicker({ avatarPath, avatarUrl, accent, onChange, onError }
 
   async function upload(file: File) {
     setBusy(true);
-    try { onChange({ avatarPath: await uploadImage(file, characterAvatarBucket) }); }
+    try { onChange({ avatarPath: await uploadImage(file, characterAvatarBucket, { renderable: true }) }); }
     catch (error) { onError(error instanceof Error ? error.message : "Image upload failed"); }
     finally { setBusy(false); }
   }
@@ -194,13 +195,25 @@ export function ShareImageField({ draft, update, onError }: {
   const choice: "cover" | "banner" | "custom" = !nominated ? "cover" : usesBanner ? "banner" : "custom";
   const status = draft.shareMediaStatus ?? "unreviewed";
 
+  /*
+   * Which of the three images would actually be published, named by format.
+   *
+   * The same collapse `nominatedMedia` performs on the server — a dedicated
+   * share image, then a share URL, then the cover — asked here only so the
+   * creator is told about the picture that is really at stake.
+   */
+  const publishing = sharePath || shareUrl || draft.avatarPath || draft.avatarUrl;
+  const unrenderable = knownUnrenderable(publishing)
+    ? declaredImageType(publishing).replace("image/", "").toUpperCase()
+    : "";
+
   const cover = avatarSource(characterAvatarBucket, draft.avatarPath, draft.avatarUrl);
   const banner = avatarSource(characterAvatarBucket, bannerPath, bannerUrl);
   const custom = avatarSource(characterAvatarBucket, choice === "custom" ? sharePath : "", choice === "custom" ? shareUrl : "");
 
   async function uploadShareImage(file: File) {
     setBusy(true);
-    try { update({ shareImagePath: await uploadImage(file, characterAvatarBucket), shareImageUrl: "" }); }
+    try { update({ shareImagePath: await uploadImage(file, characterAvatarBucket, { renderable: true }), shareImageUrl: "" }); }
     catch (error) { onError(error instanceof Error ? error.message : "Image upload failed"); }
     finally { setBusy(false); }
   }
@@ -258,6 +271,20 @@ export function ShareImageField({ draft, update, onError }: {
     <p className={styles.framingNote}>
       {busy ? "Uploading…" : shareMediaNotice(status)}
     </p>
+    {/*
+      * A format the card cannot draw, said out loud.
+      *
+      * The renderer behind link previews draws PNG and JPEG. A WebP or GIF
+      * nominated before this was known produces a card with everything on it
+      * except the picture — which looks exactly like a creation that has no
+      * artwork, and is why this went a release without being noticed. New
+      * uploads are converted on the way in; this is for the ones already
+      * stored, and it names the fix rather than the fault.
+      */}
+    {unrenderable && <p className={styles.framingNote} role="status">
+      Link previews cannot draw {unrenderable} images, so this one is left off the card.
+      Re-upload it here as a PNG or JPEG and it will appear.
+    </p>}
     <p className={styles.framingNote}>
       Afterglow reviews the image before it can appear outside the site, so choosing a different one sends it back for review.
       You cannot mark your own image safe, and nothing here changes who can read your page.
