@@ -15,7 +15,7 @@ import { RichMessage, StyledMessage, openingBlocksFor } from "@/components/rich"
 import {
   ArrowDown, ArrowUp, Bell, BookMarked, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight,
   Compass, Eraser, FileText, GitBranch, Globe2, LoaderCircle, LogOut, MessagesSquare,
-  Flag, Gauge, Pencil, Play, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Sparkles, Star, Trash2,
+  Flag, Gauge, Image as ImageIcon, Pencil, Play, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Sparkles, Star, Trash2,
   TriangleAlert, Trophy, UserRound, Users, X,
 } from "lucide-react";
 import { ChatsView } from "./ChatsView";
@@ -31,6 +31,7 @@ import { SettingsSheet } from "./SettingsSheet";
 import { ShellNavProvider } from "./ShellNav";
 import { RankingsView } from "@/components/rankings";
 import { AdminReports } from "@/components/admin/AdminReports";
+import { ShareMediaReview } from "@/components/admin/ShareMediaReview";
 import { unreadLabel } from "@/lib/notifications";
 import { clearUnreadNotifications, useUnreadNotifications } from "@/lib/notification-state";
 import { activeInstructionCount, instructionSummary } from "@/lib/chat-instructions";
@@ -440,7 +441,14 @@ export default function AppShell() {
         { id: "settings", label: "Settings", icon: Settings, match: () => false, open: () => { setSettingsOpen(true); setSidebarOpen(false); } },
       ],
     },
-    ...(isModerator?[{id:"moderation",label:"Admin",items:[{id:"reports",label:"Reports",icon:Flag,match:(view:AppView)=>view==="reports",open:()=>goToView("reports")}]}]:[]),
+    ...(isModerator?[{id:"moderation",label:"Admin",items:[
+      {id:"reports",label:"Reports",icon:Flag,match:(view:AppView)=>view==="reports",open:()=>goToView("reports")},
+      // Classifying nominated share images. A separate queue from reports
+      // because it is a different job: nothing here is a complaint, and every
+      // item is a creator waiting on Afterglow rather than a creation somebody
+      // objected to.
+      {id:"share-media",label:"Share images",icon:ImageIcon,match:(view:AppView)=>view==="share-media",open:()=>goToView("share-media")},
+    ]}]:[]),
   ], [goToView, openOwnProfile,isModerator]);
 
   /** What a component deep inside a surface uses to navigate; see ShellNav.tsx. */
@@ -1316,6 +1324,7 @@ export default function AppShell() {
       /> : activeView === "notifications" ? <NotificationsView onOpenMenu={toggleMenu} />
         : activeView === "rankings" ? <RankingsView onOpenMenu={toggleMenu} />
         : activeView === "reports" ? (isModerator?<AdminReports onOpenMenu={toggleMenu}/>:<DiscoveryFeed onOpenMenu={toggleMenu}/>)
+        : activeView === "share-media" ? (isModerator?<ShareMediaReview onOpenMenu={toggleMenu}/>:<DiscoveryFeed onOpenMenu={toggleMenu}/>)
         : selected && adultPrompt ? (
           /* The same confirmation, reached from an adult-capable story rather
              than from a gate in front of one. */

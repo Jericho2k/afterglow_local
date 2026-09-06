@@ -1247,3 +1247,31 @@
 .importNotice strong { font-size: 11px; }
 .importNotice small { color: var(--muted); font-size: 9.5px; line-height: 1.55; }
 .importNotice ul { margin: 3px 0 0; padding-left: 16px; color: var(--muted); font-size: 9.5px; line-height: 1.6; }
+
+/*
+ * Nominating a share image.
+ *
+ * Three tiles rather than a dropdown, because the choice is between PICTURES
+ * and a creator cannot make it from three words. The selected one is marked by
+ * its border rather than by a tick, so the images stay the thing being read.
+ */
+.shareOptions { display: flex; flex-wrap: wrap; gap: 10px; }
+.shareOption {
+  display: flex; flex-direction: column; gap: 6px; align-items: center;
+  padding: 8px; border-radius: 14px; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, 0.03);
+  color: var(--faint); font: inherit; font-size: 9px;
+}
+.shareOption:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
+.shareOption:disabled { opacity: 0.4; cursor: default; }
+.shareOption[data-selected] {
+  border-color: rgba(232, 121, 169, 0.55);
+  background: rgba(232, 121, 169, 0.1);
+  color: var(--rose2);
+}
+.shareOption input { display: none; }
+.shareThumb {
+  display: grid; place-items: center; width: 92px; aspect-ratio: 16 / 9;
+  border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #120f13;
+}
+.shareThumb img { width: 100%; height: 100%; object-fit: cover; }

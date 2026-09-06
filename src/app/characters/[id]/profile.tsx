@@ -28,6 +28,7 @@ import { toggleCreationSave } from "@/lib/saves";
 import { shareLink, shareMessage } from "@/lib/share";
 import { avatarSource, characterAvatarBucket, profileAvatarBucket } from "@/lib/storage";
 import { backFallbacks } from "@/lib/back-navigation";
+import { readCreation, rememberCreation } from "@/lib/creation-cache";
 import { markEditorOpenedFromCreation } from "@/lib/editor-navigation";
 import { BackButton, MoreMenu, type MoreMenuItem } from "@/components/nav";
 import { iconButtonClass } from "@/components/ui";
@@ -84,30 +85,14 @@ function relative(value: string) {
   return `${years} year${years === 1 ? "" : "s"} ago`;
 }
 
-/**
- * What this tab has already been shown, per creation.
- *
- * Module scope, so it survives the component being unmounted and remounted by
- * a navigation, and dies with the tab. It holds only what the API already
- * returned to this reader — nothing is derived, nothing is shared, and every
- * entry is replaced by the next successful fetch for the same creation.
- *
- * Bounded, because a reader can walk a long way through a cast: the oldest
- * entries are dropped, so a browsing session cannot grow this without limit.
+/*
+ * What this tab has already been shown, per creation — see
+ * src/lib/creation-cache.ts, which owns the store. It used to live here, and
+ * moved out for one reason: the editor has to be able to forget an entry after
+ * a save, or the page it navigates back to paints the copy that predates it.
  */
-const creationCacheLimit = 12;
-const creationCache = new Map<string, { detail: Detail | null; comments: CharacterComment[] | null }>();
-
-function rememberCreation(characterId: string, patch: Partial<{ detail: Detail; comments: CharacterComment[] }>) {
-  const existing = creationCache.get(characterId) ?? { detail: null, comments: null };
-  creationCache.delete(characterId);
-  creationCache.set(characterId, { ...existing, ...patch });
-  while (creationCache.size > creationCacheLimit) {
-    const oldest = creationCache.keys().next().value;
-    if (oldest === undefined) break;
-    creationCache.delete(oldest);
-  }
-}
+const remember = (characterId: string, patch: Partial<{ detail: Detail; comments: CharacterComment[] }>) =>
+  rememberCreation<Detail, CharacterComment>(characterId, patch);
 
 export default function CharacterProfile({ characterId }: { characterId: string }) {
   const router = useRouter();
@@ -169,7 +154,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
   }, []);
 
   useEffect(() => {
-    const cached = creationCache.get(characterId);
+    const cached = readCreation<Detail, CharacterComment>(characterId);
     if (cached) { setDetail(cached.detail); setComments(cached.comments); }
 
     /*
@@ -193,7 +178,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         if (!response.ok) throw new Error(body.error || "Could not open this character");
         if (stopped()) return;
         setDetail(body);
-        rememberCreation(characterId, { detail: body });
+        remember(characterId, { detail: body });
       })
       .catch((reason) => {
         if (stopped()) return;
@@ -208,7 +193,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
       .then((loaded) => {
         if (stopped()) return;
         setComments(loaded);
-        rememberCreation(characterId, { comments: loaded });
+        remember(characterId, { comments: loaded });
       })
       .catch(() => { if (!stopped()) setComments((existing) => existing ?? []); });
 
@@ -359,7 +344,7 @@ export default function CharacterProfile({ characterId }: { characterId: string 
         // The cache is what a Back into this page paints from, so a save the
         // reader just made has to be in it — otherwise returning here would
         // show the bookmark un-filled again for a moment.
-        rememberCreation(characterId, { detail: next });
+        remember(characterId, { detail: next });
         return next;
       }),
     );

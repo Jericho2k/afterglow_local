@@ -21,7 +21,10 @@
  * knows what an Afterglow URL can look like.
  */
 
-export const shellViews = ["home", "chats", "worlds", "personas", "profile", "saved", "creations", "notifications", "rankings", "reports"] as const;
+// "share-media" is the moderator's classification queue. Like "reports" it is
+// a surface only a moderator can open; the shell decides that, and a URL
+// naming it for anybody else resolves to Discovery.
+export const shellViews = ["home", "chats", "worlds", "personas", "profile", "saved", "creations", "notifications", "rankings", "reports", "share-media"] as const;
 export type ShellView = (typeof shellViews)[number];
 export type AppView = ShellView | "chat";
 

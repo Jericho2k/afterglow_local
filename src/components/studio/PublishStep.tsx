@@ -5,6 +5,7 @@ import { creationTitle, creationTypeLabels } from "@/lib/creation";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import type { CharacterVisibility } from "@/lib/types";
 import { contentModeDescriptions, contentModeLabels, contentModes, publicVisibilityNotice } from "@/lib/content-mode";
+import { ShareImageField } from "./MediaFields";
 import { ChoiceList, Field, SectionCard, TextInput } from "./fields";
 import type { CreationDraft, DraftProblem } from "./draft";
 import styles from "./studio.module.css";
@@ -16,12 +17,13 @@ import styles from "./studio.module.css";
  * private, unlisted and public behave as they always have, and chats,
  * memories and stories stay private in every case.
  */
-export function PublishStep({ draft, update, problems, onGoToStep, onDelete, existing }: {
+export function PublishStep({ draft, update, problems, onGoToStep, onDelete, onError, existing }: {
   draft: CreationDraft;
   update: (changes: Partial<CreationDraft>) => void;
   problems: DraftProblem[];
   onGoToStep: (step: string) => void;
   onDelete?: () => void;
+  onError: (message: string) => void;
   existing: boolean;
 }) {
   const cover = avatarSource(characterAvatarBucket, draft.avatarPath, draft.avatarUrl);
@@ -120,15 +122,17 @@ export function PublishStep({ draft, update, problems, onGoToStep, onDelete, exi
       <Field label="Share description" optional hint="One line, safe for anywhere a link can be pasted.">
         <TextInput value={draft.shareTagline ?? ""} onChange={(shareTagline) => update({ shareTagline })} maxLength={200} placeholder="A line that works on somebody's work machine" />
       </Field>
-      <p className={styles.hint}>
-        {/*
-          * Said plainly, because the alternative is a creator discovering the
-          * rule when their preview does not appear. Nomination is theirs;
-          * classification is not, and pretending otherwise would make the
-          * policy a checkbox.
-          */}
-        Preview images are reviewed by Afterglow before they can appear outside the site. Until yours is reviewed, shared links show an Afterglow card instead of your artwork.
-      </p>
+      {/*
+        * Nomination, which is the creator's half of the media rule.
+        *
+        * This section used to state the rule and offer nothing to act on: it
+        * said preview images were reviewed, while the creator had no way to say
+        * WHICH image was being put forward. The control below is that missing
+        * half, and it deliberately changes nothing about classification —
+        * choosing a different image sends it back to unreviewed, which the
+        * server enforces in the same statement that stores the change.
+        */}
+      <ShareImageField draft={draft} update={update} onError={onError} />
     </SectionCard>}
 
     <p className={styles.hint}>

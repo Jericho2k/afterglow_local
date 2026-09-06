@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { artPresentation } from "./art-presentation";
 import { contentMode, contentModeFromLegacyFlag, shareMediaStatus } from "./content-mode";
 import { maxLoreBlockText, normalizeBlocks } from "./rich-content";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
@@ -1219,6 +1220,20 @@ export function characterFromRow(row: Record<string, unknown>, viewerId?: string
     shareMediaStatus: shareMediaStatus(row.share_media_status),
     shareTitle: String(row.share_title || ""),
     shareTagline: String(row.share_tagline || ""),
+    /*
+     * The wide artwork and its framing.
+     *
+     * Absent from this reader until now, which is where a saved focal point
+     * went. Every write path stored `banner_path`, `banner_url` and
+     * `art_presentation` correctly and every query selected them, but the row
+     * became a `Character` HERE — so the editor reopened on a blank banner, the
+     * signed-in page fell back to the cover, and the next save wrote the empty
+     * draft back over the stored document. A column that is selected and never
+     * read is indistinguishable from one that was never written.
+     */
+    bannerPath: String(row.banner_path || ""),
+    bannerUrl: String(row.banner_url || ""),
+    artPresentation: artPresentation(row.art_presentation),
     saveCount: Number(row.like_count || 0), savedByViewer: Boolean(row.saved_by_viewer),
     creator: row.creator_id ? { id: String(row.creator_id), username: String(row.creator_username || ""), displayName: String(row.creator_display_name || ""), avatarPath: String(row.creator_avatar_path || "") } : null,
     ownedByViewer,
@@ -1249,6 +1264,12 @@ export function creationSummaryFromRow(row: Record<string, unknown>, viewerId: s
     tagline: String(row.tagline || ""),
     avatarUrl: String(row.avatar_url || ""),
     avatarPath: String(row.avatar_path || ""),
+    // Cards crop the same artwork the page does, so they read the same
+    // framing. Without it a creator's focal point applied to the anonymous
+    // shelf and to nothing a signed-in reader ever saw.
+    bannerPath: String(row.banner_path || ""),
+    bannerUrl: String(row.banner_url || ""),
+    artPresentation: artPresentation(row.art_presentation),
     accent: String(row.accent || "#e879a9"),
     tags: textArrayFromRow(row.tags),
     hashtags: textArrayFromRow(row.hashtags),

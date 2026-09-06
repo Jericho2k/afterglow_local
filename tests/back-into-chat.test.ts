@@ -123,14 +123,24 @@ describe("the shell applies them", () => {
  * it.
  */
 describe("returning to a page you have already read", () => {
-  for (const [label, path] of [
-    ["the creation page", "../src/app/characters/[id]/profile.tsx"],
-    ["a cast member's page", "../src/app/characters/[id]/cast/[memberId]/profile.tsx"],
+  /*
+   * The creation page's store moved into `src/lib/creation-cache.ts` so that a
+   * save can DELETE an entry: returning from the editor remounts this page, and
+   * an entry written before the edit would be painted in the first frame. The
+   * cast member's page still owns its own, because nothing else has a reason to
+   * invalidate it. So the store is named separately from the page that reads
+   * it, and the assertions below follow it rather than assuming both live in
+   * the component.
+   */
+  for (const [label, path, store] of [
+    ["the creation page", "../src/app/characters/[id]/profile.tsx", "../src/lib/creation-cache.ts"],
+    ["a cast member's page", "../src/app/characters/[id]/cast/[memberId]/profile.tsx", "../src/app/characters/[id]/cast/[memberId]/profile.tsx"],
   ] as const) {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    const cache = readFileSync(new URL(store, import.meta.url), "utf8");
 
     it(`${label} paints from what it already had`, () => {
-      expect(source).toMatch(/Cache\.get\(/);
+      expect(source).toMatch(/(Cache\.get\(|readCreation<)/);
       expect(source).toMatch(/if \(cached\)/);
     });
 
@@ -145,7 +155,8 @@ describe("returning to a page you have already read", () => {
     });
 
     it(`${label} bounds what it remembers`, () => {
-      expect(source).toMatch(/CacheLimit = \d+/);
+      expect(cache).toMatch(/CacheLimit = \d+/);
+      expect(cache).toMatch(/\.delete\(oldest\)/);
     });
   }
 
