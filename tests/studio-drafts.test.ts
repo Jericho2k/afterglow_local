@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blankDraft, draftFromCharacter, type CreationDraft } from "@/components/studio/draft";
+import { blankDraft, draftFromCharacter, isMeaningfulDraft, type CreationDraft } from "@/components/studio/draft";
 import {
   draftKeyPrefix, draftLabel, draftStorageKey, forgetAllStoredDrafts, forgetStoredDraft,
   hasResumableDrafts, listStoredDrafts, readStoredDraft, writeStoredDraft,
@@ -187,6 +187,13 @@ describe("continuing a draft restores all of it", () => {
       accent: "#b892f0",
       visibility: "unlisted",
       nsfwEnabled: true,
+      // Presentation, which is work a creator does with a pointer rather than
+      // a keyboard and is therefore the easiest kind to forget about here: a
+      // focal point moved and a banner uploaded is a session worth keeping.
+      bannerPath: "users/a/avatars/banner.png",
+      artPresentation: { cover: { focal: { x: 0.31, y: 0.19 } }, banner: { focal: { x: 0.72, y: 0.36 } } },
+      shareTitle: "Meridian Street",
+      shareTagline: "Three roommates. One lift that works.",
     });
 
     writeStoredDraft(draftStorageKey(null), rich, target);
@@ -195,6 +202,36 @@ describe("continuing a draft restores all of it", () => {
     // whole draft, so Continue restores the session rather than an outline.
     expect(summary.draft).toEqual(rich);
     expect(readStoredDraft(null, target)?.draft).toEqual(rich);
+    // Named separately because a focal point is a nested document rather than a
+    // string: `toEqual` above would still pass if it came back as `{}` and the
+    // fixture were quietly changed to match.
+    expect(readStoredDraft(null, target)?.draft.artPresentation)
+      .toEqual({ cover: { focal: { x: 0.31, y: 0.19 } }, banner: { focal: { x: 0.72, y: 0.36 } } });
+    expect(readStoredDraft(null, target)?.draft.bannerPath).toBe("users/a/avatars/banner.png");
+  });
+
+  it("does not offer framing back over the record that already holds it", () => {
+    /*
+     * The other half of the same rule, and the destructive one.
+     *
+     * A draft is only ever OFFERED against a baseline — the record the studio
+     * loaded, or the copy the last save returned. A stored draft that matches
+     * the saved record is stale work, not recoverable work, and restoring it
+     * would put the creator's own pre-save state back in front of them. The
+     * signature has to see a focal point for both halves of that to work: too
+     * blind and the draft is never kept, too eager and it is never let go.
+     */
+    const saved = draft({ title: "Seraphine", artPresentation: { cover: { focal: { x: 0.31, y: 0.19 } } } });
+    const target = store();
+    put(target, draftStorageKey("11111111-1111-4111-8111-111111111111"), saved);
+    const [summary] = listStoredDrafts(target);
+    // It is real work measured against emptiness, which is what the Create
+    // screen's list asks…
+    expect(summary.draft.artPresentation).toEqual({ cover: { focal: { x: 0.31, y: 0.19 } } });
+    // …and nothing at all measured against the record that was just saved,
+    // which is what the studio asks before restoring one.
+    expect(isMeaningfulDraft(summary.draft, saved)).toBe(false);
+    expect(isMeaningfulDraft({ ...summary.draft, artPresentation: { cover: { focal: { x: 0.4, y: 0.19 } } } }, saved)).toBe(true);
   });
 
   it("stamps every write with when it happened, so the card can say", () => {

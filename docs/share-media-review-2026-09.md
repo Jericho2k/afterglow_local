@@ -80,6 +80,15 @@ as safe artwork — the two answer different questions, and conflating them is t
 mistake content modes exist to end. The Clean / Adult-capable / Adult-focused
 access rules are untouched.
 
+> **Superseded in part, later in September 2026.** The sentence above about `clean` still
+> holds for what `shareMedia` releases — a classification is still a
+> classification, and nothing here treats a content mode as one. But the
+> question a share card asks turned out to be a different one: an open
+> creation's artwork is on a page anonymous readers already see, so the card now
+> composites it without waiting for a review, while a moderator's `adult` or
+> `rejected` still withholds it and an adult-focused creation still gets nothing
+> but classified media. See docs/share-card-artwork-2026-09.md.
+
 ## While the queue is empty
 
 The branded fallback is not a placeholder to be tolerated until review catches
@@ -88,6 +97,13 @@ handle, creation type, the creator's outward-facing line, the creation's accent
 — so an unreviewed creation still gets a preview that says which creation it is.
 Approval upgrades that card by compositing the artwork INTO it; it is not the
 difference between a preview and no preview.
+
+**What we learned by shipping it:** in practice the queue is not merely empty,
+it is empty for every creation at once, so "an unreviewed creation still gets a
+preview that says which creation it is" was true and the preview was still the
+same artless card for the whole catalogue. The fix was not to work the queue
+harder — it was to notice that the rule was answering the wrong question for two
+of the three modes. Again: docs/share-card-artwork-2026-09.md.
 
 ## If an automated classifier is added later
 
