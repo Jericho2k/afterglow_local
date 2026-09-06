@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, Sparkles, X } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { creationTitle, creationTypeLabels } from "@/lib/creation";
+import { forgetCreation } from "@/lib/creation-cache";
 import { adultTagsIn } from "@/lib/tags";
 import type { Character, CharacterGalleryImage, CreationType, World } from "@/lib/types";
 import { BasicsStep } from "./BasicsStep";
@@ -300,6 +301,20 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
 
       const complete: Character = { ...saved.character, gallery: stored ?? saved.character.gallery };
       const created = !record;
+      /*
+       * The creation page must not be able to paint what this save replaced.
+       *
+       * Saving from `/characters/{id}/edit` returns THROUGH HISTORY to the
+       * creation, which remounts its page, which paints from the per-tab cache
+       * before its own fetch lands. That entry was written before the edit, so
+       * a creator who had just moved a focal point or uploaded a banner was
+       * shown the previous presentation — briefly on a good network, and until
+       * they reloaded if the revalidation failed. Forgetting it here covers
+       * every way the studio is reached and both save controls, and the Back
+       * semantics the editor computes are untouched: the destination is the
+       * same entry, it simply has nothing stale left to draw.
+       */
+      forgetCreation(complete.id);
       clearStoredDraft();
       storageKey.current = draftStorageKey(complete.id);
       setRecord(complete);
@@ -325,6 +340,9 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
     setBusy(true);
     try {
       await api(`/api/characters/${record.id}`, { method: "DELETE" });
+      // Nothing may paint a creation that no longer exists, for the same
+      // reason a save forgets one: this tab's cache outlives the page.
+      forgetCreation(record.id);
       clearStoredDraft();
       onDeleted();
     } catch (reason) {
@@ -414,6 +432,7 @@ export function CreationStudio({ character, worlds, startStep, onClose, onSaved,
                     problems={problems}
                     existing={Boolean(record)}
                     onGoToStep={goToStep}
+                    onError={setError}
                     onDelete={record ? () => void remove() : undefined}
                   />}
       </div>

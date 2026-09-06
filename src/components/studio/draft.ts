@@ -1,3 +1,4 @@
+import { artPresentation, artPresentationDocument } from "@/lib/art-presentation";
 import { normalizeBlocks } from "@/lib/rich-content";
 import { adultTagsIn } from "@/lib/tags";
 import type { Character, CharacterCastMember, CharacterGalleryImage, CreationType } from "@/lib/types";
@@ -155,10 +156,33 @@ export function draftPayload(draft: CreationDraft) {
  * before typing anything is not yet a draft. When editing, a type switch is a
  * real change to a real record, so it counts.
  */
+/*
+ * Every text field a creator can edit and the server stores.
+ *
+ * The list is the signature, so a field missing from it is a field the studio
+ * does not believe changed: autosave keeps nothing, the restore notice never
+ * appears, and a creator who typed only into that field loses it to a closed
+ * tab. That is what happened to the outward-facing copy and to the banner —
+ * both were added to the draft, to the payload and to the schema, and neither
+ * was added here. When a field is added to `CreationDraft`, it belongs in this
+ * list or in `contentSignature` below, and `every creator-editable field is in
+ * the draft signature` in tests/studio-draft.test.ts is what says so.
+ *
+ * `shareMediaStatus` is deliberately NOT here, and is the only stored field
+ * that is not: it is the platform's classification of nominated media, not
+ * something a creator edits, and a status the server changed under them must
+ * not make their draft look dirty.
+ */
 const meaningfulText = [
   "name", "title", "tagline", "description", "userRole", "backstory", "lorebook",
   "personality", "scenario", "greeting", "exampleDialogue", "responseDirective",
   "boundaries", "sourceMaterial", "avatarUrl", "avatarPath", "accent",
+  // Outward-facing copy and nominated share media: creator-authored, stored,
+  // and previously invisible to every dirty check in the studio.
+  "shareTitle", "shareTagline", "shareImagePath", "shareImageUrl",
+  // The wide artwork. Its FRAMING is a document rather than a string and is
+  // canonicalised separately below.
+  "bannerPath", "bannerUrl",
 ] as const satisfies readonly (keyof CreationDraft)[];
 
 function contentSignature(draft: CreationDraft, includeType: boolean) {
@@ -166,7 +190,25 @@ function contentSignature(draft: CreationDraft, includeType: boolean) {
     includeType ? draft.creationType : "",
     ...meaningfulText.map((field) => String(draft[field] ?? "").trim()),
     draft.visibility,
+    draft.contentMode,
     draft.nsfwEnabled,
+    /*
+     * Framing, compared as it will be STORED.
+     *
+     * `artPresentationDocument` is what the save writes, so comparing its
+     * output is what makes "opened the picker and closed it again" identical
+     * to "never opened it" — an empty `cover` key is not a change — while a
+     * focal point moved by one percent is.
+     */
+    artPresentationDocument(artPresentation(draft.artPresentation)),
+    /*
+     * Rich blocks, which are the only place an image inside a description or
+     * an opening lives. Their plain-text twins are already in the list above
+     * and would not move if a creator did nothing but place a picture.
+     */
+    normalizeBlocks(draft.descriptionRich),
+    normalizeBlocks(draft.greetingRich),
+    (draft.alternateGreetingsRich ?? []).map((blocks) => normalizeBlocks(blocks)),
     // A cast member added and left blank is still a deliberate act, so the
     // count matters as much as what was typed into it.
     draft.cast.map((member) => [member.name, member.role, member.description, member.tagline, member.avatarPath, member.avatarUrl].map((value) => String(value ?? "").trim())),

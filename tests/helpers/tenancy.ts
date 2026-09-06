@@ -68,6 +68,7 @@ export const migrationFiles = [
   "0035_writer_cache_probe.sql",
   "0036_public_content_modes.sql",
   "0037_art_presentation_and_links.sql",
+  "0038_share_media_review.sql",
 ] as const;
 
 /**

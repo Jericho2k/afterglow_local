@@ -39,6 +39,16 @@ export type PublicSafeLanding = {
   shareTagline: string;
   accent: string;
   contentMode: ContentMode;
+  /**
+   * Character, Cast or Scenario.
+   *
+   * Structure, not content: it says what a reader would be opening rather than
+   * what is inside it, so a gated creation may state it on the card that
+   * withholds everything else. A row selected before 0038 carries no
+   * `creation_type` here at all, and the shared derivation below answers
+   * "character" for it exactly as every other reader of these rows does.
+   */
+  creationType: CreationType;
   share: ShareMedia;
   creator: { username: string; displayName: string };
 };
@@ -181,6 +191,7 @@ export async function publicSafeLanding(id: string): Promise<PublicSafeLanding |
     shareTagline: String(row.share_tagline || ""),
     accent: String(row.accent || "#e879a9"),
     contentMode: contentMode(row.content_mode),
+    creationType: creationTypeOf(row),
     share: shareMedia({
       shareImagePath: String(row.share_image_path || ""),
       shareImageUrl: String(row.share_image_url || ""),

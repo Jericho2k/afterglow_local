@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { ImagePlus, Images, Trash2, Upload, X } from "lucide-react";
+import { shareMediaNotice } from "@/lib/content-mode";
 import { avatarSource, characterAvatarBucket } from "@/lib/storage";
 import { uploadImage } from "@/lib/uploads";
-import type { StagedGalleryImage } from "./draft";
+import type { CreationDraft, StagedGalleryImage } from "./draft";
 import { Field, SectionCard, TextInput } from "./fields";
 import styles from "./studio.module.css";
 
@@ -153,4 +154,113 @@ export function QuickFactsEditor({ facts, onChange }: {
       Add a fact
     </button>
   </div>;
+}
+
+/**
+ * Which image a link preview should use.
+ *
+ * The half of the share-media rule a creator owns. Afterglow decides whether an
+ * image may leave the site; the creator decides WHICH image is put forward for
+ * that decision, and until now they could not — the studio told them previews
+ * were reviewed and gave them nothing to submit. A creation's cover was
+ * nominated by default and there was no way to say "not that one, this one".
+ *
+ * Three answers, because there are three images a creation can have: the cover,
+ * the desktop banner, and one chosen for this purpose alone. The third exists
+ * because the artwork that makes a creation compelling on its own page is not
+ * always the artwork that belongs in somebody's work chat, and a creator who
+ * knows that needs somewhere to put the quieter picture.
+ *
+ * Nominating is NOT classifying, and the copy says so rather than implying a
+ * choice here changes what is allowed. Changing the nomination sends the new
+ * image back to unreviewed — enforced by the server, in the same statement that
+ * writes the change — so this control cannot be used to swap an approved image
+ * for an unapproved one.
+ */
+export function ShareImageField({ draft, update, onError }: {
+  draft: Pick<CreationDraft, "avatarPath" | "avatarUrl" | "bannerPath" | "bannerUrl" | "shareImagePath" | "shareImageUrl" | "shareMediaStatus">;
+  update: (changes: Partial<CreationDraft>) => void;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const sharePath = (draft.shareImagePath ?? "").trim();
+  const shareUrl = (draft.shareImageUrl ?? "").trim();
+  const bannerPath = (draft.bannerPath ?? "").trim();
+  const bannerUrl = (draft.bannerUrl ?? "").trim();
+  const nominated = Boolean(sharePath || shareUrl);
+  const usesBanner = nominated && ((bannerPath && sharePath === bannerPath) || (bannerUrl && shareUrl === bannerUrl));
+  // Nothing nominated means the cover, which is what `nominatedMedia` resolves
+  // on the server. "Leave it alone" is an answer rather than an omission.
+  const choice: "cover" | "banner" | "custom" = !nominated ? "cover" : usesBanner ? "banner" : "custom";
+  const status = draft.shareMediaStatus ?? "unreviewed";
+
+  const cover = avatarSource(characterAvatarBucket, draft.avatarPath, draft.avatarUrl);
+  const banner = avatarSource(characterAvatarBucket, bannerPath, bannerUrl);
+  const custom = avatarSource(characterAvatarBucket, choice === "custom" ? sharePath : "", choice === "custom" ? shareUrl : "");
+
+  async function uploadShareImage(file: File) {
+    setBusy(true);
+    try { update({ shareImagePath: await uploadImage(file, characterAvatarBucket), shareImageUrl: "" }); }
+    catch (error) { onError(error instanceof Error ? error.message : "Image upload failed"); }
+    finally { setBusy(false); }
+  }
+
+  const options: { id: typeof choice; label: string; preview: string; available: boolean; select?: () => void }[] = [
+    { id: "cover", label: "Cover artwork", preview: cover, available: Boolean(cover), select: () => update({ shareImagePath: "", shareImageUrl: "" }) },
+    {
+      id: "banner", label: "Desktop banner", preview: banner, available: Boolean(banner),
+      // The path is copied rather than referenced, so this is a snapshot of the
+      // banner as it stands. Replacing the banner later does not silently
+      // re-submit a different picture under an approval granted to this one.
+      select: () => update({ shareImagePath: bannerPath, shareImageUrl: bannerPath ? "" : bannerUrl }),
+    },
+    { id: "custom", label: "Another image", preview: custom, available: true },
+  ];
+
+  return <Field
+    label="Share image"
+    optional
+    hint="The image Afterglow composes a link preview around. Your page is unaffected — this is only what leaves the site."
+  >
+    <div className={styles.shareOptions}>
+      {options.map((option) => {
+        const selected = choice === option.id;
+        const tile = <>
+          <span className={styles.shareThumb}>
+            {option.preview ? <img src={option.preview} alt="" /> : <ImagePlus size={18} aria-hidden />}
+          </span>
+          <small>{option.label}</small>
+        </>;
+        // The third option is a file input rather than a button: choosing it IS
+        // uploading, and a radio that opens a file dialog would leave a
+        // selected state with nothing behind it.
+        if (option.id === "custom") {
+          return <label key={option.id} className={styles.shareOption} data-selected={selected || undefined}>
+            {tile}
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={busy} onChange={async (event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) await uploadShareImage(file);
+            }} />
+          </label>;
+        }
+        return <button
+          key={option.id}
+          type="button"
+          className={styles.shareOption}
+          data-selected={selected || undefined}
+          disabled={!option.available}
+          aria-pressed={selected}
+          onClick={option.select}
+        >{tile}</button>;
+      })}
+    </div>
+    <p className={styles.framingNote}>
+      {busy ? "Uploading…" : shareMediaNotice(status)}
+    </p>
+    <p className={styles.framingNote}>
+      Afterglow reviews the image before it can appear outside the site, so choosing a different one sends it back for review.
+      You cannot mark your own image safe, and nothing here changes who can read your page.
+    </p>
+  </Field>;
 }

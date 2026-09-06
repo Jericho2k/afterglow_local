@@ -320,6 +320,27 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const rich = richFields(c);
 
   const row = await asUser(account.id, async (client) => {
+    /*
+     * A classification approves AN IMAGE, so changing the image withdraws it.
+     *
+     * `share_media_status` is absent from `characterSchema`, so a payload
+     * cannot set it — and that was only ever half the rule. Without the reset
+     * below, a creator could have their cover approved for external previews
+     * and then swap in anything at all: the row would still say `safe`, and the
+     * new file would go straight into a Discord embed with nobody having looked
+     * at it.
+     *
+     * The comparison collapses the row to the ONE image that would actually be
+     * published, in the order `nominatedMedia` resolves it — a dedicated share
+     * image, then a share URL, then the cover. So re-cropping a cover that
+     * nothing nominates does not cost a creator their approved share image, and
+     * replacing the image that IS nominated always does.
+     *
+     * It happens inside the UPDATE rather than across a read and a write, where
+     * bare column names mean the row as it stands BEFORE this statement. A
+     * moderator approving at the same moment therefore cannot be overwritten by
+     * a status this request read a moment earlier.
+     */
     // user_id in the predicate means a request naming somebody else's
     // character updates nothing rather than being silently accepted.
     const result = await client.query(
@@ -328,6 +349,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
          description_rich=$28::jsonb,greeting_rich=$29::jsonb,alternate_greetings_rich=$30::jsonb,
          content_mode=$31,share_title=$32,share_tagline=$33,share_image_path=$34,share_image_url=$35,
          banner_path=$36,banner_url=$37,art_presentation=$38::jsonb,
+         share_media_status=CASE WHEN
+             (CASE WHEN share_image_path<>'' THEN share_image_path WHEN share_image_url<>'' THEN share_image_url WHEN avatar_path<>'' THEN avatar_path ELSE avatar_url END)
+             = (CASE WHEN $34<>'' THEN $34 WHEN $35<>'' THEN $35 WHEN $5<>'' THEN $5 ELSE $4 END)
+           THEN share_media_status ELSE 'unreviewed' END,
          published_at=CASE WHEN $18='public' AND published_at IS NULL THEN now() WHEN $18<>'public' THEN NULL ELSE published_at END,
          updated_at=now()
        WHERE id=$19 AND user_id=$20 RETURNING *`,

@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { publicCreationPage, publicSafeLanding } from "@/lib/public-view";
 import { indexableWithoutAccount, readableWithoutAccount, safeShareTitle } from "@/lib/content-mode";
-import { absoluteUrl, metaDescription, shareImageUrl } from "@/lib/site";
-import { characterAvatarBucket } from "@/lib/storage";
+import { absoluteUrl, metaDescription } from "@/lib/site";
+import { ogCardUrl } from "@/lib/og-card";
 import { currentAccount } from "@/lib/session";
 import CharacterProfile from "./profile";
 import { AdultCreationGate, PublicCreationView } from "./public-view";
@@ -41,7 +41,17 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     landing.shareTagline,
     open ? "Chat with lasting memory on Afterglow." : "An 18+ creation on Afterglow. Sign in and confirm your age to read it.",
   );
-  const image = shareImageUrl(landing.share, characterAvatarBucket, landing.accent);
+  /*
+   * Always the composed card, never the artwork itself.
+   *
+   * Handing a crawler the nominated file directly — which is what this did —
+   * published a creator's image with no title, no creator and no Afterglow on
+   * it, and made the preview a copy of an asset rather than a rendering of a
+   * decision: a later withdrawal of approval could not take it back. The route
+   * re-resolves this creation and applies the same `shareMedia` rule, so an
+   * unreviewed one composes a card with no photograph in it.
+   */
+  const image = ogCardUrl(landing.id);
   return {
     title: `${name} — Afterglow`,
     description,

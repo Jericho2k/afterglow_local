@@ -258,6 +258,24 @@ export type ShareMedia =
  */
 export function shareMedia(source: ShareMediaSource): ShareMedia {
   if (shareMediaStatus(source.status) !== "safe") return { kind: "fallback" };
+  return nominatedMedia(source);
+}
+
+/**
+ * WHICH image a creator has put forward, ignoring what the platform made of it.
+ *
+ * The order is the nomination itself: a dedicated share image wins, then a
+ * share URL, and a creator who nominated neither has nominated their cover —
+ * which is what makes "leave it alone" a working answer rather than a missing
+ * one.
+ *
+ * Separated from `shareMedia` so the two questions stay apart. `shareMedia`
+ * answers "may this leave Afterglow", and its answer is no for everything not
+ * classified safe; this answers "what would be reviewed", which the review
+ * queue and the studio both need to ask about an image that is not approved
+ * yet — precisely the case where the first function returns nothing.
+ */
+export function nominatedMedia(source: ShareMediaSource): ShareMedia {
   const sharePath = (source.shareImagePath || "").trim();
   if (sharePath) return { kind: "storage", path: sharePath };
   const shareUrl = (source.shareImageUrl || "").trim();
@@ -267,6 +285,50 @@ export function shareMedia(source: ShareMediaSource): ShareMedia {
   const avatarUrl = (source.avatarUrl || "").trim();
   if (avatarUrl) return { kind: "external", url: avatarUrl };
   return { kind: "fallback" };
+}
+
+/**
+ * The nominated image as one comparable value.
+ *
+ * A classification approves AN IMAGE, not a creation — so the moment the
+ * nominated image changes, the approval that was granted no longer describes
+ * what would be published, and the status has to return to `unreviewed`. That
+ * check needs a stable identity for "the image currently nominated", and this
+ * is it: empty when nothing is nominated, and equal for two rows exactly when
+ * they would publish the same file.
+ *
+ * The character update expresses the same collapse in SQL so the reset happens
+ * inside the UPDATE rather than across a read and a write — see
+ * `src/app/api/characters/[id]/route.ts`. Both orders are this one, and
+ * tests/share-media-review.test.ts holds them together.
+ */
+export function shareMediaCandidate(source: ShareMediaSource) {
+  const media = nominatedMedia(source);
+  if (media.kind === "storage") return media.path;
+  if (media.kind === "external") return media.url;
+  return "";
+}
+
+/**
+ * What a creator is told about the image they nominated.
+ *
+ * Written as a state of THEIR work rather than as a status code, because the
+ * thing they need to know is what is happening on the outside of Afterglow
+ * right now: an unreviewed image is not a failure and a rejected one is not a
+ * punishment, but both mean shared links currently show the branded card.
+ */
+export const shareMediaStatusLabels: Record<ShareMediaStatus, string> = {
+  unreviewed: "Waiting for review",
+  safe: "Approved for link previews",
+  adult: "Not used outside Afterglow",
+  rejected: "Not approved",
+};
+
+export function shareMediaNotice(status: ShareMediaStatus) {
+  if (status === "safe") return "Approved. Shared links and search results show this image on an Afterglow card.";
+  if (status === "adult") return "Reviewed as adult. It stays on your page; shared links show an Afterglow card instead.";
+  if (status === "rejected") return "Not approved for use outside Afterglow. It stays on your page; shared links show an Afterglow card.";
+  return "Waiting for review. Until it is reviewed, shared links show an Afterglow card instead of your artwork.";
 }
 
 /**

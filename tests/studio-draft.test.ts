@@ -152,3 +152,104 @@ describe("a stored draft survives the round trip through storage", () => {
     expect(isMeaningfulDraft(draftFromCharacter(legacy))).toBe(false);
   });
 });
+
+/**
+ * The audit that stops this happening again.
+ *
+ * Every field added to `CreationDraft` since the signature was written — the
+ * outward-facing copy, the nominated share image, the banner, the framing
+ * document, the content mode — was added to the draft, to the payload and to
+ * the schema, and to none of the studio's dirty checks. The result is a field
+ * a creator can edit, that the server stores, and that autosave will not keep:
+ * the change survives only if the tab does.
+ *
+ * So the check is exhaustive rather than a list of examples. Adding a field to
+ * the draft and not deciding what it means for dirtiness fails here, by name,
+ * with the reason spelled out below.
+ */
+describe("every creator-editable field is in the draft signature", () => {
+  /*
+   * A different value for each field, and the reason a handful are exempt.
+   *
+   * `null` means "deliberately not part of the signature", and each one is a
+   * field the CREATOR does not author:
+   *
+   *   profileType       derived from creationType; changing it alone is not a
+   *                     thing the studio can do.
+   *   creationType      the intro screen's own selector for a NEW creation —
+   *                     covered above, and dirty when editing a record.
+   *   shareMediaStatus  the platform's classification of nominated media. A
+   *                     moderator approving an image must not make an open
+   *                     studio look like it holds unsaved work.
+   */
+  const changes: Record<keyof CreationDraft, Partial<CreationDraft> | null> = {
+    name: { name: "Seraphine" },
+    title: { title: "Seraphine" },
+    tagline: { tagline: "The girl who writes your name" },
+    description: { description: "Sharp-tongued and guarded." },
+    descriptionRich: { descriptionRich: [{ type: "image", path: "users/a/inline.png", url: "", caption: "" }] },
+    userRole: { userRole: "Her rival" },
+    backstory: { backstory: "Raised on the quay." },
+    personality: { personality: "Guarded." },
+    scenario: { scenario: "A harbour at dusk." },
+    greeting: { greeting: "You again." },
+    greetingRich: { greetingRich: [{ type: "image", path: "users/a/opening.png", url: "", caption: "" }] },
+    alternateGreetings: { alternateGreetings: ["A second way in."] },
+    alternateGreetingsRich: { alternateGreetings: ["A second way in."], alternateGreetingsRich: [[{ type: "image", path: "users/a/alt.png", url: "", caption: "" }]] },
+    exampleDialogue: { exampleDialogue: "«You: hello»" },
+    responseDirective: { responseDirective: "Answer in short lines." },
+    boundaries: { boundaries: "No violence." },
+    sourceMaterial: { sourceMaterial: "The original paste." },
+    lorebook: { lorebook: "The quay was built twice." },
+    avatarPath: { avatarPath: "users/a/cover.png" },
+    avatarUrl: { avatarUrl: "https://example.test/cover.png" },
+    accent: { accent: "#66ccff" },
+    cast: { cast: [{ ...blankCastMember, name: "Mara" }] },
+    worldIds: { worldIds: ["bbbbbbbb-0000-4000-8000-000000000001"] },
+    tags: { tags: ["Romance"] },
+    hashtags: { hashtags: ["slowburn"] },
+    quickFacts: { quickFacts: [{ label: "Age", value: "27" }] },
+    gallery: { gallery: [{ storagePath: "users/a/one.png", externalUrl: "", caption: "" }] },
+    proposedWorld: { proposedWorld: { name: "The quay", description: "Separated by the import." } },
+    visibility: { visibility: "public" },
+    contentMode: { contentMode: "adult_capable" },
+    nsfwEnabled: { nsfwEnabled: true },
+    shareTitle: { shareTitle: "Slow burn" },
+    shareTagline: { shareTagline: "A quiet, unhurried romance." },
+    shareImagePath: { shareImagePath: "users/a/share.png" },
+    shareImageUrl: { shareImageUrl: "https://example.test/share.png" },
+    bannerPath: { bannerPath: "users/a/banner.png" },
+    bannerUrl: { bannerUrl: "https://example.test/banner.png" },
+    artPresentation: { artPresentation: { cover: { focal: { x: 0.3, y: 0.2 } } } },
+    profileType: null,
+    creationType: null,
+    shareMediaStatus: null,
+    // Moderation state. Optional on the record, never on the draft's blank,
+    // and written by Afterglow alone — a creation locked while it is reviewed
+    // is not a creator's unsaved edit.
+    moderationStatus: null,
+    moderationReason: null,
+  };
+
+  it("accounts for every field the draft carries", () => {
+    // Adding a field to `blankDraft` and not deciding here is the failure this
+    // exists to produce, and it names the field.
+    expect(Object.keys(blankDraft).filter((field) => !(field in changes))).toEqual([]);
+  });
+
+  it("counts a change to each of them as unsaved work", () => {
+    // A baseline that shares no value with the changes below, so "dirty"
+    // means the signature noticed rather than the value happening to differ.
+    const record = draftFromCharacter({ name: "Vale", title: "Vale", creationType: "character" });
+    const missed = Object.entries(changes)
+      .filter(([, change]) => change)
+      .filter(([, change]) => !isMeaningfulDraft({ ...record, ...change as Partial<CreationDraft> }, record))
+      .map(([field]) => field);
+    expect(missed).toEqual([]);
+  });
+
+  it("leaves the platform's own classification out of it", () => {
+    const record = draftFromCharacter({ name: "Seraphine", title: "Seraphine", creationType: "character" });
+    expect(isMeaningfulDraft({ ...record, shareMediaStatus: "safe" }, record)).toBe(false);
+  });
+});
