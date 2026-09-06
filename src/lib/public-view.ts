@@ -1,5 +1,5 @@
 import { asVisitor } from "./db";
-import { contentMode, isContentMode, shareMedia, shareMediaStatus, worldReadableWithoutAccount, type ShareMedia } from "./content-mode";
+import { contentMode, isContentMode, openCardMedia, shareMedia, shareMediaStatus, worldReadableWithoutAccount, type ShareMedia } from "./content-mode";
 import { artPresentation, type ArtPresentation } from "./art-presentation";
 import { creatorLinks, type CreatorLink } from "./creator-links";
 import { normalizeBlocks } from "./rich-content";
@@ -49,8 +49,42 @@ export type PublicSafeLanding = {
    * "character" for it exactly as every other reader of these rows does.
    */
   creationType: CreationType;
+  /**
+   * Media the PLATFORM has classified, for every mode.
+   *
+   * A fallback unless `share_media_status` is `safe`. This is the only route by
+   * which an adult-focused creation's own image reaches anything outside
+   * Afterglow, and it requires a moderator to have looked at that exact file.
+   */
   share: ShareMedia;
-  creator: { username: string; displayName: string };
+  /**
+   * What this creation's own public page already shows a stranger.
+   *
+   * Empty for an adult-focused creation, and empty at SOURCE: 0039 blanks all
+   * four columns behind it with a CASE, so a gated row cannot express its cover
+   * here even if a caller forgot to ask. For a clean or adult-capable creation
+   * it is the artwork an anonymous visitor sees by opening the page — which is
+   * why a link preview may composite it without waiting for a classification
+   * that protects nothing it has not already published.
+   */
+  openArt: {
+    /** The nominated image, or the cover when nothing is nominated. */
+    media: ShareMedia;
+    /**
+     * Whether `media` is the creation's primary artwork.
+     *
+     * True means the creator's cover focal point frames it; a separately
+     * nominated share image has no framing of its own to apply.
+     */
+    isCover: boolean;
+    presentation: ArtPresentation;
+  };
+  /**
+   * The creator, including the public profile picture their profile page and
+   * every creation page already show. Identity, not creation content, so it
+   * travels in every mode — including the gated one.
+   */
+  creator: { username: string; displayName: string; avatarPath: string };
 };
 
 export type PublicCreationCard = {
@@ -183,6 +217,12 @@ export async function publicSafeLanding(id: string): Promise<PublicSafeLanding |
   const rows = await asVisitor((client) => client.query("SELECT * FROM public_creation_safe_landing($1)", [id]));
   const row = rows.rows[0];
   if (!row) return null;
+  const mode = contentMode(row.content_mode);
+  // Trimmed here, because two things below ask the same question of them —
+  // which image to use, and whether that image is the cover the creator framed.
+  // A stray space in the column must not make one of them answer differently.
+  const openSharePath = String(row.open_share_image_path || "").trim();
+  const openShareUrl = String(row.open_share_image_url || "").trim();
   return {
     id: String(row.id),
     name: String(row.name || ""),
@@ -190,7 +230,7 @@ export async function publicSafeLanding(id: string): Promise<PublicSafeLanding |
     shareTitle: String(row.share_title || ""),
     shareTagline: String(row.share_tagline || ""),
     accent: String(row.accent || "#e879a9"),
-    contentMode: contentMode(row.content_mode),
+    contentMode: mode,
     creationType: creationTypeOf(row),
     share: shareMedia({
       shareImagePath: String(row.share_image_path || ""),
@@ -199,7 +239,32 @@ export async function publicSafeLanding(id: string): Promise<PublicSafeLanding |
       avatarPath: String(row.avatar_path || ""),
       avatarUrl: String(row.avatar_url || ""),
     }),
-    creator: { username: String(row.creator_username || ""), displayName: String(row.creator_display_name || "") },
+    /*
+     * Built from the `open_` columns and from nothing else.
+     *
+     * They are the ones 0039 blanks for a gated creation, so this cannot be
+     * accidentally widened by reading the classified pair a few lines above:
+     * the two sets are separate here for the same reason they are separate in
+     * SQL. `openCardMedia` refuses an adult-focused mode as well, which makes
+     * the guarantee hold even against a database that predates 0039.
+     */
+    openArt: {
+      media: openCardMedia({
+        contentMode: mode,
+        shareImagePath: openSharePath,
+        shareImageUrl: openShareUrl,
+        status: shareMediaStatus(row.share_media_status),
+        avatarPath: String(row.open_avatar_path || ""),
+        avatarUrl: String(row.open_avatar_url || ""),
+      }),
+      isCover: !openSharePath && !openShareUrl,
+      presentation: artPresentation(row.art_presentation),
+    },
+    creator: {
+      username: String(row.creator_username || ""),
+      displayName: String(row.creator_display_name || ""),
+      avatarPath: String(row.creator_avatar_path || ""),
+    },
   };
 }
 

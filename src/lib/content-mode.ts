@@ -262,6 +262,41 @@ export function shareMedia(source: ShareMediaSource): ShareMedia {
 }
 
 /**
+ * The artwork a card may composite for a creation whose page is already public.
+ *
+ * The other question, and the reason `shareMedia` above is not the only one.
+ * That function asks "may this leave Afterglow" and answers no for everything
+ * unclassified, which is exactly right for an adult-focused creation — a
+ * stranger may not read its page, so nothing of its own may stand in for it
+ * outside. Applied to a clean creation the same rule protects nothing: the
+ * artwork is on a page anonymous visitors and search engines already read, one
+ * click behind the very link the card previews. All it achieved was that every
+ * ordinary creation in the catalogue shared one artless preview, because
+ * nothing writes `safe` on its own and a moderator queue is not a pipeline.
+ *
+ * So an open creation's card draws its own artwork by default. Three things
+ * still hold, and each is a rule this function states rather than assumes:
+ *
+ *   * An adult-focused creation is refused outright. Its artwork is blanked at
+ *     source — see 0039 — and this refuses it a second time, so the two would
+ *     have to fail together for a gated cover to reach a card.
+ *   * A moderator's decision still binds. `adult` and `rejected` withhold the
+ *     image here exactly as they do for `shareMedia`; `unreviewed` is the only
+ *     status treated differently, and only for a page that is already open.
+ *     That is what leaves room for automated classification to tighten this
+ *     later without any caller changing.
+ *   * Nomination still decides WHICH image, in the single order
+ *     `nominatedMedia` defines — so a creator who chose a quieter picture for
+ *     sharing gets that one rather than their cover.
+ */
+export function openCardMedia(source: ShareMediaSource & { contentMode: ContentMode }): ShareMedia {
+  if (!readableWithoutAccount(source.contentMode)) return { kind: "fallback" };
+  const status = shareMediaStatus(source.status);
+  if (status === "adult" || status === "rejected") return { kind: "fallback" };
+  return nominatedMedia(source);
+}
+
+/**
  * WHICH image a creator has put forward, ignoring what the platform made of it.
  *
  * The order is the nomination itself: a dedicated share image wins, then a

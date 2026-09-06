@@ -4,6 +4,7 @@ import { artPresentation, bannerArt } from "@/lib/art-presentation";
 
 const migration = readFileSync(new URL("../supabase/migrations/0037_art_presentation_and_links.sql", import.meta.url), "utf8");
 const linked = readFileSync(new URL("../supabase/migrations/0017_linked_world_previews.sql", import.meta.url), "utf8");
+const shareCards = readFileSync(new URL("../supabase/migrations/0039_share_card_artwork.sql", import.meta.url), "utf8");
 
 /**
  * The same creation looks the same to everybody who may see it.
@@ -67,13 +68,38 @@ describe("anonymous and authenticated framing come from one decision", () => {
     expect(body).toContain("THEN '{}'::jsonb ELSE c.art_presentation END");
   });
 
-  it("leaves the safe landing with no artwork to frame", () => {
-    // A gate shows nominated share media or a branded card, never the
-    // creation's own art, so framing data there would have nothing to render
-    // it — and would be the one field in that result type worth removing.
-    // It is discussed in a comment and never redefined: the gate's result type
-    // is 0036's and gains no framing columns here.
+  it("frames the safe landing's artwork too, once it has any", () => {
+    /*
+     * 0037 left the safe landing out of this deliberately: a gate showed
+     * nominated share media or a branded card and never the creation's own
+     * art, so framing data would have had nothing to render. 0039 changed the
+     * premise — an OPEN creation's card now composites the artwork its page
+     * already shows — so the framing has to travel with it, and the assertion
+     * moves with the premise rather than being deleted.
+     *
+     * It is still absent from 0037, which redefines nothing about that
+     * function; the columns arrive in the migration that gives it artwork.
+     */
     expect(migration).not.toContain("CREATE FUNCTION public.public_creation_safe_landing");
+
+    const start = shareCards.indexOf("CREATE FUNCTION public.public_creation_safe_landing");
+    expect(start, "0039 defines the safe landing").toBeGreaterThan(-1);
+    const body = shareCards.slice(start, shareCards.indexOf("$$;", start));
+    expect(body).toContain("art_presentation jsonb");
+    // And a gated creation still has nothing to frame, which is why its
+    // framing column is blanked rather than merely unread.
+    expect(body).toContain("CASE WHEN c.content_mode = 'adult_focused' THEN '{}'::jsonb ELSE c.art_presentation END");
+  });
+
+  it("frames an external card from the same document, not from a constant", () => {
+    // The last surface still cropping at a hardcoded point. A creator who set a
+    // focal point in the studio and then watched the share card behead their
+    // artwork would reasonably conclude the control does not work.
+    const card = readFileSync(new URL("../src/lib/og-card.ts", import.meta.url), "utf8");
+    expect(card).toContain('objectPosition(landing.openArt.presentation, "cover", "16:9")');
+    const render = readFileSync(new URL("../src/lib/og-card-render.tsx", import.meta.url), "utf8");
+    expect(render).toContain("objectPosition: card.artworkPosition");
+    expect(render).not.toContain('objectPosition: "50% 32%"');
   });
 });
 

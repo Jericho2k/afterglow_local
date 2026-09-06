@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   contentModeBadge, explicitRoleplayAllowed, indexableWithoutAccount, presentsAsAdult,
-  readableWithoutAccount, requiresAdultConfirmation, safeShareTitle, shareMedia,
+  openCardMedia, readableWithoutAccount, requiresAdultConfirmation, safeShareTitle, shareMedia,
   worldReadableWithoutAccount,
 } from "@/lib/content-mode";
 import { roleplayPrompt } from "@/lib/prompts";
@@ -139,6 +139,55 @@ describe("only reviewed media leaves Afterglow", () => {
     expect(shareMedia({ ...nominated, status: "safe" })).toEqual({ kind: "storage", path: "users/abc/share.png" });
     // The gallery is never a candidate in any status: it is not in the source.
     expect(shareMedia({ status: "safe", avatarPath: "users/abc/cover.png" })).toEqual({ kind: "storage", path: "users/abc/cover.png" });
+  });
+});
+
+/**
+ * The other media question, which only an already-public page may ask.
+ *
+ * `shareMedia` above answers "may this leave Afterglow" and is unchanged. This
+ * answers "is this already on a page a stranger may open", and the two are
+ * different for exactly two of the three modes — which is the whole of the
+ * distinction, stated where the rules live rather than in a renderer.
+ */
+describe("a public page's own artwork may lead its card", () => {
+  const nominated = { shareImagePath: "users/abc/share.png", avatarPath: "users/abc/cover.png" };
+
+  it("uses an open creation's artwork without any classification", () => {
+    // The case that was the entire catalogue: nothing writes `safe` on its own.
+    expect(openCardMedia({ contentMode: "clean", ...nominated, status: "unreviewed" }))
+      .toEqual({ kind: "storage", path: "users/abc/share.png" });
+    expect(openCardMedia({ contentMode: "clean", avatarPath: "users/abc/cover.png" }))
+      .toEqual({ kind: "storage", path: "users/abc/cover.png" });
+  });
+
+  it("treats adult-capable as the open page it is", () => {
+    // A creation that MAY become explicit if a reader steers there is not an
+    // 18+ page, and its artwork is not gated media.
+    expect(openCardMedia({ contentMode: "adult_capable", avatarPath: "users/abc/cover.png" }))
+      .toEqual({ kind: "storage", path: "users/abc/cover.png" });
+  });
+
+  it("refuses an adult-focused creation whatever it was handed", () => {
+    // Its columns are blanked in SQL as well; this is the second of two guards,
+    // so a database that predates 0039 still cannot publish a gated cover.
+    for (const status of ["unreviewed", "safe", "adult", "rejected"] as const) {
+      expect(openCardMedia({ contentMode: "adult_focused", ...nominated, status }), status)
+        .toEqual({ kind: "fallback" });
+    }
+  });
+
+  it("still obeys a moderator who looked and said no", () => {
+    // `unreviewed` is the ONLY status this treats differently, which is the
+    // seam automated classification would tighten later.
+    expect(openCardMedia({ contentMode: "clean", ...nominated, status: "adult" })).toEqual({ kind: "fallback" });
+    expect(openCardMedia({ contentMode: "clean", ...nominated, status: "rejected" })).toEqual({ kind: "fallback" });
+    expect(openCardMedia({ contentMode: "clean", ...nominated, status: "safe" }))
+      .toEqual({ kind: "storage", path: "users/abc/share.png" });
+  });
+
+  it("has nothing to offer a creation with no artwork at all", () => {
+    expect(openCardMedia({ contentMode: "clean" })).toEqual({ kind: "fallback" });
   });
 });
 

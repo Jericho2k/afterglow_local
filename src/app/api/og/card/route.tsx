@@ -1,6 +1,6 @@
 import { normalizeAccent, readableAccent } from "@/lib/accent";
 import { ogCardElement, ogCardHeight, ogCardWidth } from "@/lib/og-card-render";
-import { ogCardModel, type OgCardModel } from "@/lib/og-card";
+import { defaultArtworkPosition, ogCardModel, type OgCardModel } from "@/lib/og-card";
 import { publicSafeLanding } from "@/lib/public-view";
 
 /**
@@ -28,9 +28,11 @@ import { publicSafeLanding } from "@/lib/public-view";
  *     colour, and everything printed on the card comes from the database row
  *     that id resolves to. That property is why this route cannot be turned
  *     into a renderer for somebody else's words, and it survives the redesign.
- *   * Artwork appears only where `share_media_status = 'safe'`; `shareMedia`
- *     decides that once, upstream, and an unreviewed creation reaches the
- *     composition with no image in its model.
+ *   * WHICH artwork may be drawn is decided upstream, per mode: an open
+ *     creation composes its own public artwork (`openCardMedia`, built from
+ *     columns 0039 blanks for a gated row), and an adult-focused one composes
+ *     nothing but media a moderator classified `safe` (`shareMedia`). Either
+ *     way this file is handed a resolved image or none.
  */
 
 const width = ogCardWidth;
@@ -66,9 +68,14 @@ function escapeXml(value: string) {
  * better failure than a 500 inside somebody else's chat client — so the PNG is
  * attempted and this is the answer if anything about it throws.
  *
- * It carries the same words as the composition, minus the photograph: an SVG
- * that referenced a remote image would be a second fetch these clients are
- * least likely to make.
+ * It carries the same words as the composition and neither of its pictures —
+ * not the artwork, not the creator's profile picture. An SVG that referenced a
+ * remote image would be a second fetch by exactly the clients least likely to
+ * make it, and a broken image box is worse than no image. Nothing is drawn in
+ * their place: in particular there is no letter standing in for a creation,
+ * here or in the composition, because an initial of a title says nothing a
+ * reader cannot already read beside it and a gated creation's title may not
+ * leave at all.
  */
 function brandedSvg(card: OgCardModel | null, rawAccent: string) {
   const accent = normalizeAccent(rawAccent);
@@ -123,7 +130,7 @@ export async function GET(request: Request) {
         // The product's own card, for a link that names no creation — a world,
         // a creator profile, or an id that resolved to nothing.
         title: "Afterglow", handle: "", type: "Characters with memory", tagline: "",
-        artwork: "", accent, adult: false, monogram: "",
+        artwork: "", artworkPosition: defaultArtworkPosition, accent, adult: false, creatorAvatar: "",
       }),
       { width, height, headers: { "Cache-Control": cache } },
     );
