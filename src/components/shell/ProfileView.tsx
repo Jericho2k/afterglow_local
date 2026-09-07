@@ -121,7 +121,7 @@ export function ProfileView({ profile, onSaved, onReturnToPublic, onOpenMenu }: 
 
   async function pickImage(file: File | undefined, apply: (path: string) => void) {
     if (!file) return;
-    try { apply(await uploadImage(file, profileAvatarBucket)); }
+    try { apply(await uploadImage(file, profileAvatarBucket, { renderable: true })); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Image upload failed"); }
   }
 

@@ -76,7 +76,7 @@ export function CardImport({ draft, hasWork, onImported, onError }: {
        */
       let avatarPath = "";
       if (/^image\/png$/i.test(file.type) || /\.png$/i.test(file.name)) {
-        try { avatarPath = await uploadImage(file, characterAvatarBucket); }
+        try { avatarPath = await uploadImage(file, characterAvatarBucket, { renderable: true }); }
         catch { onError("The card was imported, but its artwork could not be uploaded. You can add an image in the next step."); }
       }
 

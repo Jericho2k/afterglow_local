@@ -142,7 +142,7 @@ export function FramingFields({ avatarPath, avatarUrl, bannerPath, bannerUrl, pr
 
   async function uploadBanner(file: File) {
     setBusy(true);
-    try { onChange({ bannerPath: await uploadImage(file, characterAvatarBucket) }); }
+    try { onChange({ bannerPath: await uploadImage(file, characterAvatarBucket, { renderable: true }) }); }
     catch (error) { onError(error instanceof Error ? error.message : "Image upload failed"); }
     finally { setBusy(false); }
   }

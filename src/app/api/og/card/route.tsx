@@ -1,4 +1,5 @@
 import { normalizeAccent, readableAccent } from "@/lib/accent";
+import { artworkReport, loadCardArtwork, type CardArtwork } from "@/lib/og-artwork";
 import { ogCardElement, ogCardHeight, ogCardWidth } from "@/lib/og-card-render";
 import { defaultArtworkPosition, ogCardModel, type OgCardModel } from "@/lib/og-card";
 import { publicSafeLanding } from "@/lib/public-view";
@@ -101,6 +102,29 @@ function brandedSvg(card: OgCardModel | null, rawAccent: string) {
 </svg>`;
 }
 
+/**
+ * What happened to a picture, as one header value.
+ *
+ * A card with nothing on it used to be indistinguishable from a creation with
+ * no artwork, which is why this bug survived a release: the output looked
+ * exactly like the intended fallback. `curl -I` on this route now answers
+ * "why" without a database, an account or a deploy — see
+ * `/api/admin/og-card-diagnostics` for the same answer with the whole chain
+ * behind it.
+ *
+ * Deliberately states nothing a caller did not already have: an outcome name,
+ * a media type, a byte count, an HTTP status. No path, no URL, no bytes.
+ */
+function artworkHeaders(artwork: CardArtwork, avatar: CardArtwork) {
+  const report = artworkReport(artwork);
+  const headers: Record<string, string> = {
+    "X-Og-Artwork": report.state,
+    "X-Og-Avatar": artworkReport(avatar).state,
+  };
+  if (report.format) headers["X-Og-Artwork-Format"] = report.format;
+  return headers;
+}
+
 export async function GET(request: Request) {
   const id = creationIdFrom(request);
   /*
@@ -111,6 +135,29 @@ export async function GET(request: Request) {
   const landing = id ? await publicSafeLanding(id).catch(() => null) : null;
   const card = landing ? ogCardModel(landing) : null;
   const accent = card?.accent ?? accentFrom(request);
+  /*
+   * The pictures, fetched and inspected HERE rather than left to the renderer.
+   *
+   * Satori fetches an `<img>` itself and, when what comes back is not something
+   * it can draw, omits it and renders the rest of the composition perfectly —
+   * no throw, no warning, no difference from a creation that has no artwork.
+   * That is how a whole catalogue of WebP covers produced beautiful, artless
+   * cards through a release nobody could see was broken.
+   *
+   * So the bytes are resolved before the composition is built, checked against
+   * what the bundled renderer actually draws, and handed over inline. Both
+   * requests are made together because they are independent and this route is
+   * on a crawler's clock.
+   */
+  const [artwork, avatar] = await Promise.all([
+    loadCardArtwork(card?.artwork ?? ""),
+    loadCardArtwork(card?.creatorAvatar ?? ""),
+  ]);
+  const drawn = card ? {
+    ...card,
+    artwork: artwork.state === "ready" ? artwork.source : "",
+    creatorAvatar: avatar.state === "ready" ? avatar.source : "",
+  } : null;
   /*
    * Short, because the card now says something that can change.
    *
@@ -123,20 +170,22 @@ export async function GET(request: Request) {
     ? "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400"
     : "public, max-age=3600, s-maxage=86400";
 
+  const headers = { "Cache-Control": cache, ...artworkHeaders(artwork, avatar) };
+
   try {
     const { ImageResponse } = await import("next/og");
     return new ImageResponse(
-      ogCardElement(card ?? {
+      ogCardElement(drawn ?? {
         // The product's own card, for a link that names no creation — a world,
         // a creator profile, or an id that resolved to nothing.
         title: "Afterglow", handle: "", type: "Characters with memory", tagline: "",
         artwork: "", artworkPosition: defaultArtworkPosition, accent, adult: false, creatorAvatar: "",
       }),
-      { width, height, headers: { "Cache-Control": cache } },
+      { width, height, headers },
     );
   } catch {
     return new Response(brandedSvg(card, accent), {
-      headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": cache },
+      headers: { ...headers, "Content-Type": "image/svg+xml; charset=utf-8" },
     });
   }
 }
