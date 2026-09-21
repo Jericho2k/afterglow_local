@@ -1,15 +1,18 @@
 import { asUser, getUserSettings } from "@/lib/db";
 import { completionWithUsage } from "@/lib/llm";
 import { normalizeCreationResult } from "@/lib/creation-ai";
+import { parseLenientJsonWithRepair, type JsonRepair } from "@/lib/json-repair";
 import {
-  creationTokenBudget, importInventoryPrompt, importOrganizePrompt,
-  inventoryThreshold, inventoryTokenBudget, quickIdeaPrompt,
+  contentImportTokenBudget, coreImportTokenBudget, creationTokenBudget,
+  importContentPrompt, importCorePrompt, importInventoryPrompt, importOpeningsPrompt,
+  importOrganizePrompt, importRecoveryTokenBudget, importSupportingContentPrompt,
+  inventoryThreshold, inventoryTokenBudget, quickIdeaPrompt, splitImportThreshold,
 } from "@/lib/creation-prompts";
 import { generateCreationSchema } from "@/lib/schemas";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { currentAccount, unauthorized } from "@/lib/session";
 import { recordUsageEvent } from "@/lib/usage";
-import { providerModelId, taskModelSelection } from "@/lib/provider";
+import { backgroundReasoningFor, providerModelId, taskModelSelection } from "@/lib/provider";
 
 /**
  * The AI accelerators behind Quick Idea and Paste Everything.
@@ -55,45 +58,134 @@ export async function POST(request: Request) {
       rpEngineId: settings.roleplayPreset, kind: "character_generation", taskRoute: route, usage,
     });
 
+    const backgroundThinking = backgroundReasoningFor(selection.modelId);
+    const completionOptions = (maxTokens: number, temperature: number) => ({
+      json: true as const,
+      maxTokens,
+      temperature,
+      modelId: selection.modelId,
+      ...(backgroundThinking === undefined ? {} : { thinking: backgroundThinking }),
+      // A structured extraction must not silently re-enable endpoint-default
+      // reasoning inside a completion envelope sized for JSON.
+      strictReasoning: true,
+    });
+
     let inventory = "";
     if (mode === "import" && idea.length >= inventoryThreshold) {
       const audited = await completionWithUsage(selection, [
         { role: "system", content: "You are a meticulous source archivist. Return valid JSON only." },
         { role: "user", content: importInventoryPrompt(idea) },
-      ], { json: true, maxTokens: inventoryTokenBudget(idea.length), temperature: 0.1 });
+      ], completionOptions(inventoryTokenBudget(idea.length), 0.1));
       inventory = audited.content;
       if (audited.usage) await record(audited.usage, `${taskRoute}_inventory`);
     }
 
-    const system = mode === "import"
-      // Said twice on purpose: the system message is where a model's default
-      // "improve the writing" instinct is easiest to head off.
-      ? "You are a precise import archivist for a roleplay platform. You reorganise supplied material into structured fields without rewriting, softening or censoring it. Return valid JSON only."
-      : "You are an inventive character and scenario designer for a roleplay platform. Return valid JSON only.";
-    const prompt = mode === "import"
-      ? importOrganizePrompt({ source: idea, polish, creationType, inventory, adultAllowed: nsfwEnabled })
-      : quickIdeaPrompt({ idea, direction, creationType, adultAllowed: nsfwEnabled });
-
-    const response = await completionWithUsage(selection, [
-      { role: "system", content: system },
-      { role: "user", content: prompt },
-    ], {
-      json: true,
-      maxTokens: creationTokenBudget(mode, idea.length),
-      // An import must not paraphrase, so it runs as cold as the provider
-      // usefully allows; a generator that cold produces identical drafts.
-      temperature: mode === "import" ? 0.2 : 0.9,
-    });
-    if (response.usage) await record(response.usage, taskRoute);
-
-    const result = normalizeCreationResult(response.content, {
-      // The original paste is the creator's working material and is preserved
-      // verbatim for review and re-import. A generated idea has no source.
+    const normalizeOptions = {
       sourceMaterial: mode === "import" ? idea : "",
       nsfwEnabled,
       creationType,
       audited: Boolean(inventory),
-    });
+    };
+
+    let result;
+
+    if (mode === "idea") {
+      const response = await completionWithUsage(selection, [
+        { role: "system", content: "You are an inventive character and scenario designer for a roleplay platform. Return valid JSON only." },
+        { role: "user", content: quickIdeaPrompt({ idea, direction, creationType, adultAllowed: nsfwEnabled }) },
+      ], completionOptions(creationTokenBudget("idea", idea.length), 0.9));
+      if (response.usage) await record(response.usage, taskRoute);
+      result = normalizeCreationResult(response.content, normalizeOptions);
+    } else {
+      /**
+       * Large imports are split by payload shape, not arbitrarily by source
+       * chunks. Durable definition and long authored scenes are two different
+       * outputs that used to compete for one token envelope; keeping both calls
+       * on the complete source lets each preserve context while preventing six
+       * long greetings from crowding personality/backstory out of the JSON.
+       */
+      const splitImport = async () => {
+        const [core, contentPass] = await Promise.all([
+          completionWithUsage(selection, [
+            { role: "system", content: "You are a precise import archivist. Extract durable character/scenario definition without rewriting it. Return valid JSON only." },
+            { role: "user", content: importCorePrompt({ source: idea, polish, creationType, inventory, adultAllowed: nsfwEnabled }) },
+          ], completionOptions(coreImportTokenBudget(idea.length), 0.15)),
+          completionWithUsage(selection, [
+            { role: "system", content: "You are a precise import archivist. Preserve supplied scenes, dialogue and lore without rewriting them. Return valid JSON only." },
+            { role: "user", content: importContentPrompt({ source: idea, polish, inventory }) },
+          ], completionOptions(contentImportTokenBudget(idea.length), 0.1)),
+        ]);
+        if (core.usage) await record(core.usage, `${taskRoute}_core`);
+        if (contentPass.usage) await record(contentPass.usage, `${taskRoute}_content`);
+
+        const coreParsed = parseLenientJsonWithRepair<Record<string, unknown>>(core.content);
+        let contentParsed = parseLenientJsonWithRepair<Record<string, unknown>>(contentPass.content);
+
+        // A truncated core definition is not acceptable as a successful import:
+        // unlike the old path, we refuse to normalize "never emitted" into "".
+        // One larger retry is cheap and normally resolves a provider that simply
+        // stopped a little early; if it still truncates, the request fails and
+        // the creator's existing draft/source remains untouched.
+        let finalCore = coreParsed;
+        if (coreParsed.repair === "truncated") {
+          const retry = await completionWithUsage(selection, [
+            { role: "system", content: "The previous durable-definition import was cut short. Return the complete durable definition as valid JSON only; do not include openings, dialogue or world lore." },
+            { role: "user", content: importCorePrompt({ source: idea, polish, creationType, inventory, adultAllowed: nsfwEnabled }) },
+          ], completionOptions(importRecoveryTokenBudget(), 0.1));
+          if (retry.usage) await record(retry.usage, `${taskRoute}_core_recovery`);
+          finalCore = parseLenientJsonWithRepair<Record<string, unknown>>(retry.content);
+          if (finalCore.repair === "truncated") {
+            throw new Error("The importer could not fit the character definition into a complete response. Your source was not changed; please retry the import.");
+          }
+        }
+
+        // Scene payloads can themselves be enormous. If that narrow pass still
+        // truncates, split once more so openings and supporting content cannot
+        // crowd each other out either.
+        if (contentParsed.repair === "truncated") {
+          const [openings, supporting] = await Promise.all([
+            completionWithUsage(selection, [
+              { role: "system", content: "Recover supplied opening scenes verbatim. Return valid JSON only." },
+              { role: "user", content: importOpeningsPrompt({ source: idea, polish, inventory }) },
+            ], completionOptions(importRecoveryTokenBudget(), 0.05)),
+            completionWithUsage(selection, [
+              { role: "system", content: "Recover supplied example dialogue and world lore verbatim. Return valid JSON only." },
+              { role: "user", content: importSupportingContentPrompt({ source: idea, polish }) },
+            ], completionOptions(importRecoveryTokenBudget(), 0.05)),
+          ]);
+          if (openings.usage) await record(openings.usage, `${taskRoute}_openings_recovery`);
+          if (supporting.usage) await record(supporting.usage, `${taskRoute}_supporting_recovery`);
+          const openingParsed = parseLenientJsonWithRepair<Record<string, unknown>>(openings.content);
+          const supportingParsed = parseLenientJsonWithRepair<Record<string, unknown>>(supporting.content);
+          if (openingParsed.repair === "truncated" || supportingParsed.repair === "truncated") {
+            throw new Error("The importer could not preserve all supplied openings in a complete response. Your source was not changed; please retry the import.");
+          }
+          contentParsed = {
+            value: { ...supportingParsed.value, ...openingParsed.value },
+            repair: (openingParsed.repair === "structure" || supportingParsed.repair === "structure" ? "structure" : "none") as JsonRepair,
+          };
+        }
+
+        const merged = JSON.stringify({ ...finalCore.value, ...contentParsed.value });
+        return normalizeCreationResult(merged, normalizeOptions);
+      };
+
+      if (idea.length >= splitImportThreshold) {
+        result = await splitImport();
+      } else {
+        const response = await completionWithUsage(selection, [
+          { role: "system", content: "You are a precise import archivist for a roleplay platform. You reorganise supplied material into structured fields without rewriting, softening or censoring it. Return valid JSON only." },
+          { role: "user", content: importOrganizePrompt({ source: idea, polish, creationType, inventory, adultAllowed: nsfwEnabled }) },
+        ], completionOptions(creationTokenBudget("import", idea.length), 0.2));
+        if (response.usage) await record(response.usage, taskRoute);
+        const first = normalizeCreationResult(response.content, normalizeOptions);
+
+        // The old behaviour surfaced a syntactically repaired prefix as if it
+        // were a finished import, turning every key the model never reached into
+        // an empty field. Truncation now means "recover automatically".
+        result = first.stats.repair === "truncated" ? await splitImport() : first;
+      }
+    }
 
     return Response.json({
       creation: result.draft,
